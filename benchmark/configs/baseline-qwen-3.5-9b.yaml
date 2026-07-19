@@ -1,0 +1,9 @@
+model: "baseline_qwen_3_5_9b"
+llm_path: "Qwen/Qwen3.5-9B"
+prompt_templates_file: "prompt_templates/question_prompts.csv"
+max_new_tokens: 64
+batch_size: 2
+use_quantization: false
+enable_thinking: false
+few_shot: 5
+train_data_file: "data/train.jsonl"

@@ -1,0 +1,10 @@
+pandas
+torch
+transformers>=4.51.0
+tqdm
+requests
+numpy
+loguru
+PyYAML
+accelerate
+bitsandbytes
