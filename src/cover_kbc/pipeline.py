@@ -159,11 +159,25 @@ class PipelineConfig:
             **{k: v for k, v in config.items() if k in fields},
         )
 
-    def budget(self) -> Budget:
-        return Budget(
-            max_calls=self.max_calls_per_query,
-            max_generated_tokens=self.max_generated_tokens_per_query,
-        )
+    def budget(self, contract: RelationContract | None = None) -> Budget:
+        """Per-query budget, tightened by the relation contract.
+
+        The contract's ``StoppingPolicy`` declares how much compute a relation
+        is worth (spec section 5.1); the global config is a hard ceiling no
+        relation may exceed. The stricter of the two applies, so borders stay
+        cheap while awards keep their large allowance.
+
+        Note this is deliberately *unlike* the verification thresholds, where
+        the contract is authoritative and is never clamped. Calls and tokens are
+        a safety and compute limit, not a quality operating point: a relation
+        must not be able to spend more than the run was budgeted for.
+        """
+        calls = self.max_calls_per_query
+        tokens = self.max_generated_tokens_per_query
+        if contract is not None:
+            calls = min(calls, contract.stopping.max_calls)
+            tokens = min(tokens, contract.stopping.max_generated_tokens)
+        return Budget(max_calls=calls, max_generated_tokens=tokens)
 
 
 @dataclass
@@ -406,7 +420,7 @@ class CoverPipeline:
         """Phase A: gate + candidate discovery. Enumerator model only."""
         query, contract = compile_query(query.subject, query.relation, query.row_index)
         graph = build_graph(query, contract)
-        budget = self.config.budget()
+        budget = self.config.budget(contract)
         state = RCSEState()
 
         gate_calls = self._run_gate(graph, contract)

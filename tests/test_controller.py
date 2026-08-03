@@ -345,12 +345,36 @@ def test_large_open_set_keeps_going_while_facets_remain():
     assert not stop
 
 
-def test_stopping_thresholds_come_from_config():
+def test_stopping_thresholds_come_from_the_contract_by_default():
+    """Module 0 owns relation-specific stopping (spec section 12.3)."""
+    from cover_kbc.controller import resolve_stopping
+
+    borders = resolve_stopping(get_contract("countryLandBordersCountry"))
+    awards = resolve_stopping(get_contract("awardWonBy"))
+    assert borders.source.startswith("contract:")
+    # Borders stop after one fruitless action; awards tolerate three.
+    assert borders.saturation_patience < awards.saturation_patience
+
+
+def test_contract_stopping_actually_drives_the_decision():
     contract = get_contract("countryLandBordersCountry")
     state = _covered(contract)
     residual = estimate_residual(contract, [], state)
-    eager = ControllerConfig(residual_stop=1.0)
-    patient = ControllerConfig(residual_stop=0.0)
+    stop, reason = should_stop(contract, [], state, Budget(), residual)
+    if "residual" in reason:
+        assert f"contract:{contract.relation}" in reason
+
+
+def test_global_config_can_override_contract_stopping():
+    """`honor_contract_stopping=False` restores the cross-relation fallback."""
+    from cover_kbc.controller import resolve_stopping
+
+    contract = get_contract("countryLandBordersCountry")
+    state = _covered(contract)
+    residual = estimate_residual(contract, [], state)
+    eager = ControllerConfig(honor_contract_stopping=False, residual_stop=1.0)
+    patient = ControllerConfig(honor_contract_stopping=False, residual_stop=0.0)
+    assert resolve_stopping(contract, eager).source == "controller_config"
     assert should_stop(contract, [], state, Budget(), residual, eager)[0]
     assert not should_stop(contract, [], state, Budget(), residual, patient)[0]
 

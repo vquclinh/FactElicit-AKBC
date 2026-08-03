@@ -79,9 +79,21 @@ class VerifierTemplate:
     body: str
     adversarial: bool = False
 
-    def render(self, *, subject: str, relation: str, definition: str, candidate: str) -> str:
+    def render(
+        self,
+        *,
+        subject: str,
+        relation: str,
+        definition: str,
+        candidate: str,
+        near_misses: str = "",
+    ) -> str:
         return self.body.format(
-            subject=subject, relation=relation, definition=definition, candidate=candidate
+            subject=subject,
+            relation=relation,
+            definition=definition,
+            candidate=candidate,
+            near_misses=near_misses,
         ).strip()
 
 
@@ -115,7 +127,8 @@ TEMPLATE_ADVERSARIAL = VerifierTemplate(
         "Definition:\n{definition}\n\n"
         "Candidate: {candidate}\n\n"
         "This candidate is suspected of being a near miss rather than a correct "
-        "object. Check it against every exclusion above before answering. "
+        "object. {near_misses}\n"
+        "Check it against every exclusion above before answering. "
         "Answer B if it matches any exclusion, and C if you do not actually know.\n\n"
         + _LABEL_BLOCK
     ),
@@ -154,6 +167,7 @@ def build_verifier_prompt(
         relation=contract.relation,
         definition=contract.verifier_definition(),
         candidate=candidate,
+        near_misses=contract.near_miss_block(),
     )
 
 
@@ -259,6 +273,7 @@ class ContextualCalibrator:
                 relation=contract.relation,
                 definition=contract.verifier_definition(),
                 candidate=CONTENT_FREE_CANDIDATE,
+                near_misses=contract.near_miss_block(),
             )
             result = runtime.score_labels(
                 LabelScoreRequest(

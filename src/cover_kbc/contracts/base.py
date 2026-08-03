@@ -14,9 +14,12 @@ external knowledge base by another name.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 from cover_kbc.normalization.strings import NormalizationPolicy
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from cover_kbc.contracts.programs import TypedProgramSpec
+
 from cover_kbc.types import (
     Cardinality,
     IndependenceGroup,
@@ -28,29 +31,43 @@ from cover_kbc.types import (
 
 @dataclass(frozen=True)
 class VerificationPolicy:
-    """Which candidates get spent on a blind verifier call (spec section 10.5).
+    """Relation-specific verification semantics (spec sections 5.1 and 10.5).
 
-    Milestone 1 stores the policy; the tiering logic that consumes it lands
-    with the verifier in Milestone 2.
+    Every field here is consumed: the support threshold and the acceptance
+    thresholds by :mod:`cover_kbc.scoring`, and the near-miss classes by the
+    adversarial verifier template.
+
+    Every value here is **authoritative for its relation**. ``None`` means "this
+    relation has no opinion", and the global :class:`~cover_kbc.scoring.ScoringConfig`
+    default applies. A relation is free to sit at a lower precision / higher
+    recall operating point than the global default - that is the whole point of
+    a relation-typed system, and clamping it to the global value would make the
+    six programmes behave alike exactly where they should differ.
     """
 
     #: Candidates at or above this many independent supports skip verification.
-    auto_accept_independent_support: int = 3
+    #: ``None`` inherits the global default.
+    auto_accept_independent_support: int | None = None
     #: Minimum calibrated P(VALID) for a verified candidate to be accepted.
-    accept_valid_prob: float = 0.5
-    #: Near-miss classes that always get the adversarial verifier template.
+    #: ``None`` inherits the global default.
+    accept_valid_prob: float | None = None
+    #: Near-miss classes named in the adversarial verifier prompt, so the
+    #: verifier is told what this specific relation is usually confused with
+    #: (spec section 10.5: "a common near miss specified by the contract").
     adversarial_classes: tuple[str, ...] = ()
     #: Whether an UNKNOWN verdict should keep a candidate out of the output.
-    drop_on_unknown: bool = True
+    #: ``None`` inherits the global default.
+    drop_on_unknown: bool | None = None
 
 
 @dataclass(frozen=True)
 class StoppingPolicy:
-    """Relation-specific stopping criteria (spec section 12.3).
+    """Relation-specific stopping criteria (spec sections 5.1 and 12.3).
 
-    Milestone 1 uses only ``max_calls``/``max_generated_tokens`` via the fixed
-    budget.  The remaining fields are the declared interface for the RCSE and
-    active controller in Milestone 3.
+    Consumed by :func:`cover_kbc.controller.should_stop` and by the per-query
+    budget.  The controller honours these in preference to its own global
+    defaults, because "we have searched enough" means different things for a
+    single scalar and for an open-ended award list.
     """
 
     max_calls: int = 6
@@ -116,10 +133,24 @@ class RelationContract:
         return self.cardinality is not Cardinality.EXACTLY_ONE
 
     @property
+    def program(self) -> "TypedProgramSpec":
+        """The typed programme regime this relation is routed to (Module 1)."""
+        from cover_kbc.contracts.programs import get_program
+
+        return get_program(self.program_type)
+
+    @property
     def max_objects(self) -> int:
-        """Structural upper bound implied by the cardinality regime."""
-        if self.cardinality in (Cardinality.ZERO_OR_ONE, Cardinality.EXACTLY_ONE):
-            return 1
+        """Structural upper bound on the emitted set.
+
+        The programme regime caps it where the regime is bounded (NULL_SINGLE,
+        NUMERIC); otherwise the relation's own selection policy decides. The
+        bound is read from Module 1 rather than re-derived here, so there is one
+        authoritative statement of "this regime returns at most one object".
+        """
+        program = self.program
+        if program.bounded:
+            return program.max_objects
         return self.selection.max_objects
 
     def all_views(self) -> tuple[str, ...]:
@@ -136,17 +167,35 @@ class RelationContract:
     def verifier_definition(self) -> str:
         """The definition block a blind verifier prompt embeds.
 
-        Includes the hard-negative classes, because the near misses are exactly
-        what a verifier must be told to reject.
+        Carries the declared answer type and the hard-negative classes: the
+        near misses are exactly what a verifier has to be told to reject.
         """
-        lines = [self.definition, "", "Counts as correct:"]
+        lines = [self.definition, "", f"Expected answer type: {self.answer_type}."]
+        lines += ["", "Counts as correct:"]
         lines += [f"- {rule}" for rule in self.positive_rules]
         lines += ["", "Does NOT count:"]
         lines += [f"- {rule}" for rule in self.hard_negative_rules]
         return "\n".join(lines)
 
+    def near_miss_block(self) -> str:
+        """The relation's named near-miss classes, for the adversarial template.
+
+        Empty string when the contract declares none, so the template degrades
+        to its generic exclusion check rather than emitting a dangling heading.
+        """
+        if not self.verification.adversarial_classes:
+            return ""
+        classes = ", ".join(self.verification.adversarial_classes)
+        return f"Common near misses for this relation: {classes}."
+
     def validate(self) -> None:
-        """Internal consistency check, exercised by the contract tests."""
+        """Internal consistency check, exercised by the contract tests.
+
+        Includes the Module 1 programme invariants: a contract may not declare a
+        cardinality or output type its routed programme forbids.
+        """
+        from cover_kbc.contracts.programs import check_program_compatibility
+
         if not self.relation:
             raise ValueError("contract is missing a relation name")
         if not self.mandatory_views:
@@ -160,8 +209,21 @@ class RelationContract:
             raise ValueError(f"{self.relation}: views are both mandatory and optional: {overlap}")
         if self.is_numeric and self.selection.numeric_target_unit is None:
             raise ValueError(f"{self.relation}: numeric relations need a target unit")
+        if not self.allows_empty and self.selection.max_objects not in (0, 1):
+            raise ValueError(
+                f"{self.relation}: cardinality forbids an empty answer, so the "
+                "selection cap must be exactly one object"
+            )
         if not self.eligible_independence_groups:
             raise ValueError(f"{self.relation}: eligible independence groups must be declared")
+        probability = self.verification.accept_valid_prob
+        if probability is not None and not 0.0 <= probability <= 1.0:
+            raise ValueError(f"{self.relation}: accept_valid_prob must be a probability")
+        if self.stopping.max_calls <= 0:
+            raise ValueError(f"{self.relation}: stopping.max_calls must be positive")
+        problems = check_program_compatibility(self)
+        if problems:
+            raise ValueError("; ".join(problems))
 
     def coverage_denominator(self) -> int:
         """``m(o)``: how many independent groups could express a candidate."""

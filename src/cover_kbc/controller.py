@@ -96,6 +96,10 @@ class ControllerConfig:
     stability_threshold: float = 1.0
     #: Verify before exploring further once this many candidates are unresolved.
     verify_first_unresolved: float = 0.5
+    #: Take stopping thresholds from the relation contract when it declares
+    #: them. Spec section 12.3 makes stopping relation-typed; the fields below
+    #: are the cross-relation fallback, not the authority.
+    honor_contract_stopping: bool = True
 
     rcse: RCSEConfig = field(default_factory=lambda: DEFAULT_RCSE)
 
@@ -118,11 +122,54 @@ class ControllerConfig:
             "saturation_patience": self.saturation_patience,
             "stability_threshold": self.stability_threshold,
             "verify_first_unresolved": self.verify_first_unresolved,
+            "honor_contract_stopping": self.honor_contract_stopping,
             "rcse": self.rcse.to_json(),
         }
 
 
 DEFAULT_CONTROLLER = ControllerConfig()
+
+
+@dataclass(frozen=True)
+class EffectiveStopping:
+    """Stopping thresholds actually in force for one relation.
+
+    Resolved from the contract's :class:`~cover_kbc.contracts.base.StoppingPolicy`
+    when ``honor_contract_stopping`` is set, otherwise from the global config.
+    Kept explicit so a decision log can show which numbers were applied.
+    """
+
+    stability_threshold: float
+    saturation_patience: int
+    residual_stop: float
+    source: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "stability_threshold": self.stability_threshold,
+            "saturation_patience": self.saturation_patience,
+            "residual_stop": self.residual_stop,
+            "source": self.source,
+        }
+
+
+def resolve_stopping(
+    contract: RelationContract, config: ControllerConfig = DEFAULT_CONTROLLER
+) -> EffectiveStopping:
+    """Which stopping thresholds apply to this relation, and where they came from."""
+    if config.honor_contract_stopping:
+        return EffectiveStopping(
+            stability_threshold=contract.stopping.stability_threshold,
+            saturation_patience=contract.stopping.saturation_patience,
+            residual_stop=contract.stopping.residual_stop_threshold,
+            source=f"contract:{contract.relation}",
+        )
+    return EffectiveStopping(
+        stability_threshold=config.stability_threshold,
+        saturation_patience=config.saturation_patience,
+        residual_stop=config.residual_stop,
+        source="controller_config",
+    )
 
 
 @dataclass
@@ -243,9 +290,11 @@ def score_action(
 ) -> tuple[float, dict[str, float]]:
     """``A_t(a)`` with its components, so a choice can be explained."""
     if action.action_type is ActionType.STOP:
-        # Stopping scores exactly the residual threshold: any action that beats
-        # it is worth taking, any that does not is not.
-        return config.residual_stop, {"stop_baseline": config.residual_stop}
+        # Stopping scores exactly the residual threshold in force for this
+        # relation: any action that beats it is worth taking, any that does not
+        # is not.
+        baseline = resolve_stopping(contract, config).residual_stop
+        return baseline, {"stop_baseline": baseline}
 
     by_key = {c.key: c for c in candidates}
     expected_yield = 0.0
@@ -359,7 +408,7 @@ def choose_action(
     stop, stop_reason = should_stop(contract, candidates, state, budget, residual, config)
     if stop:
         action = Action(ActionType.STOP, reason=stop_reason)
-        score = config.residual_stop
+        score = resolve_stopping(contract, config).residual_stop
 
     return ActionDecision(
         step=step,
@@ -384,9 +433,15 @@ def should_stop(
     residual: ResidualEstimate,
     config: ControllerConfig = DEFAULT_CONTROLLER,
 ) -> tuple[bool, str]:
-    """Relation-typed stopping decision. A hard budget always wins."""
+    """Relation-typed stopping decision. A hard budget always wins.
+
+    Thresholds come from the relation contract (spec section 12.3), with the
+    controller config as the cross-relation fallback.
+    """
     if budget.exhausted:
         return True, "hard budget exhausted"
+
+    stopping = resolve_stopping(contract, config)
 
     mandatory_done = set(contract.mandatory_views) <= state.covered_facets
     if not mandatory_done:
@@ -398,7 +453,7 @@ def should_stop(
     program = contract.program_type
 
     if program is ProgramType.SMALL_SET:
-        if stability >= config.stability_threshold and unresolved <= 0.0:
+        if stability >= stopping.stability_threshold and unresolved <= 0.0:
             return True, "small-set: mandatory structure explored, set stable, nothing unresolved"
     elif program is ProgramType.NULL_SINGLE:
         accepted = [c for c in candidates if c.status is CandidateStatus.ACCEPTED]
@@ -412,11 +467,14 @@ def should_stop(
             return True, "numeric: dominant cluster stable, dispersion low"
     elif program is ProgramType.LARGE_OPEN_SET:
         facet_gap = residual.components.get("facet_gap", 1.0)
-        if no_gain >= config.saturation_patience and facet_gap <= 0.0:
+        if no_gain >= stopping.saturation_patience and facet_gap <= 0.0:
             return True, "large-open-set: verified yield saturated and no unvisited facet"
 
-    if residual.residual < config.residual_stop:
-        return True, f"residual {residual.residual:.3f} below stop threshold {config.residual_stop}"
+    if residual.residual < stopping.residual_stop:
+        return True, (
+            f"residual {residual.residual:.3f} below stop threshold "
+            f"{stopping.residual_stop} ({stopping.source})"
+        )
 
     return False, "continue"
 

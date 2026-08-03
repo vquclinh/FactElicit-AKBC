@@ -68,9 +68,15 @@ class ScoringConfig:
     #: not to a support threshold that would also delete correct rare answers.
     accept_score: float = 0.2
     #: Calibrated P(VALID) below which a verified candidate is dropped.
+    #: Fallback only: a relation contract that declares its own value wins.
     min_valid_prob: float = 0.40
-    #: Drop candidates whose verifier verdict is UNKNOWN.
+    #: Drop candidates whose verifier verdict is UNKNOWN. Fallback only.
     drop_on_unknown: bool = True
+    #: Emergency override, named explicitly. When set, the global values above
+    #: replace the contract's, for every relation. Off by default: relation
+    #: policy is authoritative, and overriding it should be a deliberate,
+    #: visible act rather than an emergent effect of combining thresholds.
+    force_global_verification_policy: bool = False
     #: Clip on L(o) so one extreme logit cannot dominate the sum.
     logit_clip: float = 3.0
     #: Fraction of X(o) credited when the second model only *agreed with a
@@ -95,6 +101,81 @@ class ScoringConfig:
 
 
 DEFAULT_SCORING = ScoringConfig()
+
+
+@dataclass(frozen=True)
+class EffectiveVerification:
+    """Verification thresholds actually in force for one relation.
+
+    Resolution rule, matching :func:`cover_kbc.controller.resolve_stopping`:
+
+    * the relation contract's value is **authoritative** where it declares one;
+    * the global :class:`ScoringConfig` supplies the default where it does not;
+    * ``force_global_verification_policy`` is the single, named escape hatch.
+
+    Thresholds are never combined arithmetically. A relation that wants a lower
+    acceptance bar than the global default - a recall-first operating point -
+    must be able to have it.
+    """
+
+    auto_accept_support: int
+    min_valid_prob: float
+    drop_on_unknown: bool
+    source: str
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "auto_accept_support": self.auto_accept_support,
+            "min_valid_prob": self.min_valid_prob,
+            "drop_on_unknown": self.drop_on_unknown,
+            "source": self.source,
+        }
+
+
+def resolve_verification(
+    contract: RelationContract, config: ScoringConfig = DEFAULT_SCORING
+) -> EffectiveVerification:
+    """Which verification thresholds apply here, and where they came from."""
+    if config.force_global_verification_policy:
+        return EffectiveVerification(
+            auto_accept_support=config.auto_accept_support,
+            min_valid_prob=config.min_valid_prob,
+            drop_on_unknown=config.drop_on_unknown,
+            source="scoring_config(forced)",
+        )
+
+    policy = contract.verification
+    declared = [
+        name
+        for name, value in (
+            ("auto_accept_support", policy.auto_accept_independent_support),
+            ("min_valid_prob", policy.accept_valid_prob),
+            ("drop_on_unknown", policy.drop_on_unknown),
+        )
+        if value is not None
+    ]
+    source = f"contract:{contract.relation}" if declared else "scoring_config"
+    if declared and len(declared) < 3:
+        source += f"+scoring_config(defaults for {3 - len(declared)} field(s))"
+
+    return EffectiveVerification(
+        auto_accept_support=(
+            policy.auto_accept_independent_support
+            if policy.auto_accept_independent_support is not None
+            else config.auto_accept_support
+        ),
+        min_valid_prob=(
+            policy.accept_valid_prob
+            if policy.accept_valid_prob is not None
+            else config.min_valid_prob
+        ),
+        drop_on_unknown=(
+            policy.drop_on_unknown
+            if policy.drop_on_unknown is not None
+            else config.drop_on_unknown
+        ),
+        source=source,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -233,9 +314,7 @@ def assign_tier(
         return VerificationTier.ADVERSARIAL_VERIFY
 
     # 3. Broad independent support and nothing against it.
-    threshold = min(
-        config.auto_accept_support, contract.verification.auto_accept_independent_support
-    )
+    threshold = resolve_verification(contract, config).auto_accept_support
     if candidate.independent_support >= threshold:
         return VerificationTier.AUTO_ACCEPT
 
@@ -297,17 +376,23 @@ def decide_status(
     if candidate.independent_support < contract.selection.min_independent_support:
         return CandidateStatus.UNRESOLVED
 
+    # The contract owns relation-specific verification semantics; the global
+    # config is the default for anything it does not declare. Values are never
+    # combined - a relation must be able to choose a lower acceptance bar than
+    # the global default when recall matters more than precision.
+    effective = resolve_verification(contract, config)
+
     verifications = [v for v in candidate.verifications if v.valid_prob is not None]
     if verifications:
         latest = verifications[-1]
         if latest.label is VerificationLabel.INVALID:
             return CandidateStatus.REJECTED
-        if latest.label is VerificationLabel.UNKNOWN and config.drop_on_unknown:
+        if latest.label is VerificationLabel.UNKNOWN and effective.drop_on_unknown:
             # An explicit "I don't know" is not support. Fall through to the
             # score, which will only rescue a broadly supported candidate.
-            if candidate.independent_support < config.auto_accept_support:
+            if candidate.independent_support < effective.auto_accept_support:
                 return CandidateStatus.UNRESOLVED
-        if (latest.valid_prob or 0.0) < config.min_valid_prob:
+        if (latest.valid_prob or 0.0) < effective.min_valid_prob:
             return CandidateStatus.UNRESOLVED
 
     if candidate.tier is VerificationTier.AUTO_ACCEPT:

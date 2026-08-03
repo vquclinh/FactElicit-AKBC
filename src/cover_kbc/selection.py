@@ -134,7 +134,8 @@ def select_null_single(graph: EvidenceGraph, config: SelectionConfig) -> list[Ca
     if not accepted:
         return []
     accepted.sort(key=lambda c: (-c.score, -c.independent_support, c.key))
-    return accepted[:1]
+    # The cap is a programme fact (Module 1), not a local constant.
+    return accepted[: graph.contract.max_objects]
 
 
 def select_large_open_set(graph: EvidenceGraph, config: SelectionConfig) -> list[Candidate]:

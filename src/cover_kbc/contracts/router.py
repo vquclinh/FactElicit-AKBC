@@ -11,6 +11,7 @@ numeric would fail loudly here instead of silently producing wrong output.
 from __future__ import annotations
 
 from cover_kbc.contracts.base import RelationContract
+from cover_kbc.contracts.programs import check_program_compatibility, get_program
 from cover_kbc.contracts.registry import CONTRACTS, get_contract
 from cover_kbc.evaluation.official import relation_types
 from cover_kbc.types import OutputType, ProgramType, Query
@@ -27,8 +28,21 @@ PROGRAM_BY_RELATION: dict[str, ProgramType] = {
 
 
 def route(relation: str) -> ProgramType:
-    """Return the typed program for an official relation."""
+    """Return the typed programme for an official relation.
+
+    Fails closed: an unknown relation raises ``UnknownRelationError`` rather
+    than falling back to a default programme.
+    """
     return get_contract(relation).program_type
+
+
+def route_program(relation: str):
+    """Return the executable programme regime for an official relation.
+
+    This is what downstream modules should ask for when they need to know how
+    to *treat* a relation, rather than what it means.
+    """
+    return get_program(get_contract(relation).program_type)
 
 
 def compile_query(subject: str, relation: str, row_index: int = -1) -> tuple[Query, RelationContract]:
@@ -71,6 +85,8 @@ def check_router_consistency() -> None:
                 f"{relation}: contract output {contract.output_type.value} disagrees with "
                 f"official RELATION_TYPE={official_type!r}"
             )
+
+        problems.extend(check_program_compatibility(contract))
 
         try:
             contract.validate()

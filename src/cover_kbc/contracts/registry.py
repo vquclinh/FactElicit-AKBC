@@ -42,12 +42,16 @@ COUNTRY_LAND_BORDERS = RelationContract(
     ),
     positive_rules=(
         "the two countries share a physical land boundary",
-        "a border created by an integral overseas territory of either country counts",
-        "a border with an enclaved or landlocked neighbour counts",
+        "only currently recognised states (or comparable territories) count",
+        "a border created by an integral overseas territory of either country counts, "
+        "for example Suriname-France through French Guiana or Spain-Morocco through Ceuta and Melilla",
+        "a border with an enclaved neighbour counts, for example Vatican City-Italy",
     ),
     hard_negative_rules=(
-        "a maritime-only border, however short the sea gap",
-        "a border via a dependency or overseas possession that is not an integral part of the country",
+        "a maritime-only border, however short the sea gap, for example Russia-Japan or Samoa-USA",
+        "a border via a dependency or overseas possession that is not an integral part of the country, "
+        "for example Cyprus-United Kingdom through the Sovereign Base Areas",
+        "a border that rests only on a deprecated or disputed claim rather than a currently recognised one",
         "a country that is merely nearby, in the same region, or reachable by bridge or tunnel only",
         "the subject country itself",
         "a sub-national region, province or city rather than a country",
@@ -140,7 +144,8 @@ COMPANY_TRADES_AT_STOCK_EXCHANGE = RelationContract(
     ),
     hard_negative_rules=(
         "the parent company is listed but the subject company itself is not",
-        "a subsidiary is listed but the subject company itself is not",
+        "a subsidiary is listed but the subject company itself is not; a subsidiary "
+        "that is not separately listed has an empty answer set",
         "the exchange is merely mentioned in the company's history or is where it once traded",
         "the company is privately held or has been taken private",
         "a stock index, a broker, a market segment, or a ticker symbol rather than an exchange",
@@ -173,12 +178,14 @@ HAS_AREA = RelationContract(
     cardinality=Cardinality.EXACTLY_ONE,
     answer_type="area_km2",
     definition=(
-        "The total surface area of the subject in square kilometres, including "
-        "both land and inland water."
+        "The surface area of the subject geographic entity in square kilometres. "
+        "For countries this is the total area, land plus inland water."
     ),
     positive_rules=(
-        "the total area, expressed in square kilometres",
-        "a value given in another unit counts once converted to square kilometres",
+        "the surface area of the subject, expressed in square kilometres",
+        "for a country, the total area including inland water",
+        "a value published in hectares, square miles or another unit counts once "
+        "converted to square kilometres",
     ),
     hard_negative_rules=(
         "the land-only area when the total area is larger",
@@ -217,8 +224,9 @@ HAS_CAPACITY = RelationContract(
     cardinality=Cardinality.EXACTLY_ONE,
     answer_type="spectator_count",
     definition=(
-        "The maximum spectator capacity of the subject venue, as a number of "
-        "people. When several capacity figures have been published, the highest "
+        "The maximum spectator capacity of the subject venue, expressed as an "
+        "integer number of people. When several capacity figures exist - seated "
+        "versus total, or before versus after a renovation - the highest "
         "published capacity is the answer."
     ),
     positive_rules=(
