@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cover-kbc"
+version = "0.1.0"
+description = "COVER-KBC v2 - relation-typed active set elicitation for the AKBC Shared Task 2026"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+# Neural backends are optional so that the data/evaluation foundation stays
+# installable (and testable) on machines without a GPU stack.
+hf = ["torch", "transformers>=4.51.0", "accelerate"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

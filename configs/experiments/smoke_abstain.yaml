@@ -1,0 +1,27 @@
+# Plumbing smoke run: the non-neural abstain baseline.
+#
+# The NullRuntime abstains on every call, so this predicts nothing for every
+# query. Under the official evaluator that scores macro-precision 1.0 (an empty
+# prediction is defined as precise) and macro-recall equal to the fraction of
+# queries whose gold set is genuinely empty.
+#
+# This is a floor and an end-to-end plumbing check. It is NOT a system result
+# and must never be reported as one.
+
+experiment:
+  name: smoke_abstain
+  split: val
+  seed: 42
+  notes: >-
+    Non-neural abstain baseline. Exercises loading, routing, elicitation,
+    parsing, the evidence graph, selection, official-format serialisation and
+    the official evaluator, with no model weights required.
+
+model_profile:
+  backend: "null"
+  model_id: offline/null
+
+pipeline:
+  run_optional_views: false
+  enable_verifier: false
+  max_verifications_per_query: 0

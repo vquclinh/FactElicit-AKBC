@@ -1,0 +1,7 @@
+# Non-neural abstain stub. Counts zero parameters because it is not a model.
+model_profile:
+  backend: "null"
+  model_id: offline/null
+  published_total_parameters: 0
+  role: stub
+  notes: Deterministic abstain stub used for plumbing tests. Contains no factual knowledge.
