@@ -73,14 +73,92 @@ def test_huggingface_backend_refuses_an_unrecorded_parameter_count():
 # --- budget audit ----------------------------------------------------------
 
 
+VERIFIED = {"parameter_source": "safetensors header", "parameter_source_verified": True}
+
+
 def test_budget_audit_passes_within_the_limit():
-    audit = audit_parameter_budget([ModelSpec("m", 9_000_000_000)])
+    audit = audit_parameter_budget([ModelSpec("m", 9_000_000_000, **VERIFIED)])
     assert audit.passed
     assert audit.total_parameters == 9_000_000_000
 
 
+def test_budget_audit_fails_when_provenance_is_unverified():
+    """A number with no recorded primary source is not evidence (M2 requirement 1)."""
+    audit = audit_parameter_budget([ModelSpec("m", 9_000_000_000)])
+    assert not audit.passed
+    assert "not marked verified" in " ".join(audit.problems)
+
+
+def test_budget_counts_the_full_checkpoint_not_the_language_model():
+    """Conservative accounting for a multimodal checkpoint."""
+    spec = ModelSpec(
+        "Qwen/Qwen3.5-9B",
+        None,
+        published_language_parameters=8_953_803_264,
+        published_checkpoint_parameters=9_653_104_368,
+        budget_count_parameters=9_653_104_368,
+        **VERIFIED,
+    )
+    audit = audit_parameter_budget([spec])
+    assert audit.total_parameters == 9_653_104_368
+    assert audit.passed
+
+
+def test_budget_rejects_counting_only_the_language_model():
+    """Excluding the vision tower needs demonstrated evidence, not assertion."""
+    spec = ModelSpec(
+        "multimodal/thing",
+        None,
+        published_language_parameters=8_953_803_264,
+        published_checkpoint_parameters=9_653_104_368,
+        budget_count_parameters=8_953_803_264,
+        **VERIFIED,
+    )
+    audit = audit_parameter_budget([spec])
+    assert not audit.passed
+    assert "below the full checkpoint" in " ".join(audit.problems)
+
+
+def test_frozen_target_pairing_is_inside_the_budget():
+    """Mistral-Small-24B enumerator + Qwen3.5-4B verifier = 28.67B."""
+    specs = [
+        ModelSpec(
+            "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            None,
+            published_checkpoint_parameters=24_011_361_280,
+            budget_count_parameters=24_011_361_280,
+            role="enumerator",
+            **VERIFIED,
+        ),
+        ModelSpec(
+            "Qwen/Qwen3.5-4B",
+            None,
+            published_checkpoint_parameters=4_659_865_088,
+            budget_count_parameters=4_659_865_088,
+            role="verifier",
+            **VERIFIED,
+        ),
+    ]
+    audit = audit_parameter_budget(specs)
+    assert audit.total_parameters == 28_671_226_368
+    assert audit.passed
+
+
+def test_pairing_that_exceeds_the_budget_is_rejected():
+    """Mistral-24B + Qwen3.5-9B would be 33.66B and must not be schedulable."""
+    specs = [
+        ModelSpec("mistral-24b", None, published_checkpoint_parameters=24_011_361_280, **VERIFIED),
+        ModelSpec("qwen-9b", None, published_checkpoint_parameters=9_653_104_368, **VERIFIED),
+    ]
+    audit = audit_parameter_budget(specs)
+    assert audit.total_parameters == 33_664_465_648
+    assert not audit.passed
+
+
 def test_budget_audit_fails_over_the_limit():
-    audit = audit_parameter_budget([ModelSpec("a", 24_000_000_000), ModelSpec("b", 27_000_000_000)])
+    audit = audit_parameter_budget(
+        [ModelSpec("a", 24_000_000_000, **VERIFIED), ModelSpec("b", 27_000_000_000, **VERIFIED)]
+    )
     assert not audit.passed
     assert "exceeds" in " ".join(audit.problems)
 
@@ -95,8 +173,8 @@ def test_budget_audit_fails_on_an_unknown_count():
 def test_a_shared_checkpoint_is_counted_once():
     audit = audit_parameter_budget(
         [
-            ModelSpec("shared", 24_000_000_000, role="generator"),
-            ModelSpec("shared", 24_000_000_000, role="verifier"),
+            ModelSpec("shared", 24_000_000_000, role="generator", **VERIFIED),
+            ModelSpec("shared", 24_000_000_000, role="verifier", **VERIFIED),
         ]
     )
     assert audit.total_parameters == 24_000_000_000
@@ -104,8 +182,10 @@ def test_a_shared_checkpoint_is_counted_once():
 
 
 def test_quantization_does_not_reduce_the_counted_size():
-    plain = audit_parameter_budget([ModelSpec("m", 27_000_000_000)])
-    quantized = audit_parameter_budget([ModelSpec("m", 27_000_000_000, quantization="int4")])
+    plain = audit_parameter_budget([ModelSpec("m", 27_000_000_000, **VERIFIED)])
+    quantized = audit_parameter_budget(
+        [ModelSpec("m", 27_000_000_000, quantization="int4", **VERIFIED)]
+    )
     assert plain.total_parameters == quantized.total_parameters
 
 
@@ -140,13 +220,15 @@ def test_read_labels_is_marked_uncalibrated():
     assert result.valid_prob == pytest.approx(softmax({"VALID": 2.0, "INVALID": 0.0, "UNKNOWN": -1.0})["VALID"])
 
 
-def test_calibration_is_not_silently_faked():
-    from cover_kbc.verification import calibrate, prompt_disagreement
+def test_uncalibrated_results_are_flagged_as_such():
+    """Nothing may read an uncalibrated distribution as a calibrated one."""
+    from cover_kbc.models.base import LabelScoreResult
 
-    with pytest.raises(NotImplementedError):
-        calibrate()
-    with pytest.raises(NotImplementedError):
-        prompt_disagreement()
+    result = read_labels(
+        LabelScoreResult(logits={"VALID": 2.0, "INVALID": 0.0, "UNKNOWN": -1.0}, model_id="m")
+    )
+    assert result.calibrated is False
+    assert result.bias_logits is None
 
 
 # --- pipeline --------------------------------------------------------------

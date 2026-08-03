@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from cover_kbc.data.schema import SchemaError, validate_prediction_row
-from cover_kbc.normalization.strings import canonical_key
+from cover_kbc.normalization.strings import alias_hint_key
 from cover_kbc.types import Prediction, Query
 
 
@@ -26,11 +26,13 @@ def dedupe_object_entities(values: Iterable[str]) -> list[str]:
 
     Order is preserved, so the form the selector chose first survives.
 
-    The key is deliberately more aggressive than the evaluator's own
-    ``normalize_string``: the evaluator collapses only exact normalised
-    matches, so "The Alpha Exchange" and "Alpha Exchange" would reach it as two
-    predictions, and its bipartite matcher lets one gold entity absorb only
-    one of them.  The second is then a guaranteed false positive.
+    The key is the conservative *alias hint* key: the evaluator's own
+    normalisation plus leading-article folding.  The evaluator collapses only
+    exact normalised matches, so "The Alpha Exchange" and "Alpha Exchange"
+    would reach it as two predictions, and its bipartite matcher lets one gold
+    entity absorb only one of them - the second is then a guaranteed false
+    positive.  Parenthetical qualifiers are preserved, so two genuinely
+    different entities sharing a base string both survive.
     """
     seen: set[str] = set()
     out: list[str] = []
@@ -40,7 +42,7 @@ def dedupe_object_entities(values: Iterable[str]) -> list[str]:
         text = value.strip()
         if not text:
             continue
-        key = canonical_key(text)
+        key = alias_hint_key(text)
         if not key or key in seen:
             continue
         seen.add(key)

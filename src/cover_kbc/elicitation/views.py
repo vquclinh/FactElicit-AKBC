@@ -58,6 +58,10 @@ class ViewSpec:
     relation: str
     family: ViewFamily
     template: str
+    #: Sub-partition of one mechanism, e.g. an award decade inside the
+    #: structural family. Facets are diagnostic provenance, NOT independence:
+    #: five slices of one mechanism are still one independent support.
+    facet_id: str = ""
     decode: DecodeProfile = field(default_factory=DecodeProfile)
     system_prompt: str = SYSTEM_PROMPT
     runs: int = 1
@@ -69,6 +73,11 @@ class ViewSpec:
     @property
     def independence_group(self) -> IndependenceGroup:
         return FAMILY_TO_GROUP[self.family]
+
+    @property
+    def facet(self) -> str:
+        """Facet id, defaulting to the view id when the view is not partitioned."""
+        return self.facet_id or self.view_id
 
     def render(self, *, subject: str, definition: str, accepted: list[str] | None = None) -> str:
         """Fill the template for one query."""

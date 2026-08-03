@@ -27,9 +27,23 @@ from cover_kbc.types import DecodeProfile
 class ModelSpec:
     """Identity and compliance metadata for one neural component.
 
-    ``published_total_parameters`` is the count the challenge budget uses: the
-    *total published* parameter count, not active parameters for an MoE model,
-    and unaffected by quantisation.
+    The challenge counts *published* parameters, so several distinct numbers
+    have to be kept apart rather than collapsed into one "size":
+
+    ``published_language_parameters``
+        The language model alone - usually the figure a model card headlines.
+    ``published_checkpoint_parameters``
+        Every neural parameter in the released checkpoint, including a vision
+        tower, an MTP head, or any other non-text component.
+    ``budget_count_parameters``
+        What we actually charge against the 32B budget. Conservative by
+        default: the full checkpoint, unless we can demonstrate that only a
+        strict subset is instantiated at inference.
+    ``loaded_neural_components``
+        What the runtime really materialised, recorded after loading so the
+        claim above can be checked rather than trusted.
+
+    Quantisation is recorded but never reduces any of these.
     """
 
     model_id: str
@@ -44,18 +58,48 @@ class ModelSpec:
     quantization: str | None = None
     source: str = ""
     notes: str = ""
+    published_language_parameters: int | None = None
+    published_checkpoint_parameters: int | None = None
+    budget_count_parameters: int | None = None
+    parameter_source: str = ""
+    parameter_source_verified: bool = False
+    loaded_neural_components: tuple[str, ...] = ()
+    loaded_parameter_count: int | None = None
 
     @property
     def billions(self) -> float | None:
-        if self.published_total_parameters is None:
+        if self.budget_parameters is None:
             return None
-        return self.published_total_parameters / 1e9
+        return self.budget_parameters / 1e9
+
+    @property
+    def budget_parameters(self) -> int | None:
+        """The number charged against the 32B budget.
+
+        Falls back through the conservative chain: an explicit budget count,
+        else the full checkpoint, else the legacy total.
+        """
+        for value in (
+            self.budget_count_parameters,
+            self.published_checkpoint_parameters,
+            self.published_total_parameters,
+        ):
+            if value is not None:
+                return value
+        return None
 
     def to_json(self) -> dict[str, Any]:
         return {
             "model_id": self.model_id,
             "published_total_parameters": self.published_total_parameters,
+            "published_language_parameters": self.published_language_parameters,
+            "published_checkpoint_parameters": self.published_checkpoint_parameters,
+            "budget_count_parameters": self.budget_parameters,
             "billions": self.billions,
+            "parameter_source": self.parameter_source,
+            "parameter_source_verified": self.parameter_source_verified,
+            "loaded_neural_components": list(self.loaded_neural_components),
+            "loaded_parameter_count": self.loaded_parameter_count,
             "family": self.family,
             "revision": self.revision,
             "license": self.license,

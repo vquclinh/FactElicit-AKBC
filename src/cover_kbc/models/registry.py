@@ -43,7 +43,11 @@ def build_runtime(config: Mapping[str, Any]) -> LMRuntime:
         model_id = config.get("model_id")
         if not model_id:
             raise ValueError("model_profile.model_id is required for the huggingface backend")
-        params = config.get("published_total_parameters")
+        params = (
+            config.get("budget_count_parameters")
+            or config.get("published_checkpoint_parameters")
+            or config.get("published_total_parameters")
+        )
         if params is None:
             raise ValueError(
                 f"{model_id}: 'published_total_parameters' must be recorded before this "
@@ -63,6 +67,12 @@ def build_runtime(config: Mapping[str, Any]) -> LMRuntime:
             quantization=config.get("quantization"),
             trust_remote_code=bool(config.get("trust_remote_code", False)),
             source=config.get("source", ""),
+            published_language_parameters=config.get("published_language_parameters"),
+            published_checkpoint_parameters=config.get("published_checkpoint_parameters"),
+            budget_count_parameters=config.get("budget_count_parameters"),
+            parameter_source=config.get("parameter_source", ""),
+            parameter_source_verified=bool(config.get("parameter_source_verified", False)),
+            max_memory=config.get("max_memory"),
         )
 
     raise ValueError(
@@ -78,7 +88,13 @@ def spec_from_config(config: Mapping[str, Any]) -> ModelSpec:
     anybody downloads tens of gigabytes.
     """
     backend = str(config.get("backend") or "null").lower()
+    is_neural = backend not in _OFFLINE_BACKENDS
     params = config.get("published_total_parameters")
+
+    def _int(key: str) -> int | None:
+        value = config.get(key)
+        return None if value is None else int(value)
+
     return ModelSpec(
         model_id=config.get("model_id", f"offline/{backend}"),
         published_total_parameters=None if params is None else int(params),
@@ -86,9 +102,17 @@ def spec_from_config(config: Mapping[str, Any]) -> ModelSpec:
         revision=config.get("revision", "main"),
         license=config.get("license", ""),
         role=config.get("role", "generator"),
-        is_neural=backend not in _OFFLINE_BACKENDS,
-        supports_logits=backend not in _OFFLINE_BACKENDS or backend == "scripted",
+        is_neural=is_neural,
+        supports_logits=True,
         quantization=config.get("quantization"),
         source=config.get("source", ""),
         notes=config.get("notes", ""),
+        published_language_parameters=_int("published_language_parameters"),
+        published_checkpoint_parameters=_int("published_checkpoint_parameters"),
+        budget_count_parameters=_int("budget_count_parameters"),
+        parameter_source=config.get("parameter_source", ""),
+        # A non-neural stub has nothing to verify; a real model must say so.
+        parameter_source_verified=bool(
+            config.get("parameter_source_verified", not is_neural)
+        ),
     )

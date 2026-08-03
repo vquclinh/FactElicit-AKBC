@@ -60,6 +60,32 @@ class ViewFamily(str, Enum):
     MISSINGNESS = "missingness"
 
 
+class ModelRole(str, Enum):
+    """What a neural component is for.
+
+    Roles are first-class architecture, not interchangeable backends: the
+    enumerator is chosen for recall over a large candidate universe, the
+    verifier for compact calibrated judgement.
+    """
+
+    ENUMERATOR = "enumerator"
+    VERIFIER = "verifier"
+    STUB = "stub"
+
+
+class EvidenceMode(str, Enum):
+    """How a model came to support a candidate.
+
+    The distinction is load-bearing: a model that *independently produced* a
+    name has told us something a model merely *agreeing with a name it was
+    shown* has not. Anchoring makes shown-candidate agreement much cheaper to
+    obtain, so the two must never be counted alike.
+    """
+
+    INDEPENDENT_RECALL = "independent_recall"
+    SHOWN_CANDIDATE = "shown_candidate"
+
+
 class IndependenceGroup(str, Enum):
     """Evidence families treated as mutually independent supports.
 
@@ -71,10 +97,13 @@ class IndependenceGroup(str, Enum):
     STRUCTURAL_DECOMPOSITION = "STRUCTURAL_DECOMPOSITION"
     CONTRASTIVE_SEPARATION = "CONTRASTIVE_SEPARATION"
     MISSINGNESS_SEARCH = "MISSINGNESS_SEARCH"
+    #: The verifier model judging a candidate it was *shown*.
     BLIND_VERIFIER = "BLIND_VERIFIER"
-    # Reserved for Milestone 3 experimental branches.
+    #: The verifier-family model *independently recalling* objects, having been
+    #: shown no candidate list. A genuinely separate source of evidence.
+    CROSS_MODEL_RECALL = "CROSS_MODEL_RECALL"
+    # Reserved for the experimental factual-decoding branch.
     FACTUAL_DECODING = "FACTUAL_DECODING"
-    CROSS_MODEL = "CROSS_MODEL"
 
 
 class EdgeType(str, Enum):
@@ -97,6 +126,34 @@ class CandidateStatus(str, Enum):
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
     UNRESOLVED = "UNRESOLVED"
+
+
+class VerificationTier(str, Enum):
+    """Deterministic verification tiers (spec section 10.5).
+
+    Assigned before any verifier call is spent, from evidence already held.
+    """
+
+    HARD_REJECT = "HARD_REJECT"
+    AUTO_ACCEPT = "AUTO_ACCEPT"
+    VERIFY = "VERIFY"
+    ADVERSARIAL_VERIFY = "ADVERSARIAL_VERIFY"
+    UNRESOLVED = "UNRESOLVED"
+
+
+class EmptyReason(str, Enum):
+    """Why a query produced no objects.
+
+    These must never be conflated in analysis: a confident negative gate is a
+    correct answer, while an abstention is a coverage failure.
+    """
+
+    NOT_EMPTY = "NOT_EMPTY"
+    CONFIDENT_NEGATIVE_GATE = "confident_negative_gate"
+    UNRESOLVED_ABSTENTION = "unresolved_abstention"
+    NO_CANDIDATE_GENERATED = "no_candidate_generated"
+    CANDIDATE_REJECTED = "candidate_rejected"
+    PIPELINE_ERROR = "pipeline_error"
 
 
 # --------------------------------------------------------------------------
@@ -157,6 +214,11 @@ class GenerationRecord:
     prompt_hash: str
     raw_output: str
     decode_profile: DecodeProfile
+    #: Sub-partition of one mechanism (e.g. an award decade). Provenance only:
+    #: facets never count as extra independent support.
+    facet_id: str = ""
+    model_family: str = ""
+    model_role: ModelRole = ModelRole.ENUMERATOR
     parsed_values: list[str] = field(default_factory=list)
     prompt_tokens: int | None = None
     generated_tokens: int | None = None
@@ -168,6 +230,7 @@ class GenerationRecord:
         payload["query"] = {"subject": self.query.subject, "relation": self.query.relation}
         payload["view_family"] = self.view_family.value
         payload["independence_group"] = self.independence_group.value
+        payload["model_role"] = self.model_role.value
         payload["decode_profile"] = asdict(self.decode_profile)
         return payload
 
@@ -192,6 +255,8 @@ class Evidence:
     model_id: str
     run_id: int
     record_id: str
+    model_family: str = ""
+    mode: EvidenceMode = EvidenceMode.INDEPENDENT_RECALL
     valid_prob: float | None = None
     invalid_prob: float | None = None
     unknown_prob: float | None = None
@@ -201,6 +266,7 @@ class Evidence:
         payload = asdict(self)
         payload["edge_type"] = self.edge_type.value
         payload["independence_group"] = self.independence_group.value
+        payload["mode"] = self.mode.value
         return payload
 
 
@@ -246,9 +312,10 @@ class EvidenceGroup:
 class VerificationResult:
     """Outcome of a blind three-way verification call (spec section 10).
 
-    Milestone 1 defines the shape only; calibration (``bias_logits``) and
-    multi-template disagreement (``prompt_disagreement``) are wired through but
-    not yet computed by any production component.
+    ``valid_prob`` / ``invalid_prob`` / ``unknown_prob`` are **calibrated
+    verifier-label probabilities, not probabilities of factual truth**.  They
+    say how the model's label head responds under a fixed template once the
+    template's own bias has been subtracted; nothing more.
     """
 
     candidate_key: str
@@ -257,13 +324,37 @@ class VerificationResult:
     invalid_prob: float | None = None
     unknown_prob: float | None = None
     raw_logits: dict[str, float] | None = None
+    calibrated_logits: dict[str, float] | None = None
     bias_logits: dict[str, float] | None = None
     calibrated: bool = False
     margin: float | None = None
     entropy: float | None = None
     prompt_disagreement: float | None = None
+    template_id: str = ""
+    num_templates: int = 1
     model_id: str = ""
+    model_family: str = ""
     record_id: str = ""
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "candidate_key": self.candidate_key,
+            "selected_label": self.label.value,
+            "raw_label_logits": self.raw_logits,
+            "calibrated_label_logits": self.calibrated_logits,
+            "bias_logits": self.bias_logits,
+            "p_valid": self.valid_prob,
+            "p_invalid": self.invalid_prob,
+            "p_unknown": self.unknown_prob,
+            "valid_margin": self.margin,
+            "entropy": self.entropy,
+            "prompt_disagreement": self.prompt_disagreement,
+            "calibrated": self.calibrated,
+            "template_id": self.template_id,
+            "num_templates": self.num_templates,
+            "model_id": self.model_id,
+            "model_family": self.model_family,
+        }
 
     @property
     def edge_type(self) -> EdgeType:
@@ -288,6 +379,37 @@ class VerificationResult:
 
 
 @dataclass
+class CandidateScore:
+    """Component-wise breakdown of ``S(o)`` (spec section 11.2).
+
+    Every term is stored separately, never just the total: a scalar alone makes
+    it impossible to tell a candidate carried by broad structural support from
+    one carried by a single confident verifier call.
+
+        S(o) = a*F(o) + b*L(o) + c*X(o) - d*C(o) - e*U(o)
+    """
+
+    support: float = 0.0        # F(o) independent mechanism support
+    logit: float = 0.0          # L(o) calibrated verifier log-odds
+    cross_model: float = 0.0    # X(o) cross-model support (0 this milestone)
+    contradiction: float = 0.0  # C(o) explicit contradiction
+    disagreement: float = 0.0   # U(o) verifier/prompt disagreement
+    weights: dict[str, float] = field(default_factory=dict)
+    total: float = 0.0
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "F_support": self.support,
+            "L_logit": self.logit,
+            "X_cross_model": self.cross_model,
+            "C_contradiction": self.contradiction,
+            "U_disagreement": self.disagreement,
+            "weights": dict(self.weights),
+            "total": self.total,
+        }
+
+
+@dataclass
 class Candidate:
     """An atomic candidate object entity with full provenance.
 
@@ -309,6 +431,10 @@ class Candidate:
     record_ids: list[str] = field(default_factory=list)
     status: CandidateStatus = CandidateStatus.UNRESOLVED
     score: float = 0.0
+    score_breakdown: CandidateScore = field(default_factory=CandidateScore)
+    tier: VerificationTier = VerificationTier.UNRESOLVED
+    strict_key: str = ""
+    facet_ids: list[str] = field(default_factory=list)
     rejection_reason: str | None = None
 
     # -- evidence accounting -------------------------------------------------
@@ -343,6 +469,21 @@ class Candidate:
     def supporting_groups(self) -> list[IndependenceGroup]:
         return [g.independence_group for g in self.groups.values() if g.supports_candidate]
 
+    @property
+    def num_facets(self) -> int:
+        """Distinct facets that mentioned this candidate.
+
+        A *diagnostic only*. Facets partition one mechanism (e.g. award decades
+        inside STRUCTURAL_DECOMPOSITION), so this must never be substituted for
+        ``independent_support`` when scoring - that would let a single mechanism
+        sliced five ways masquerade as five independent corroborations.
+        """
+        return len(self.facet_ids)
+
+    def add_facet(self, facet_id: str) -> None:
+        if facet_id and facet_id not in self.facet_ids:
+            self.facet_ids.append(facet_id)
+
     def coverage(self, eligible_groups: Sequence[IndependenceGroup]) -> float:
         """``q(o) = g(o) / m(o)`` from spec section 11.1."""
         eligible = list(dict.fromkeys(eligible_groups))
@@ -366,28 +507,22 @@ class Candidate:
             "output_type": self.output_type.value,
             "numeric_value": self.numeric_value,
             "unit": self.unit,
+            "strict_key": self.strict_key,
             "status": self.status.value,
+            "tier": self.tier.value,
             "score": self.score,
+            "score_breakdown": self.score_breakdown.to_json(),
+            "facet_ids": list(self.facet_ids),
             "rejection_reason": self.rejection_reason,
             "independent_support": self.independent_support,
             "raw_support_count": self.raw_support_count,
             "contradiction_count": self.contradiction_count,
             "supporting_groups": [g.value for g in self.supporting_groups],
+            "num_facets": self.num_facets,
             "surface_forms": self.surface_forms,
             "record_ids": self.record_ids,
             "evidence": [e.to_json() for e in self.all_evidence()],
-            "verifications": [
-                {
-                    "label": v.label.value,
-                    "valid_prob": v.valid_prob,
-                    "invalid_prob": v.invalid_prob,
-                    "unknown_prob": v.unknown_prob,
-                    "calibrated": v.calibrated,
-                    "model_id": v.model_id,
-                    "record_id": v.record_id,
-                }
-                for v in self.verifications
-            ],
+            "verifications": [v.to_json() for v in self.verifications],
         }
 
 
@@ -458,6 +593,8 @@ class Prediction:
     calls_used: int = 0
     generated_tokens_used: int = 0
     prompt_tokens_used: int = 0
+    empty_reason: EmptyReason = EmptyReason.NOT_EMPTY
+    verification_calls: int = 0
 
     def to_official_row(self) -> dict[str, Any]:
         """Serialise exactly the three official fields, nothing else."""
@@ -477,5 +614,7 @@ class Prediction:
             "calls_used": self.calls_used,
             "generated_tokens_used": self.generated_tokens_used,
             "prompt_tokens_used": self.prompt_tokens_used,
+            "empty_reason": self.empty_reason.value,
+            "verification_calls": self.verification_calls,
             "candidates": [c.to_json() for c in self.candidates],
         }

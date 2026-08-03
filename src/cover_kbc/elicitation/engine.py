@@ -25,7 +25,7 @@ from cover_kbc.elicitation.parsing import (
 )
 from cover_kbc.elicitation.views import ViewSpec
 from cover_kbc.models.base import GenerationRequest, LMRuntime
-from cover_kbc.types import GenerationRecord, OutputType, Query
+from cover_kbc.types import GenerationRecord, IndependenceGroup, ModelRole, OutputType, Query
 
 
 def prompt_hash(prompt: str) -> str:
@@ -62,8 +62,14 @@ class ElicitationEngine:
         *,
         run_id: int = 0,
         accepted: list[str] | None = None,
+        independence_group: "IndependenceGroup | None" = None,
     ) -> ViewOutcome:
         """Execute one view once and parse its output.
+
+        ``independence_group`` overrides the view's default group. It exists so
+        the *same* discovery prompt run on the second model family is recorded
+        as CROSS_MODEL_RECALL - independent recall by another model - rather
+        than being merged into the enumerator's own evidence family.
 
         A backend failure is captured on the record rather than raised, so one
         bad query cannot abort a full evaluation run.
@@ -115,9 +121,14 @@ class ElicitationEngine:
             query=query,
             view_id=view.view_id,
             view_family=view.family,
-            independence_group=view.independence_group,
+            independence_group=independence_group or view.independence_group,
             run_id=run_id,
             model_id=self.runtime.spec.model_id,
+            model_family=self.runtime.spec.family,
+            model_role=ModelRole(self.runtime.spec.role)
+            if self.runtime.spec.role in {r.value for r in ModelRole}
+            else ModelRole.ENUMERATOR,
+            facet_id=view.facet,
             prompt=prompt,
             prompt_hash=prompt_hash(prompt),
             raw_output=raw_output,

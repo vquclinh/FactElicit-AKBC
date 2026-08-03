@@ -26,6 +26,7 @@ from cover_kbc.normalization.strings import (
     is_abstain,
     is_refusal,
 )
+from cover_kbc.types import OutputType
 
 #: Label prefixes a model tends to emit before the actual answer.
 _LABEL_PREFIX = re.compile(
@@ -51,6 +52,10 @@ _CODE_FENCE = re.compile(r"^\s*```[A-Za-z0-9_-]*\s*$|```", re.MULTILINE)
 
 #: A fragment below this share of alphanumeric characters is punctuation debris.
 MIN_ALPHANUMERIC_RATIO = 0.5
+
+#: A comma usable as a list separator: never one sitting between two digits, so
+#: "35,000" and "1,234,567" stay intact.
+_LIST_COMMA = re.compile(r",(?!\d)|(?<!\d),")
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,18 @@ def _strip_label(line: str) -> str:
 
 
 def _split_items(text: str) -> list[str]:
-    """Split raw output into candidate fragments."""
+    """Split raw output into candidate fragments.
+
+    Separator precedence, strongest first:
+
+    1. a valid JSON array - unambiguous, so it wins outright;
+    2. semicolons / newlines / pipes - what every view's format block requests;
+    3. commas, but *only* when no stronger separator was present.
+
+    Comma splitting is last because commas occur inside entity names
+    ("Washington, D.C.") and inside numerals ("35,000").  Digit-group commas are
+    never split on at all.
+    """
     stripped = _CODE_FENCE.sub("", text).strip()
 
     # A well-behaved JSON array is the least ambiguous case.
@@ -96,15 +112,25 @@ def _split_items(text: str) -> list[str]:
             if isinstance(parsed, list):
                 return [str(item) for item in parsed if isinstance(item, (str, int, float))]
 
+    strong_parts = [p for p in _STRONG_SEPARATORS.split(stripped) if p.strip()]
+    # The model honoured the requested separator, so commas inside a fragment
+    # are part of a name, not list punctuation.
+    honoured_format = len(strong_parts) > 1
+
     items: list[str] = []
-    for line in _STRONG_SEPARATORS.split(stripped):
+    for line in strong_parts:
         fragment = _strip_label(line).strip()
         if not fragment:
             continue
-        # Only split on commas when the fragment looks like a list rather than
-        # a sentence; a sentence usually has far more words than commas.
-        if "," in fragment and len(fragment.split()) <= 4 * (fragment.count(",") + 1):
-            items.extend(part for part in fragment.split(",") if part.strip())
+        if honoured_format:
+            items.append(fragment)
+            continue
+        # Fallback: comma-separated list on one line. Split only on commas that
+        # are not digit-group separators, and only when the fragment reads like
+        # a list rather than a sentence.
+        commas = len(_LIST_COMMA.findall(fragment))
+        if commas and len(fragment.split()) <= 4 * (commas + 1):
+            items.extend(part for part in _LIST_COMMA.split(fragment) if part.strip())
         else:
             items.append(fragment)
     return items
@@ -117,6 +143,11 @@ def parse_entities(text: str, contract: RelationContract) -> list[str]:
     sentence-like fragments dropped.  Deduplication happens later, in the
     evidence graph, so provenance for every mention is preserved.
     """
+    if contract.output_type is OutputType.NUMBER:
+        raise TypeError(
+            f"{contract.relation} is a numeric relation; use parse_numeric_values. "
+            "Entity list parsing would split thousands separators."
+        )
     if not isinstance(text, str) or not text.strip():
         return []
     # Checked before splitting: a refusal chopped on commas yields fragments

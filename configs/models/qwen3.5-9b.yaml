@@ -1,0 +1,67 @@
+# Qwen/Qwen3.5-9B - the checkpoint named by the official baseline config
+# (benchmark/configs/baseline-qwen-3.5-9b.yaml).
+#
+# PARAMETER PROVENANCE (verified 2026-08-03)
+# -----------------------------------------
+# Counts were read from the checkpoint's own safetensors headers, not from the
+# model name and not from a marketing figure. Method: HTTP range-read the
+# header of each of the 4 shards and sum numel(shape) per tensor, bucketed by
+# top-level module. Reproduce with scripts/audit_model_budget.py --probe-remote.
+#
+#   revision (HF sha) : c202236235762e1c871ad0ccb60c8ee5ba337b9a
+#   text              :  7,936,684,544   (82.22%)
+#   lm_head           :  1,017,118,720   (10.54%)
+#   vision            :    456,010,480   ( 4.72%)
+#   mtp (multi-token) :    243,290,624   ( 2.52%)
+#   ---------------------------------------------------
+#   language only     :  8,953,803,264   <- the "9B" the model card headlines
+#   FULL CHECKPOINT   :  9,653,104,368   <- what we charge to the budget
+#
+# The HF API `safetensors.total` field independently reports 9,653,104,368,
+# matching the header sum exactly.
+#
+# WHY WE COUNT THE FULL CHECKPOINT
+# --------------------------------
+# The released model is multimodal (architecture Qwen3_5ForConditionalGeneration,
+# pipeline image-text-to-text) and also ships a multi-token-prediction head. We
+# do not currently demonstrate that the vision tower and MTP head are excluded
+# from inference, so the conservative rule applies: charge the full published
+# checkpoint. At 9.65B this is far inside the 32B budget either way, so nothing
+# is gained by arguing for the smaller number.
+#
+# Quantisation is used for execution on an 8GB GPU. It does NOT reduce the
+# counted parameter size.
+#
+# Sources:
+#   https://huggingface.co/api/models/Qwen/Qwen3.5-9B   (safetensors.total)
+#   https://huggingface.co/Qwen/Qwen3.5-9B/raw/main/config.json
+#   https://huggingface.co/Qwen/Qwen3.5-9B/raw/main/model.safetensors.index.json
+
+model_profile:
+  backend: huggingface
+  model_id: "Qwen/Qwen3.5-9B"
+  revision: "main"
+  family: qwen
+  role: generator
+  license: apache-2.0
+
+  published_language_parameters: 8953803264
+  published_checkpoint_parameters: 9653104368
+  budget_count_parameters: 9653104368
+  # Legacy field kept in sync with the conservative count.
+  published_total_parameters: 9653104368
+
+  parameter_source: >-
+    safetensors shard headers at revision c202236235762e1c871ad0ccb60c8ee5ba337b9a,
+    cross-checked against https://huggingface.co/api/models/Qwen/Qwen3.5-9B
+    (safetensors.total = 9653104368)
+  parameter_source_verified: true
+
+  # Execution settings (do not affect budget accounting).
+  torch_dtype: bfloat16
+  device_map: auto
+  quantization: nf4
+  trust_remote_code: false
+  notes: >-
+    Multimodal checkpoint (Qwen3_5ForConditionalGeneration). The runtime loads it
+    text-only but the budget conservatively counts the whole checkpoint.

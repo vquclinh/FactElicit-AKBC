@@ -252,3 +252,121 @@ def test_active_candidate_order_is_independent_of_insertion_order(borders_query,
         return [c.key for c in graph.active_candidates()]
 
     assert build(["Alpha", "Beta", "Gamma"]) == build(["Gamma", "Alpha", "Beta"])
+
+
+# --- Milestone 2: facets, capacity selection, relation-specific behaviour ---
+
+
+def test_facets_are_provenance_not_independence(borders_query, borders_contract):
+    """Five slices of one mechanism are one independent support, not five."""
+    graph = build_graph(borders_query, borders_contract)
+    for index, facet in enumerate(["decade_1990", "decade_2000", "decade_2010"]):
+        record = make_record(
+            borders_query,
+            "borders_compass",
+            ViewFamily.STRUCTURAL,
+            IndependenceGroup.STRUCTURAL_DECOMPOSITION,
+            run_id=index,
+        )
+        record.facet_id = facet
+        graph.add_entity_mentions(record, ["Alpha"])
+
+    candidate = graph.candidates["alpha"]
+    assert candidate.num_facets == 3          # three facets recorded
+    assert candidate.independent_support == 1  # but one mechanism
+    assert candidate.raw_support_count == 3
+    assert graph.facet_summary() == {"decade_1990": 1, "decade_2000": 1, "decade_2010": 1}
+
+
+def test_award_facet_views_share_one_independence_group():
+    from cover_kbc.elicitation.library import get_view
+
+    groups = {
+        get_view("awardWonBy", v).independence_group
+        for v in ("award_facet_temporal", "award_facet_recipient_type", "award_facet_category")
+    }
+    assert groups == {IndependenceGroup.STRUCTURAL_DECOMPOSITION}
+    facets = {
+        get_view("awardWonBy", v).facet
+        for v in ("award_facet_temporal", "award_facet_recipient_type", "award_facet_category")
+    }
+    assert len(facets) == 3  # separable in traces, identical in independence
+
+
+def _capacity_graph(capacity_contract, values_with_support):
+    query = Query("Testvenue", "hasCapacity", 0)
+    graph = build_graph(query, capacity_contract)
+    groups = [
+        IndependenceGroup.DIRECT_RECALL,
+        IndependenceGroup.CONTRASTIVE_SEPARATION,
+        IndependenceGroup.STRUCTURAL_DECOMPOSITION,
+    ]
+    for value, support in values_with_support:
+        for i in range(support):
+            record = make_record(
+                query,
+                ["capacity_direct", "capacity_contrast", "capacity_configuration"][i],
+                ViewFamily.DIRECT,
+                groups[i],
+                run_id=i,
+            )
+            graph.add_numeric_mentions(record, [value])
+    return graph
+
+
+def test_capacity_prefers_the_highest_equally_supported_cluster(capacity_contract):
+    """Official target is the highest published capacity, not the modal one."""
+    graph = _capacity_graph(capacity_contract, [(40000, 2), (52000, 2)])
+    prediction = finalize(graph)
+    assert float(prediction.object_entities[0]) == pytest.approx(52000, abs=100)
+
+
+def test_capacity_ignores_an_unsupported_high_outlier(capacity_contract):
+    """A lone hallucinated big number must not win merely for being big."""
+    graph = _capacity_graph(capacity_contract, [(40000, 3), (250000, 1)])
+    prediction = finalize(graph)
+    assert float(prediction.object_entities[0]) == pytest.approx(40000, abs=100)
+
+
+def test_capacity_excludes_a_cluster_the_verifier_rejected(capacity_contract):
+    """Record attendance verified INVALID must not be selected."""
+    graph = _capacity_graph(capacity_contract, [(40000, 2), (52000, 2)])
+    graph.add_verification(
+        VerificationResult(
+            candidate_key="52000",
+            label=VerificationLabel.INVALID,
+            valid_prob=0.05, invalid_prob=0.9, unknown_prob=0.05,
+            model_id="qwen", record_id="v1",
+        )
+    )
+    prediction = finalize(graph)
+    assert float(prediction.object_entities[0]) == pytest.approx(40000, abs=100)
+
+
+def test_area_uses_the_robust_dominant_cluster_not_the_highest(area_contract):
+    """hasArea wants a central estimate; only capacity takes the maximum."""
+    query = Query("Testisland", "hasArea", 0)
+    graph = build_graph(query, area_contract)
+    for value, group, view in [
+        (5000.0, IndependenceGroup.DIRECT_RECALL, "area_direct_km2"),
+        (5050.0, IndependenceGroup.CONTRASTIVE_SEPARATION, "area_total_vs_land"),
+        (90000.0, IndependenceGroup.STRUCTURAL_DECOMPOSITION, "area_alternate_unit"),
+    ]:
+        graph.add_numeric_mentions(
+            make_record(query, view, ViewFamily.DIRECT, group), [value]
+        )
+    prediction = finalize(graph)
+    assert float(prediction.object_entities[0]) == pytest.approx(5025, abs=60)
+
+
+def test_empty_reasons_are_not_conflated(death_contract, borders_contract, borders_query):
+    """A confident gate and an abstention are different outcomes."""
+    from cover_kbc.types import EmptyReason
+
+    query = Query("Testperson", "personHasCityOfDeath", 0)
+    gated = build_graph(query, death_contract)
+    gated.close_gate("calibrated gate: NO")
+    assert finalize(gated).empty_reason is EmptyReason.CONFIDENT_NEGATIVE_GATE
+
+    barren = build_graph(borders_query, borders_contract)
+    assert finalize(barren).empty_reason is EmptyReason.NO_CANDIDATE_GENERATED

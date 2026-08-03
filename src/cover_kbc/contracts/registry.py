@@ -21,12 +21,12 @@ from cover_kbc.contracts.base import (
 from cover_kbc.normalization.strings import NormalizationPolicy
 from cover_kbc.types import Cardinality, OutputType, ProgramType, ViewFamily
 
-_ENTITY_NORMALIZATION = NormalizationPolicy(
-    strip_leading_article=True, strip_parentheticals=True
-)
-_NUMERIC_NORMALIZATION = NormalizationPolicy(
-    strip_leading_article=False, strip_parentheticals=True
-)
+# Article folding is safe for entity names (worst case: a different surface
+# form of the same entity wins). Parenthetical qualifiers are never folded -
+# see normalization.strings for why.
+_ENTITY_NORMALIZATION = NormalizationPolicy(merge_leading_article_variants=True)
+# Numerals have no articles; folding would be a no-op that only adds risk.
+_NUMERIC_NORMALIZATION = NormalizationPolicy(merge_leading_article_variants=False)
 
 
 COUNTRY_LAND_BORDERS = RelationContract(
@@ -281,8 +281,13 @@ AWARD_WON_BY = RelationContract(
         "a recipient of a different category or a different award from the same organisation",
         "a recipient whose award was later rescinded or withdrawn",
     ),
-    mandatory_views=("award_direct", "award_facet", "award_missing"),
-    optional_views=("award_exact_identity_contrast",),
+    mandatory_views=(
+        "award_direct",
+        "award_facet_temporal",
+        "award_facet_recipient_type",
+        "award_missing",
+    ),
+    optional_views=("award_facet_category", "award_exact_identity_contrast"),
     normalization=_ENTITY_NORMALIZATION,
     verification=VerificationPolicy(
         auto_accept_independent_support=2,

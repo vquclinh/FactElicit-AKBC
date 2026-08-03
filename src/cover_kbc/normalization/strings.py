@@ -1,14 +1,27 @@
-"""String normalisation for internal deduplication and output selection.
+"""String normalisation, candidate identity, and output-form selection.
 
-The canonical key is built *on top of* the official evaluator's own
-``normalize_string``.  That is deliberate: the evaluator collapses predictions
-sharing a normalised form, and its bipartite matcher lets one gold entity absorb
-only one prediction.  Two surface forms of the same entity therefore cost
-precision, so our internal key must be at least as aggressive as the scorer's.
+Candidate identity is split into two levels, because merging two entities is
+not symmetric with failing to merge them:
 
-The extra folding steps here (leading articles, parenthetical qualifiers) are
-*key-only*.  The emitted string is always one of the model's original surface
-forms, never a rewritten one.
+``strict_key``
+    The official evaluator's own ``normalize_string``, unchanged.  Two surface
+    forms with the same strict key are *provably* one prediction to the scorer -
+    it deduplicates on exactly this - so collapsing them is lossless and safe.
+
+``alias_hint_key``
+    A deliberately conservative extra fold, currently leading articles only.
+    Used to merge "The Alpha Exchange" with "Alpha Exchange", which the scorer
+    would otherwise treat as two predictions competing for one gold entity.
+
+Parenthetical qualifiers are **not** folded. ``X (1998)`` and ``X (2011)``, or
+``Springfield (Illinois)`` and ``Springfield (Missouri)``, are routinely
+*different* entities; collapsing on the base string would silently destroy one
+of them and cap recall. Article folding can at worst pick a different surface
+form of the same entity; parenthetical folding can lose an entity outright, so
+only the former is applied.
+
+All folding is **key-only**. Emitted strings are always original model surface
+forms, never rewritten.
 """
 
 from __future__ import annotations
@@ -85,18 +98,29 @@ REFUSAL_MARKERS = (
 
 @dataclass(frozen=True)
 class NormalizationPolicy:
-    """Per-relation control over how the internal dedup key is built."""
+    """Per-relation control over how candidate identity keys are built.
 
-    strip_leading_article: bool = True
-    strip_parentheticals: bool = True
+    ``merge_leading_article_variants`` is the only alias fold that is enabled
+    anywhere.  There is deliberately no parenthetical-stripping switch: see the
+    module docstring for why that fold is unsafe at any granularity.
+    """
+
+    merge_leading_article_variants: bool = True
     max_words: int = 0  # 0 = unlimited; used to reject sentence-like outputs
 
-    def key(self, value: str) -> str:
-        return canonical_key(
-            value,
-            strip_leading_article=self.strip_leading_article,
-            strip_parentheticals=self.strip_parentheticals,
+    def strict_key(self, value: str) -> str:
+        """Evaluator-identical key. Collapsing on this is always lossless."""
+        return strict_key(value)
+
+    def alias_hint_key(self, value: str) -> str:
+        """Conservative alias key used to group candidates internally."""
+        return alias_hint_key(
+            value, merge_leading_article_variants=self.merge_leading_article_variants
         )
+
+    #: Back-compatible alias: the key the evidence graph groups candidates by.
+    def key(self, value: str) -> str:
+        return self.alias_hint_key(value)
 
 
 DEFAULT_POLICY = NormalizationPolicy()
@@ -122,25 +146,55 @@ def clean_surface(value: str) -> str:
     return " ".join(text.split())
 
 
-def canonical_key(
-    value: str,
-    *,
-    strip_leading_article: bool = True,
-    strip_parentheticals: bool = True,
-) -> str:
-    """Internal deduplication key for an entity surface form."""
-    text = clean_surface(value)
-    if strip_parentheticals:
-        stripped = _PARENTHETICAL.sub(" ", text).strip()
-        # Only apply if something meaningful survives, e.g. keep "(1987)" alone.
-        if stripped:
-            text = stripped
-    key = official_normalize_string(text)
-    if strip_leading_article:
-        parts = key.split()
-        if len(parts) > 1 and parts[0] in LEADING_ARTICLES:
-            key = " ".join(parts[1:])
+def strict_key(value: str) -> str:
+    """The official evaluator's normalisation, applied to a cleaned surface form.
+
+    Two values sharing this key are a single prediction to the scorer, so
+    collapsing them can never cost a true positive.
+    """
+    return official_normalize_string(clean_surface(value))
+
+
+def strip_leading_article(key: str) -> str:
+    """Drop one leading article from an already-normalised key."""
+    parts = key.split()
+    if len(parts) > 1 and parts[0] in LEADING_ARTICLES:
+        return " ".join(parts[1:])
     return key
+
+
+def alias_hint_key(value: str, *, merge_leading_article_variants: bool = True) -> str:
+    """Conservative identity key: strict key plus optional article folding.
+
+    Parenthetical qualifiers are preserved on purpose - "Springfield (Illinois)"
+    and "Springfield (Missouri)" must stay distinct candidates.
+    """
+    key = strict_key(value)
+    if merge_leading_article_variants:
+        key = strip_leading_article(key)
+    return key
+
+
+def parenthetical_parts(value: str) -> tuple[str, str | None]:
+    """Split a surface form into ``(base, qualifier)``.
+
+    Diagnostic only - it lets traces show that two candidates share a base
+    string while remaining distinct entities. Nothing merges on the base.
+    """
+    text = clean_surface(value)
+    match = _PARENTHETICAL.search(text)
+    if not match:
+        return text, None
+    base = _PARENTHETICAL.sub(" ", text).strip()
+    qualifier = match.group().strip().strip("()[]{} ").strip()
+    return (base or text), (qualifier or None)
+
+
+def canonical_key(value: str, *, merge_leading_article_variants: bool = True) -> str:
+    """Deprecated spelling of :func:`alias_hint_key`, kept for call-site stability."""
+    return alias_hint_key(
+        value, merge_leading_article_variants=merge_leading_article_variants
+    )
 
 
 def is_abstain(value: str) -> bool:
@@ -194,9 +248,10 @@ def preferred_surface_form(surfaces: Sequence[str]) -> str:
 def collapse_exact_duplicates(
     values: Iterable[str], policy: NormalizationPolicy = DEFAULT_POLICY
 ) -> list[str]:
-    """Collapse values sharing a canonical key, keeping the preferred form.
+    """Collapse values sharing an alias-hint key, keeping the preferred form.
 
     Output order follows first appearance, so the result is stable.
+    Parenthetically-qualified variants survive as separate entries.
     """
     grouped: dict[str, list[str]] = {}
     order: list[str] = []
@@ -204,7 +259,7 @@ def collapse_exact_duplicates(
         surface = clean_surface(value)
         if not surface or is_abstain(surface):
             continue
-        key = policy.key(surface)
+        key = policy.alias_hint_key(surface)
         if not key:
             continue
         if key not in grouped:

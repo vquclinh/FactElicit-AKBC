@@ -16,11 +16,17 @@ from cover_kbc.normalization.numeric import (
 from cover_kbc.normalization.strings import (
     DEFAULT_POLICY,
     NormalizationPolicy,
+    alias_hint_key,
+    alphanumeric_ratio,
     canonical_key,
     clean_surface,
     collapse_exact_duplicates,
     is_abstain,
+    is_refusal,
+    parenthetical_parts,
     preferred_surface_form,
+    strict_key,
+    strip_leading_article,
 )
 
 __all__ = [
@@ -30,6 +36,8 @@ __all__ = [
     "NumericCluster",
     "NumericParseError",
     "NumericValue",
+    "alias_hint_key",
+    "alphanumeric_ratio",
     "canonical_key",
     "clean_surface",
     "cluster_values",
@@ -37,9 +45,13 @@ __all__ = [
     "dominant_cluster",
     "format_numeric",
     "is_abstain",
+    "is_refusal",
+    "parenthetical_parts",
     "parse_number_token",
     "parse_numbers",
     "preferred_surface_form",
     "relative_distance",
+    "strict_key",
+    "strip_leading_article",
     "to_km2",
 ]

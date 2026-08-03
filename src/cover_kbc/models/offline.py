@@ -59,6 +59,8 @@ class NullRuntime(BaseRuntime):
                 role="stub",
                 is_neural=False,
                 supports_logits=True,
+                parameter_source="not a model",
+                parameter_source_verified=True,
                 notes="Non-neural abstain stub. Contains no factual knowledge.",
             )
         )
@@ -99,15 +101,19 @@ class ScriptedRuntime(BaseRuntime):
         model_id: str = "offline/scripted",
         label_scores: Mapping[tuple[str, str, str], dict[str, float]] | None = None,
         fallback: Callable[[GenerationRequest], str] | None = None,
+        family: str = "offline",
+        role: str = "enumerator",
     ) -> None:
         super().__init__(
             ModelSpec(
                 model_id=model_id,
                 published_total_parameters=0,
-                family="offline",
-                role="stub",
+                family=family,
+                role=role,
                 is_neural=False,
                 supports_logits=True,
+                parameter_source="not a model",
+                parameter_source_verified=True,
                 notes="Deterministic replay of recorded outputs. No factual knowledge of its own.",
             )
         )

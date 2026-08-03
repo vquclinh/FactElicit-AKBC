@@ -1,233 +1,186 @@
-# Milestone 1 — Reproducible Benchmark Foundation + COVER Core Interfaces
+# Implementation status — COVER-KBC v2
 
-Status as of this commit. Scope follows `COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`
-§25.1, with the official task definition and evaluator treated as the source of
-truth wherever the two could be read differently.
+Current through **Milestone 2** (architecture build-out). Scope follows
+`COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`, with the official task definition and
+evaluator treated as the source of truth wherever the two could be read
+differently.
 
----
-
-## 1. What was implemented
-
-### Data and evaluation layer (`src/cover_kbc/data/`, `src/cover_kbc/evaluation/`)
-
-- Read-only loaders for `train` / `val` / `test`, preserving official row order.
-  Round-tripping a split reproduces the upstream JSONL byte-for-byte (asserted
-  in tests for all three splits).
-- Schema validation for gold rows (`list[list[str]]` alias lists, with the
-  evaluator's legacy flat `list[str]` form wrapped on read and flagged) and for
-  prediction rows (exactly the three official fields, flat `list[str]`).
-- Duplicate `(SubjectEntity, Relation)` detection — the evaluator keys on that
-  pair, so a duplicate would silently discard a row.
-- Prediction writer that enforces one row per input query, in input order, and
-  refuses to write a file with missing, extra or reordered rows.
-- The official evaluator is **loaded from the snapshot by file path and
-  executed**, never reimplemented. `EvaluationReport` adds only bookkeeping the
-  official scorer does not provide (missing/extra prediction rows, evaluator
-  checksum). A subprocess path runs `benchmark/evaluate.py` exactly as a
-  participant would; a test asserts the two agree numerically.
-
-### Relation contracts (`src/cover_kbc/contracts/`)
-
-All six relations are compiled into a `RelationContract` carrying: program
-type, output type, cardinality, prose definition, positive rules, hard-negative
-/ near-miss rules, mandatory and optional views, normalization policy,
-verification policy, stopping policy (placeholder fields) and selection policy.
-
-| Relation | Program | Output | Cardinality |
-|---|---|---|---|
-| `countryLandBordersCountry` | `SMALL_SET` | entity | zero-or-many (small) |
-| `companyTradesAtStockExchange` | `SMALL_SET` | entity | zero-or-many (small) |
-| `personHasCityOfDeath` | `NULL_SINGLE` | entity | zero-or-one |
-| `hasArea` | `NUMERIC` | number (km²) | exactly one |
-| `hasCapacity` | `NUMERIC` | number (persons) | exactly one |
-| `awardWonBy` | `LARGE_OPEN_SET` | entity | zero-or-many (large) |
-
-`check_router_consistency()` cross-checks every contract against the spec's
-routing table **and** the official evaluator's own `RELATION_TYPE` map, so a
-snapshot update that reclassified a relation fails loudly instead of silently
-producing wrong output.
-
-### Core typed interfaces (`src/cover_kbc/types.py`)
-
-`Query`, `Candidate`, `GenerationRecord`, `Evidence`, `EvidenceGroup`,
-`VerificationResult`, `RelationContract`, `ProgramState`, `Budget`,
-`Prediction`. A `Candidate` cannot exist without provenance: it carries the
-view, run, model, raw output, normalized value and token/latency metadata of
-every generation that produced it.
-
-### Model runtime (`src/cover_kbc/models/`)
-
-`LMRuntime` protocol with two modes — `generate` (text + token accounting +
-optional logprobs) and `score_labels` (next-token logits restricted to a fixed
-label set). Backends: `NullRuntime` and `ScriptedRuntime` (non-neural,
-dependency-free) and an optional lazily-imported `HuggingFaceRuntime`.
-Hidden-state access is declared and raises `HiddenStatesUnavailable`, so the
-Milestone 3 DoLa branch has a seam without the architecture depending on it.
-
-The 32B budget audit runs from configuration alone, downloads nothing, counts a
-shared checkpoint once, ignores quantization, and **fails on an unrecorded
-parameter count** rather than guessing from a model name.
-
-### Elicitation (`src/cover_kbc/elicitation/`)
-
-Four view families — `direct`, `structural`, `contrastive`, `missingness` — with
-relation-aware templates driven entirely by contracts. 17 views total; a
-consistency check enforces a strict 1:1 correspondence between contract-declared
-views and implemented templates, in both directions.
-
-Parsing handles semicolon/newline/comma lists, numbered and bulleted lists, JSON
-arrays, label prefixes, markdown code fences, refusals and abstentions. It never
-raises on malformed input — it returns no candidates.
-
-### Evidence graph (`src/cover_kbc/evidence/`)
-
-Signed `SUPPORT` / `CONTRADICT` / `UNKNOWN` edges, each carrying its
-independence group, view, run, model, record id and cost.
-
-### Reproducibility (`src/cover_kbc/runtime/`)
-
-Every run writes `manifest.json` (config + config hash, model identity and
-parameter count, seed, dataset path and SHA-256, evaluator SHA-256, git
-revision, call/token totals, budget audit, evaluation result),
-`calls.jsonl` (one record per model call, with prompt hash and raw output),
-`trace.jsonl` (per-query candidates and evidence), `predictions.jsonl` and
-`metrics.json`.
+Audits: [`docs/audits/`](audits/) — `0001` (foundation), `0002` (architecture).
 
 ---
 
-## 2. Key architectural decisions
+## 1. Execution policy
 
-**The official evaluator is executed, never reimplemented.** Loaded by file path
-from the unmodified snapshot and checksummed into every manifest. Refreshing the
-snapshot automatically changes our numbers.
+Heavyweight neural execution runs on **Google Colab**, not on the development
+machine. The split is deliberate:
 
-**Independence is a first-class concept, and repetition is not evidence.** Every
-view declares an `IndependenceGroup`; the mapping from view family to group is
-fixed and cannot be overridden per view. Three runs of `borders_direct` produce
-`independent_support == 1` and `raw_support_count == 3`. Only structurally
-different views raise independent support. This is asserted directly in
-`tests/test_evidence.py`.
-
-**Internal deduplication is deliberately stricter than the evaluator's.** The
-canonical key is built *on top of* the evaluator's own `normalize_string`, then
-additionally folds leading articles and parenthetical qualifiers. Rationale: the
-evaluator collapses only exact normalized matches, and its bipartite matcher
-lets one gold entity absorb only one prediction — so "The Alpha Exchange" and
-"Alpha Exchange" would reach it as two predictions and the second is a
-guaranteed false positive. Folding is **key-only**; emitted strings are always
-original model surface forms, never rewritten.
-
-**Numeric output is a bare numeral, by construction.** The evaluator's
-`try_parse_number` is `float(value.replace(",", "").strip())`, so `"5556 km²"`
-parses to `None` — it can never be a true positive while still counting against
-precision. A test asserts every value `format_numeric` produces survives the
-official parser. Selection uses median-of-dominant-cluster, not token
-likelihood.
-
-**Empty is a real answer.** The official baseline emits no empty predictions and
-loses F1 for it; ~19% of val rows have empty gold. A negative existence gate
-short-circuits discovery and returns `[]` with `stopped_reason="gate_negative"`.
-
-**Unimplemented advanced logic raises rather than approximating.**
-`verification.calibrate()` and `verification.prompt_disagreement()` raise
-`NotImplementedError`. Uncalibrated verifier output is marked `calibrated=False`
-so nothing downstream can mistake it for a probability of correctness.
-
-**No relation-specific `if/elif` chains leak.** Relation behaviour lives in
-contracts and the view library; the pipeline, graph and selector are
-relation-agnostic (spec invariant 8).
-
----
-
-## 3. How to run
-
-```bash
-pip install -e '.[dev]'          # add '.[hf]' for the neural backend
-
-python -m pytest -q                                              # tests
-python scripts/run_cover.py --config configs/experiments/smoke_abstain.yaml
-python scripts/evaluate_local.py -p <predictions.jsonl> -s val --cli
-python scripts/audit_model_budget.py configs/models/qwen3.5-9b-baseline.yaml
+```
+LOCAL                              COLAB
+architecture, contracts, prompts   clone repo, install deps
+evidence graph, verifier logic     download models
+controller, RCSE, selection        neural inference
+configs, unit tests, audits        validation, ablations, official evaluator
 ```
 
-`--limit N` restricts a run to the first N queries; `--split` overrides the
-config.
+The local machine (RTX 4060 Laptop, 8 GB VRAM, 14 GB RAM) is an implementation
+environment. Everything below is testable without loading a heavyweight model,
+using `ScriptedRuntime` and synthetic logits.
 
-### Current results
+## 2. Frozen target architecture
 
-`pytest`: **153 passed**.
+| role | model | published params |
+|---|---|---|
+| enumerator | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | 24,011,361,280 |
+| verifier | `Qwen/Qwen3.5-4B` | 4,659,865,088 |
+| **total** | | **28,671,226,368** (28.67B ≤ 32B) |
 
-Smoke run — abstain baseline (`NullRuntime`, val, 478 queries). Our in-process
-harness and `python benchmark/evaluate.py` agree exactly:
+Roles are architecture, not interchangeable backends. Config:
+[`configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml`](../configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml).
 
-| relation | macro-p | macro-r | macro-f1 | #empty |
-|---|---|---|---|---|
-| awardWonBy | 1.000 | 0.000 | 0.000 | 10 |
-| companyTradesAtStockExchange | 1.000 | 0.360 | 0.360 | 100 |
-| countryLandBordersCountry | 1.000 | 0.265 | 0.265 | 68 |
-| hasArea | 1.000 | 0.000 | 0.000 | 100 |
-| hasCapacity | 1.000 | 0.000 | 0.000 | 100 |
-| personHasCityOfDeath | 1.000 | 0.390 | 0.390 | 100 |
-| **All Relations** | **1.000** | **0.195** | **0.195** | 478 |
+```
+Subject + Relation
+   -> Relation Compiler -> Typed Program Router
+   -> Mistral 24B elicitation (direct | structural | facets | contrastive | missingness)
+   -> Candidate normalizer -> Candidate-Facet Evidence Graph
+   -> Qwen 4.66B blind verifier (VALID/INVALID/UNKNOWN, calibrated label logits)
+      + Qwen independent alternate recall (cross-model evidence)
+   -> Evidence / uncertainty state -> RCSE residual coverage
+   -> Active controller  --CONTINUE-> loop   --STOP-> Final selector
+   -> ObjectEntities
+```
 
-> This is a **plumbing check and a floor, not a system result.** The backend
-> abstains on every call and contains no factual knowledge. Precision is 1.0
-> because the evaluator defines an empty prediction as precise; recall is the
-> fraction of val rows whose gold set is genuinely empty. It must never be
-> reported as a COVER-KBC result.
+## 3. Module status
 
----
+| Spec module | Where | Status |
+|---|---|---|
+| 0 Relation Compiler | `contracts/` | complete, 6 contracts |
+| 1 Typed Program Router | `contracts/router.py` | complete |
+| 2 Diverse Elicitation | `elicitation/` | complete, 22 views, 4 families |
+| 3 Normalization + Evidence Graph | `normalization/`, `evidence/` | complete |
+| 4 Logit-Calibrated Blind Verifier | `verification.py` | complete |
+| 5 Evidence / Uncertainty State | `scoring.py` | complete, `S(o)` with components |
+| 6 RCSE | `coverage.py` | complete |
+| 7 Active Controller + stopping | `controller.py` | complete |
+| 8 Final Selector | `selection.py` | complete, relation-specific |
+| 21 Runtime + logit access | `models/` | complete, **unexercised on real weights** |
+| — Staged execution | `staging.py` | complete |
+| — DoLa | — | deferred (experimental plugin; seam exists via `hidden_states`) |
 
-## 4. What remains for COVER-Core (Milestone 2)
+## 4. Relation programmes
 
-- Contextual calibration of verifier logits against a content-free control.
-- Verification tiering (auto-accept / verifier / adversarial / auto-reject).
-- Candidate score `S(o) = αF + βL + γX − δC − ηU`, replacing the current
-  independent-support-and-contradiction rule.
-- Multi-template prompt disagreement `U_prompt(o)`.
-- Award facet expansion beyond the single `award_facet` view.
-- Model bake-off across Qwen / Mistral Small / Gemma profiles, each gated on the
-  budget audit passing first.
+| Relation | Programme | Selection behaviour |
+|---|---|---|
+| `countryLandBordersCountry` | `SMALL_SET` | direct + compass structural; maritime contrast; precision-aware |
+| `companyTradesAtStockExchange` | `SMALL_SET` | calibrated listing gate; parent/subsidiary contrast; precision-first |
+| `personHasCityOfDeath` | `NULL_SINGLE` | calibrated death gate; locality-granularity check; ≤ 1 object |
+| `hasArea` | `NUMERIC` | total-area semantics; robust **dominant-cluster median** |
+| `hasCapacity` | `NUMERIC` | **highest published** capacity among sufficiently-supported *valid* clusters |
+| `awardWonBy` | `LARGE_OPEN_SET` | 5 fixed facets (enumeration/temporal/recipient-type/category/missingness); recall-first |
 
-Milestone 3: RCSE residual coverage, active controller, adaptive stopping, DoLa
-and cross-model branches behind feature flags.
+## 5. Load-bearing design decisions
 
----
+**Candidate identity is two-level.** `strict_key` is the evaluator's own
+normalisation — collapsing on it is provably lossless. `alias_hint_key` adds
+leading-article folding only. Parenthetical qualifiers are **never** folded:
+`Springfield (Illinois)` and `Springfield (Missouri)` are different entities,
+and merging them would silently destroy one. Article folding can at worst pick a
+different surface form of the same entity; parenthetical folding can lose an
+entity outright.
 
-## 5. Unresolved compliance and correctness issues
+**Independence ≠ repetition ≠ facets.** Three concepts kept apart:
+`view_id` (which prompt), `facet_id` (which slice of one mechanism), and
+`independence_group` (which evidence family). Five award decades are five facets
+but **one** independent support. Asserted in `tests/test_evidence.py`.
 
-**1. Evaluator provenance is consistent with the July 2026 update but not
-independently verified.** `benchmark/UPSTREAM_COMMIT.txt` pins
-`30d8cfaaa7af5b236054cfb361f57b7d0c1e6e57`. The snapshot's `evaluate.py`
-contains the features the spec attributes to that update — alias-list gold,
-maximum-cardinality bipartite matching, normalized prediction dedup, and the
-apostrophe/symbol normalization pass. It was **not** verified against the
-upstream repository, because doing so requires network access. Confirming the
-commit hash resolves to the current upstream revision is an open item.
-`evaluator_checksum()` (`2d592ae177c7b230…`) is recorded in every manifest so a
-future change is detectable.
+**Cross-model evidence distinguishes recall from agreement.** The verifier
+model *independently recalling* a name (`CROSS_MODEL_RECALL`,
+`INDEPENDENT_RECALL`) is separate evidence and earns full `X(o)`. Merely
+agreeing with a name it was shown (`BLIND_VERIFIER`, `SHOWN_CANDIDATE`) is
+anchored and cheap, so it earns `shown_candidate_weight` (0.25) — its strength
+is already carried by `L(o)`.
 
-**2. `configs/models/qwen3.5-9b-baseline.yaml` carries an UNVERIFIED parameter
-count.** The 9B figure is transcribed from the checkpoint name in
-`benchmark/configs/baseline-qwen-3.5-9b.yaml`. Spec §2.2 explicitly says a
-marketing suffix is not evidence. The profile is marked unverified in-file and
-must be checked against the published model card, with the URL recorded in
-`source:`, before it is used for any reported result. No model has been
-downloaded or run.
+**Comma parsing is separator-ranked.** JSON array > semicolon/newline/pipe >
+comma. Comma splitting only happens when no stronger separator was present, and
+never on a digit-group comma — so `"35,000"` cannot become `"35"`/`"000"`, and
+`"Washington, D.C."` survives. Numeric relations raise `TypeError` if routed to
+entity parsing at all.
 
-**3. No neural result exists yet.** `torch`/`transformers` are not installed in
-this environment, so `HuggingFaceRuntime` is untested against a real checkpoint.
-Its `generate` / `score_labels` implementations are written but unexercised.
+**Existence gates are calibrated, not single-shot.** A gate closes only when NO
+is the argmax *and* clears both a logit-margin and a probability threshold. An
+uncertain or high-entropy read falls through to discovery: forcing empty on a
+weak signal converts uncertainty into guaranteed zero recall.
 
-**4. Upstream artifacts left as-is (intentionally).**
-`benchmark/prompt_templates/*.csv` still contain a `seriesHasNumberOfEpisodes`
-row, which is not one of the six 2026 relations, and
-`benchmark/models/abstract_model.py` documents a `SubjectEntityID` field the
-2026 data does not carry. Both are upstream artifacts; the snapshot is not
-modified. Our loaders ignore them.
+**Empty is explained, never conflated.** `confident_negative_gate`,
+`unresolved_abstention`, `no_candidate_generated`, `candidate_rejected`,
+`pipeline_error` are distinct — the first is a correct answer, the second a
+coverage failure, and they call for opposite fixes.
 
-**5. `hasCapacity` "highest published capacity" is not yet enforceable.** The
-contract states it and the contrastive view asks for it, but with several
-clusters present the selector currently picks the *dominant* cluster, not the
-highest. Resolving that needs the verifier's near-miss handling
-(record-attendance vs capacity) from Milestone 2.
+**Numeric output is a bare numeral.** The evaluator's `try_parse_number` is
+`float(v.replace(",", "").strip())`, so `"5556 km²"` can never be a true
+positive while still costing precision.
+
+**RCSE estimates search value, not cardinality.** `q_res ∈ [0,1]` answers "is
+another action likely to add useful verified information?" — not "how many true
+objects remain". Model views are not independent captures, and some `awardWonBy`
+gold sets are partial, so a real cardinality estimate would be the wrong target.
+
+## 6. How to run
+
+```bash
+pip install -e '.[dev]'            # add '.[hf]' for neural backends
+
+python -m pytest -q                                       # 251 tests
+python scripts/audit_model_budget.py configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml
+python scripts/run_staged.py all --config configs/experiments/smoke_staged_scripted.yaml --limit 30
+```
+
+Neural runs use [`notebooks/COVER_KBC_Colab.ipynb`](../notebooks/COVER_KBC_Colab.ipynb),
+which drives the same three phases:
+
+```bash
+python scripts/run_staged.py enumerate --config C --split val   # Mistral only
+python scripts/run_staged.py verify    --config C --run-dir D   # Qwen only
+python scripts/run_staged.py decide    --config C --run-dir D   # no model
+```
+
+Phase C is non-neural, so thresholds can be re-tuned against one expensive set
+of generations without re-running any model.
+
+## 7. Status of results
+
+**No neural evaluation result exists.** No metric in this repository was
+produced by a heavyweight model. The only executed runs are non-neural plumbing
+checks (abstain baseline; scripted staged smoke test), explicitly labelled as
+such and never reportable as system performance.
+
+Official upstream baseline, for later comparison — read from the upstream README
+at the pinned commit, **not** reproduced by us:
+
+| relation | macro-p | macro-r | macro-f1 |
+|---|---|---|---|
+| awardWonBy | 0.247 | 0.078 | 0.101 |
+| companyTradesAtStockExchange | 0.369 | 0.725 | 0.354 |
+| countryLandBordersCountry | 0.697 | 0.911 | 0.665 |
+| hasArea | 0.290 | 0.290 | 0.290 |
+| hasCapacity | 0.180 | 0.180 | 0.180 |
+| personHasCityOfDeath | 0.210 | 0.600 | 0.210 |
+| **All Relations** | **0.324** | **0.507** | **0.313** |
+
+## 8. Open issues
+
+1. **No neural validation.** Every neural path is unexercised against real
+   weights. First Colab run is the next step.
+2. **The official `baseline.py` does not exist upstream.** The README references
+   it, but commit `30d8cfa` contains no such file. "Baseline reproduction" can
+   only be a *reconstruction* from the published config, prompt templates,
+   `abstract_model.py` interface and results table.
+3. **Mistral/Qwen loading is untested on real weights.** The multi-auto-class
+   loader and the multi-token label fallback are implemented and unit-tested
+   with fakes, but no real checkpoint has been loaded.
+4. **Thresholds are hand-set, not calibrated.** They must be tuned on `train`
+   and frozen before `val` is scored.
+5. **Upstream artifacts left as-is** (intentional): stale
+   `seriesHasNumberOfEpisodes` prompt row, `SubjectEntityID` docstring.
+
+Deferred: DoLa intermediate-layer decoding (experimental plugin; the
+`hidden_states` seam exists), and learned policies (never — rules forbid).

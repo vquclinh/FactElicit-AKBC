@@ -37,12 +37,14 @@ def _view(
     decode: DecodeProfile = GREEDY,
     is_gate: bool = False,
     needs_accepted_set: bool = False,
+    facet_id: str = "",
 ) -> ViewSpec:
     return ViewSpec(
         view_id=view_id,
         relation=relation,
         family=family,
         template=f"{body.strip()}\n\n{fmt}",
+        facet_id=facet_id,
         decode=decode,
         is_gate=is_gate,
         needs_accepted_set=needs_accepted_set,
@@ -222,15 +224,44 @@ _AWARD_VIEWS = [
         "List the entities that have received the {subject}. "
         "Name the recipients themselves, not the works they were honoured for.",
         decode=GREEDY_LONG,
+        facet_id="award_enumeration",
     ),
+    # --- Fixed COVER-Core discovery facets ---------------------------------
+    # All three partition the SAME structural mechanism, so they share an
+    # independence group by construction: three slices of one decomposition are
+    # one independent support, not three. The facet ids keep them separable in
+    # traces without inflating confidence.
     _view(
-        "award_facet",
+        "award_facet_temporal",
         "awardWonBy",
         ViewFamily.STRUCTURAL,
-        "Work through the history of the {subject} one period at a time, from its "
-        "earliest years to the most recent, and name the recipients you recall in "
-        "each period. Cover the whole span rather than only the best-known names.",
+        "Work through the history of the {subject} in chronological order, "
+        "decade by decade from its earliest years to the most recent, and name "
+        "the recipients you recall in each decade. Cover the whole span rather "
+        "than only the best-known names.",
         decode=GREEDY_LONG,
+        facet_id="award_temporal",
+    ),
+    _view(
+        "award_facet_recipient_type",
+        "awardWonBy",
+        ViewFamily.STRUCTURAL,
+        "Recipients of the {subject} may be individuals, groups, organisations "
+        "or projects. Take each of those recipient types in turn and name the "
+        "recipients of the {subject} you recall of that type.",
+        decode=GREEDY_LONG,
+        facet_id="award_recipient_type",
+    ),
+    _view(
+        "award_facet_category",
+        "awardWonBy",
+        ViewFamily.STRUCTURAL,
+        "If the {subject} is given in several categories, disciplines or "
+        "fields, take each in turn and name the recipients you recall in it. "
+        "If it has no categories, simply name further recipients you have not "
+        "yet mentioned.",
+        decode=GREEDY_LONG,
+        facet_id="award_category",
     ),
     _view(
         "award_missing",
@@ -243,6 +274,7 @@ _AWARD_VIEWS = [
         "recipients of a similarly named but distinct award.",
         decode=GREEDY_LONG,
         needs_accepted_set=True,
+        facet_id="award_missingness",
     ),
     _view(
         "award_exact_identity_contrast",
@@ -253,6 +285,7 @@ _AWARD_VIEWS = [
         "recipients of predecessor or successor awards, recipients of other awards "
         "from the same organisation, and anyone whose award was rescinded.",
         decode=GREEDY_LONG,
+        facet_id="award_exact_identity",
     ),
 ]
 

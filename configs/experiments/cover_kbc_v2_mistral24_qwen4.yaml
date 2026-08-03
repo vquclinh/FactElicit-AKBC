@@ -1,0 +1,128 @@
+# COVER-KBC v2 - the frozen target architecture.
+#
+#   ENUMERATOR : mistralai/Mistral-Small-3.2-24B-Instruct-2506   24,011,361,280
+#   VERIFIER   : Qwen/Qwen3.5-4B                                  4,659,865,088
+#   ------------------------------------------------------------------------
+#   TOTAL published parameters                                   28,671,226,368
+#   Official inference-time limit                                32,000,000,000
+#   Legal                                                        true (3.33B spare)
+#
+# Both counts are the FULL released checkpoint (both models are multimodal
+# ForConditionalGeneration architectures). Quantisation may be used to execute
+# them; it does not reduce the counted size.
+#
+# The two models are not interchangeable backends. Roles are architecture:
+#   Mistral 24B -> high-recall relation-aware candidate enumeration
+#   Qwen 4.66B  -> blind VALID/INVALID/UNKNOWN logit scoring, and an independent
+#                  alternate-recall view that yields genuine cross-model evidence
+#
+# EXECUTION: staged, so a Colab GPU need not hold both models at once.
+#   Phase A  load Mistral -> enumerate -> persist graphs -> unload
+#   Phase B  load Qwen    -> verify    -> persist        -> unload
+#   Phase C  no model     -> RCSE, controller, selection -> predictions
+
+experiment:
+  name: cover_kbc_v2_mistral24_qwen4
+  split: val
+  seed: 42
+  notes: >-
+    Frozen target architecture. Requires a GPU runtime; this config is not
+    runnable on the local development machine and is intended for Colab.
+
+model_profile:
+  enumerator:
+    backend: huggingface
+    model_id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    revision: "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+    family: mistral
+    role: enumerator
+    license: apache-2.0
+    published_checkpoint_parameters: 24011361280
+    budget_count_parameters: 24011361280
+    published_total_parameters: 24011361280
+    parameter_source: "https://huggingface.co/api/models/mistralai/Mistral-Small-3.2-24B-Instruct-2506 (safetensors.total)"
+    parameter_source_verified: true
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+  verifier:
+    backend: huggingface
+    model_id: "Qwen/Qwen3.5-4B"
+    revision: "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    family: qwen
+    role: verifier
+    license: apache-2.0
+    published_checkpoint_parameters: 4659865088
+    budget_count_parameters: 4659865088
+    published_total_parameters: 4659865088
+    parameter_source: "https://huggingface.co/api/models/Qwen/Qwen3.5-4B (safetensors.total)"
+    parameter_source_verified: true
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+# Asserted by scripts/audit_model_budget.py before any inference runs.
+budget_assertion:
+  total_published_parameters: 28671226368
+  limit: 32000000000
+  legal: true
+
+pipeline:
+  mode: staged
+  run_optional_views: true
+  enable_active_controller: true
+  max_steps_per_query: 12
+  max_calls_per_query: 12
+  max_generated_tokens_per_query: 6000
+
+  enable_calibrated_gate: true
+  gate_min_margin: 1.0
+  gate_min_prob: 0.5
+
+  enable_verifier: true
+  use_calibration: true
+  max_verifications_per_query: 6
+  enable_prompt_disagreement: true
+
+  enable_cross_model_recall: true
+  cross_model_view: ""      # empty = the relation's first mandatory view
+
+  scoring:
+    alpha_support: 1.0
+    beta_logit: 0.6
+    gamma_cross_model: 0.5
+    delta_contradiction: 1.5
+    eta_disagreement: 1.0
+    shown_candidate_weight: 0.25
+    auto_accept_support: 3
+    verify_max_support: 2
+    adversarial_disagreement: 0.15
+    accept_score: 0.2
+    min_valid_prob: 0.40
+    drop_on_unknown: true
+    logit_clip: 3.0
+
+  selection:
+    capacity_support_ratio: 1.0
+    capacity_trust_verified: true
+
+  controller:
+    alpha_yield: 1.0
+    beta_gap: 1.0
+    gamma_uncertainty: 0.8
+    lambda_cost: 0.15
+    rho_redundancy: 1.0
+    residual_stop: 0.25
+    saturation_patience: 2
+    stability_threshold: 1.0
+    verify_first_unresolved: 0.5
+    rcse:
+      saturation_window: 3
+      w_yield: 1.0
+      w_saturation: 1.0
+      w_unresolved: 0.8
+      w_facet_gap: 1.0
+      w_disagreement: 0.6
+      w_instability: 0.8
+      stop_threshold: 0.25

@@ -27,6 +27,7 @@ from cover_kbc.types import (
     CandidateStatus,
     EdgeType,
     Evidence,
+    EvidenceMode,
     GenerationRecord,
     IndependenceGroup,
     OutputType,
@@ -43,9 +44,17 @@ class EvidenceGraph:
     contract: RelationContract
     candidates: dict[str, Candidate] = field(default_factory=dict)
     records: dict[str, GenerationRecord] = field(default_factory=dict)
-    #: Set when a gate view (death status, public listing) answered NO.
+    #: Set when a gate answered a confident NO (see :meth:`close_gate`).
     gate_negative: bool = False
     gate_reason: str | None = None
+    #: Calibrated gate read-out, kept for diagnostics even when not negative.
+    gate_result: object | None = None
+    #: Controller decision records (Phase A), for the audit trail.
+    controller_log: list[dict] = field(default_factory=list)
+    #: Call/token accounting carried across staged phases.
+    budget_snapshot: dict = field(default_factory=dict)
+    #: Verifier calls spent on this query (Phase B).
+    verification_calls: int = 0
 
     # -- construction --------------------------------------------------------
 
@@ -102,6 +111,11 @@ class EvidenceGraph:
                 continue
 
             candidate = self._get_or_create(key, surface)
+            if not candidate.strict_key:
+                candidate.strict_key = self.contract.strict_key(surface)
+            # A facet is a partition *inside* one mechanism, so it is recorded
+            # as provenance only - never as extra independent support.
+            candidate.add_facet(record.facet_id or record.view_id)
             # Alternative spellings are always recorded - they feed display
             # selection - but a second mention inside one generation adds no
             # evidence, because one answer listing a name twice has not
@@ -121,6 +135,8 @@ class EvidenceGraph:
                     model_id=record.model_id,
                     run_id=record.run_id,
                     record_id=record.record_id,
+                    model_family=record.model_family,
+                    mode=EvidenceMode.INDEPENDENT_RECALL,
                     token_cost=record.generated_tokens or 0,
                 )
             )
@@ -143,6 +159,8 @@ class EvidenceGraph:
             seen_in_record.add(key)
 
             candidate = self._get_or_create(key, key, numeric_value=value)
+            candidate.strict_key = candidate.strict_key or key
+            candidate.add_facet(record.facet_id or record.view_id)
             candidate.add_surface_form(key)
             candidate.add_evidence(
                 Evidence(
@@ -153,6 +171,8 @@ class EvidenceGraph:
                     model_id=record.model_id,
                     run_id=record.run_id,
                     record_id=record.record_id,
+                    model_family=record.model_family,
+                    mode=EvidenceMode.INDEPENDENT_RECALL,
                     token_cost=record.generated_tokens or 0,
                 )
             )
@@ -162,9 +182,9 @@ class EvidenceGraph:
     def add_verification(self, result: VerificationResult) -> Candidate | None:
         """Attach a blind-verifier verdict as a signed edge.
 
-        Verifier evidence has its own independence group, so a VALID verdict is
-        an additional independent support rather than a duplicate of the view
-        that discovered the candidate.
+        The edge is marked ``SHOWN_CANDIDATE``: the verifier was handed this
+        name and asked to judge it. That is weaker than independently recalling
+        it, and the scorer treats the two differently.
         """
         candidate = self.candidates.get(result.candidate_key)
         if candidate is None:
@@ -179,6 +199,8 @@ class EvidenceGraph:
                 model_id=result.model_id,
                 run_id=0,
                 record_id=result.record_id,
+                model_family=result.model_family,
+                mode=EvidenceMode.SHOWN_CANDIDATE,
                 valid_prob=result.valid_prob,
                 invalid_prob=result.invalid_prob,
                 unknown_prob=result.unknown_prob,
@@ -198,9 +220,34 @@ class EvidenceGraph:
             candidate.rejection_reason = reason
 
     def close_gate(self, reason: str) -> None:
-        """Record that an existence gate answered NO for this query."""
+        """Record that an existence gate answered a *confident* NO.
+
+        Only a calibrated, high-margin negative may call this: an uncertain
+        gate must let discovery continue rather than force an empty answer.
+        """
         self.gate_negative = True
         self.gate_reason = reason
+
+    def model_family_summary(self) -> dict[str, int]:
+        """How many candidates each model family independently recalled."""
+        counts: dict[str, int] = {}
+        for candidate in self.candidates.values():
+            families = {
+                e.model_family
+                for e in candidate.all_evidence()
+                if e.mode is EvidenceMode.INDEPENDENT_RECALL and e.model_family
+            }
+            for family in families:
+                counts[family] = counts.get(family, 0) + 1
+        return dict(sorted(counts.items()))
+
+    def facet_summary(self) -> dict[str, int]:
+        """How many candidates each facet contributed, for diagnostics."""
+        counts: dict[str, int] = {}
+        for candidate in self.candidates.values():
+            for facet in candidate.facet_ids:
+                counts[facet] = counts.get(facet, 0) + 1
+        return dict(sorted(counts.items()))
 
     # -- queries -------------------------------------------------------------
 
@@ -240,6 +287,9 @@ class EvidenceGraph:
             "gate_negative": self.gate_negative,
             "gate_reason": self.gate_reason,
             "independence_summary": self.independence_summary(),
+            "facet_summary": self.facet_summary(),
+            "model_family_summary": self.model_family_summary(),
+            "gate": self.gate_result.to_json() if self.gate_result is not None else None,
             "candidates": [c.to_json() for c in self.active_candidates()],
         }
 

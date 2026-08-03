@@ -50,9 +50,9 @@ class BudgetAudit:
     @property
     def total_parameters(self) -> int | None:
         counted = self.counted_specs
-        if any(s.published_total_parameters is None for s in counted):
+        if any(s.budget_parameters is None for s in counted):
             return None
-        return sum(s.published_total_parameters or 0 for s in counted)
+        return sum(s.budget_parameters or 0 for s in counted)
 
     @property
     def passed(self) -> bool:
@@ -72,8 +72,19 @@ class BudgetAudit:
     def summary(self) -> str:
         lines = [f"Parameter budget: {self.budget / 1e9:.0f}B total published parameters"]
         for spec in self.counted_specs:
-            billions = "UNKNOWN" if spec.billions is None else f"{spec.billions:.2f}B"
-            lines.append(f"  - {spec.model_id} [{spec.role}] {billions}  {spec.source or ''}".rstrip())
+            billions = "UNKNOWN" if spec.billions is None else f"{spec.billions:.3f}B"
+            flag = "verified" if spec.parameter_source_verified else "UNVERIFIED"
+            lines.append(f"  - {spec.model_id} [{spec.role}] {billions} ({flag})")
+            if spec.published_language_parameters is not None:
+                lines.append(
+                    f"      language-only : {spec.published_language_parameters:,}"
+                )
+            if spec.published_checkpoint_parameters is not None:
+                lines.append(
+                    f"      full checkpoint: {spec.published_checkpoint_parameters:,}"
+                )
+            if spec.parameter_source:
+                lines.append(f"      source        : {spec.parameter_source}")
         total = self.total_parameters
         lines.append(
             f"  total: {'UNKNOWN' if total is None else f'{total / 1e9:.2f}B'}"
@@ -95,15 +106,32 @@ def audit_parameter_budget(
     audit = BudgetAudit(specs=tuple(specs), budget=budget)
 
     for spec in audit.counted_specs:
-        if spec.published_total_parameters is None:
+        if spec.budget_parameters is None:
             audit.problems.append(
                 f"{spec.model_id}: published parameter count is unrecorded. "
                 "Record the official published total before enabling this profile."
             )
-        elif spec.published_total_parameters <= 0:
+        elif spec.budget_parameters <= 0:
             audit.problems.append(
                 f"{spec.model_id}: published parameter count must be positive, "
-                f"got {spec.published_total_parameters}"
+                f"got {spec.budget_parameters}"
+            )
+        if not spec.parameter_source_verified:
+            audit.problems.append(
+                f"{spec.model_id}: parameter count is not marked verified. "
+                "Record a primary source in 'parameter_source' and set "
+                "'parameter_source_verified: true' after checking it."
+            )
+        if (
+            spec.published_language_parameters is not None
+            and spec.published_checkpoint_parameters is not None
+            and spec.budget_parameters < spec.published_checkpoint_parameters
+        ):
+            audit.problems.append(
+                f"{spec.model_id}: budget count {spec.budget_parameters:,} is below the "
+                f"full checkpoint {spec.published_checkpoint_parameters:,}. That is only "
+                "allowed with demonstrated evidence that the excluded components are "
+                "never instantiated."
             )
         # Quantisation is recorded on the spec for reproducibility, but it is
         # intentionally not consulted here: it does not reduce the counted size.

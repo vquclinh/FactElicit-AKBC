@@ -22,27 +22,57 @@ The full design is in [`COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`](COVER_KBC_V2_ARCHIT
 
 ## Status
 
-**Milestone 1 complete** — reproducible benchmark foundation and core typed
-interfaces. Milestones 2 (COVER-Core) and 3 (active control) are pending; the
-advanced inference modules exist as declared interfaces that raise rather than
-approximate. See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
-for what is implemented, the key design decisions, and open issues.
+**Milestone 2 complete** — the full architecture is implemented through the
+control layer: relation contracts, typed programs, diverse elicitation with
+relation-specific facets, the candidate-facet evidence graph, a logit-calibrated
+blind verifier with contextual calibration and prompt-distribution disagreement,
+candidate scoring, cross-model evidence, RCSE, the active controller, adaptive
+stopping, and relation-specific final selection.
+
+**No neural result exists yet.** Heavyweight inference runs on Google Colab, not
+on the development machine; every metric currently in the repository comes from
+a non-neural plumbing check and is labelled as such. See
+[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) and
+[`docs/audits/`](docs/audits/).
+
+## Target architecture
+
+| role | model | published params |
+|---|---|---|
+| enumerator | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | 24,011,361,280 |
+| verifier | `Qwen/Qwen3.5-4B` | 4,659,865,088 |
+| **total** | | **28,671,226,368** (28.67B ≤ 32B) |
+
+Execution is staged, so a GPU need not hold both models at once:
+`enumerate` (Mistral) → persist → `verify` (Qwen) → persist → `decide` (no
+model). The counted budget is unchanged by the split.
 
 ## Quickstart
 
 ```bash
-pip install -e '.[dev]'          # add '.[hf]' for the neural backend
+pip install -e '.[dev]'          # add '.[hf]' for the neural backends
 
-python -m pytest -q
+python -m pytest -q              # 251 tests, no model required
 
-# End-to-end plumbing run (non-neural abstain baseline; not a system result)
-python scripts/run_cover.py --config configs/experiments/smoke_abstain.yaml
+# Check the 32B budget (downloads nothing, fails closed)
+python scripts/audit_model_budget.py configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml
+
+# Non-neural plumbing runs (NOT system results)
+python scripts/run_cover.py  --config configs/experiments/smoke_abstain.yaml
+python scripts/run_staged.py all --config configs/experiments/smoke_staged_scripted.yaml --limit 30
 
 # Score any prediction file with the official evaluator
 python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
+```
 
-# Check a model profile against the 32B budget (downloads nothing)
-python scripts/audit_model_budget.py configs/models/qwen3.5-9b-baseline.yaml
+**Neural runs happen on Colab** via
+[`notebooks/COVER_KBC_Colab.ipynb`](notebooks/COVER_KBC_Colab.ipynb), which
+drives the same three phases:
+
+```bash
+python scripts/run_staged.py enumerate --config C --split val   # enumerator only
+python scripts/run_staged.py verify    --config C --run-dir D   # verifier only
+python scripts/run_staged.py decide    --config C --run-dir D   # no model at all
 ```
 
 Each run writes `outputs/<run_id>/` containing `predictions.jsonl`,
@@ -58,19 +88,24 @@ benchmark/          official snapshot — READ ONLY, never modified in place
 configs/
   experiments/      run configurations
   models/           model profiles with published parameter counts
-docs/               implementation status
-scripts/            run_cover.py, evaluate_local.py, audit_model_budget.py
+docs/               implementation status + audits/
+notebooks/          Colab execution entrypoint
+scripts/            run_staged.py, run_cover.py, evaluate_local.py, audit_model_budget.py
 src/cover_kbc/
   contracts/        relation contracts + typed program router   (Module 0/1)
   elicitation/      view library, prompt rendering, parsing     (Module 2)
-  evidence/         candidate–facet evidence graph              (Module 3)
-  verification.py   blind three-way verifier (interface)        (Module 4)
-  selection.py      evaluator-aware final selector              (Module 8)
+  evidence/         candidate-facet evidence graph              (Module 3)
+  verification.py   blind verifier, calibration, disagreement   (Module 4)
+  scoring.py        S(o) components + verification tiering      (Module 5)
+  coverage.py       residual coverage & saturation (RCSE)       (Module 6)
+  controller.py     active controller + adaptive stopping       (Module 7)
+  selection.py      relation-specific final selector            (Module 8)
+  staging.py        enumerate/verify/decide phase persistence
   data/             read-only dataset access, official-format output
   evaluation/       wrappers around the official evaluator
   models/           model-agnostic runtime + 32B budget audit
   runtime/          run manifests and call tracing
-  pipeline.py       fixed-budget orchestrator
+  pipeline.py       orchestrator (staged or interleaved)
 tests/
 outputs/            generated artifacts (gitignored)
 ```

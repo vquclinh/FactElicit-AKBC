@@ -126,8 +126,12 @@ class RelationContract:
         return (*self.mandatory_views, *self.optional_views)
 
     def key(self, value: str) -> str:
-        """Internal deduplication key for a candidate surface form."""
-        return self.normalization.key(value)
+        """Identity key the evidence graph groups candidates by."""
+        return self.normalization.alias_hint_key(value)
+
+    def strict_key(self, value: str) -> str:
+        """Evaluator-identical key; collapsing on this is always lossless."""
+        return self.normalization.strict_key(value)
 
     def verifier_definition(self) -> str:
         """The definition block a blind verifier prompt embeds.

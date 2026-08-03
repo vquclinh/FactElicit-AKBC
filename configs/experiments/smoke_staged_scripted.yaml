@@ -1,0 +1,38 @@
+# Staged-execution plumbing smoke test, with NO neural models.
+#
+# Exercises the same three-phase code path the frozen Mistral+Qwen architecture
+# uses on Colab - enumerate, persist, verify, persist, decide - using the
+# non-neural scripted backend. It proves the staging seam works; it says
+# nothing about factual quality and must never be reported as a system result.
+
+experiment:
+  name: smoke_staged_scripted
+  split: val
+  seed: 42
+  notes: Non-neural staged plumbing check. Not a system result.
+
+model_profile:
+  enumerator:
+    backend: "scripted"
+    model_id: offline/scripted-enumerator
+    family: offline-mistral
+    role: enumerator
+  verifier:
+    backend: "scripted"
+    model_id: offline/scripted-verifier
+    family: offline-qwen
+    role: verifier
+
+pipeline:
+  mode: staged
+  run_optional_views: true
+  enable_active_controller: true
+  max_steps_per_query: 8
+  max_calls_per_query: 8
+  max_generated_tokens_per_query: 2000
+  enable_calibrated_gate: true
+  enable_verifier: true
+  use_calibration: true
+  max_verifications_per_query: 3
+  enable_prompt_disagreement: true
+  enable_cross_model_recall: true

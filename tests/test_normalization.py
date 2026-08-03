@@ -15,11 +15,13 @@ from cover_kbc.normalization.numeric import (
     relative_distance,
 )
 from cover_kbc.normalization.strings import (
+    alias_hint_key,
     canonical_key,
     clean_surface,
     collapse_exact_duplicates,
     is_abstain,
     preferred_surface_form,
+    strict_key,
 )
 
 
@@ -120,8 +122,29 @@ def test_leading_articles_collapse_into_one_key():
     assert canonical_key("The Alpha Exchange") == canonical_key("Alpha Exchange")
 
 
-def test_parentheticals_are_dropped_from_the_key():
-    assert canonical_key("Alpha Exchange (AE)") == canonical_key("Alpha Exchange")
+def test_parenthetical_qualifiers_are_never_folded():
+    """Two entities sharing a base string must stay distinct (M2 requirement 3C)."""
+    assert alias_hint_key("Springfield (Illinois)") != alias_hint_key("Springfield (Missouri)")
+    assert alias_hint_key("Springfield (Illinois)") != alias_hint_key("Springfield")
+
+
+def test_strict_key_is_exactly_the_evaluator_normalisation():
+    from cover_kbc.evaluation.official import official_normalize_string
+
+    for value in ["Alpha Exchange", "The Alpha Exchange", "O'Brien", "Cafe\u0301"]:
+        assert strict_key(value) == official_normalize_string(clean_surface(value))
+
+
+def test_article_variants_merge_only_at_the_alias_level():
+    a, b = "The Alpha Exchange", "Alpha Exchange"
+    assert strict_key(a) != strict_key(b)          # evaluator sees two predictions
+    assert alias_hint_key(a) == alias_hint_key(b)  # we collapse them ourselves
+
+
+def test_article_folding_can_be_disabled():
+    assert alias_hint_key("The Hague", merge_leading_article_variants=False) != alias_hint_key(
+        "Hague", merge_leading_article_variants=False
+    )
 
 
 def test_list_markers_are_stripped():
