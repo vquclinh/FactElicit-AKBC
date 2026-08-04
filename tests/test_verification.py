@@ -12,7 +12,6 @@ import pytest
 from cover_kbc.models.base import LabelScoreResult, entropy, softmax
 from cover_kbc.models.offline import ScriptedRuntime
 from cover_kbc.scoring import (
-    DEFAULT_SCORING,
     ScoringConfig,
     assign_tier,
     decide_status,
@@ -286,9 +285,12 @@ def test_positive_gate_never_closes():
 # --- tiering (M2 requirement 9) -------------------------------------------
 
 
-def _candidate(key="alpha", support=0, contradictions=0, disagreement=None):
-    candidate = Candidate(key=key, display_value=key.title(), relation="countryLandBordersCountry")
-    groups = [
+def _candidate(key="alpha", support=0, contradictions=0, disagreement=None, contract=None):
+    relation = contract.relation if contract else "countryLandBordersCountry"
+    candidate = Candidate(key=key, display_value=key.title(), relation=relation)
+    # Draw from groups this relation can actually produce: an ineligible group
+    # is not acquisition support and must not be counted as one.
+    groups = list(contract.eligible_independence_groups) if contract else [
         IndependenceGroup.DIRECT_RECALL,
         IndependenceGroup.STRUCTURAL_DECOMPOSITION,
         IndependenceGroup.CONTRASTIVE_SEPARATION,
@@ -344,8 +346,7 @@ def test_a_better_supported_candidate_is_not_escalated(stock_contract):
     2-mechanism candidate lands in the ordinary verifier tier.
     """
     assert stock_contract.verification.adversarial_classes
-    candidate = _candidate(support=2)
-    candidate.relation = stock_contract.relation
+    candidate = _candidate(support=2, contract=stock_contract)
     assert assign_tier(candidate, stock_contract) is VerificationTier.VERIFY
 
 
@@ -460,4 +461,7 @@ def test_cross_model_independent_recall_outweighs_shown_agreement(borders_contra
     a = score_candidate(shown, borders_contract)
     b = score_candidate(recalled, borders_contract)
     assert b.cross_model > a.cross_model
-    assert a.cross_model == pytest.approx(DEFAULT_SCORING.shown_candidate_weight)
+    # Shown-candidate agreement earns no X(o) at all: spec section 11.2 gives the
+    # verifier its own term, and paying it twice would double-count one call.
+    assert a.cross_model == pytest.approx(0.0)
+    assert b.cross_model == pytest.approx(1.0)

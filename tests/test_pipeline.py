@@ -18,7 +18,7 @@ from cover_kbc.models.base import (
 from cover_kbc.models.budget import PARAMETER_BUDGET, audit_parameter_budget
 from cover_kbc.models.offline import NullRuntime, ScriptedRuntime
 from cover_kbc.models.registry import build_runtime, spec_from_config
-from cover_kbc.pipeline import CoverPipeline
+from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.types import Query
 from cover_kbc.verification import build_verifier_prompt, read_labels
 
@@ -254,7 +254,11 @@ def test_pipeline_collects_multi_view_evidence():
         ("borders_direct", subject, relation): ["Alpha; Beta"],
         ("borders_compass", subject, relation): ["Alpha; Gamma"],
     }
-    result = CoverPipeline(ScriptedRuntime(script)).run([Query(subject, relation, 0)])
+    # q(o) is a ratio over the mechanisms this run can reach, so the acceptance
+    # claim below is only meaningful once the run mode is pinned: here every
+    # acquisition family is available, making one-of-six genuinely thin support.
+    config = PipelineConfig(run_optional_views=True)
+    result = CoverPipeline(ScriptedRuntime(script), config).run([Query(subject, relation, 0)])
     prediction = result.predictions[0]
 
     by_key = {c.key: c for c in prediction.candidates}

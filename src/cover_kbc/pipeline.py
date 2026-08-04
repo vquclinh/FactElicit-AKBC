@@ -29,7 +29,7 @@ Two execution modes, both driving the same logic:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Iterable, Iterator, Mapping
 
@@ -135,6 +135,23 @@ class PipelineConfig:
     scoring: ScoringConfig = field(default_factory=lambda: DEFAULT_SCORING)
     selection: SelectionConfig = field(default_factory=lambda: DEFAULT_SELECTION)
     controller: ControllerConfig = field(default_factory=lambda: DEFAULT_CONTROLLER)
+
+    def __post_init__(self) -> None:
+        """Derive ``m(o)``'s availability rule from the run mode.
+
+        Which acquisition families are *available* is a property of how this run
+        schedules views, not a free knob, so the pipeline owns it rather than
+        the YAML: the active controller may schedule any declared view, and a
+        fixed run with ``run_optional_views`` executes them all. Only a fixed
+        mandatory-only run cannot reach the optional families, and there ``m(o)``
+        must shrink so ``q(o)`` is not depressed by a mechanism that never had a
+        chance to run.
+        """
+        available = self.enable_active_controller or self.run_optional_views
+        if self.scoring.optional_views_available != available:
+            self.scoring = replace(self.scoring, optional_views_available=available)
+        if self.selection.scoring is not self.scoring:
+            self.selection = replace(self.selection, scoring=self.scoring)
 
     @classmethod
     def from_mapping(cls, config: Mapping[str, Any] | None) -> "PipelineConfig":

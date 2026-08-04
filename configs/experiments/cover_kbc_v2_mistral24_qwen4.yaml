@@ -97,7 +97,6 @@ pipeline:
     gamma_cross_model: 0.5
     delta_contradiction: 1.5
     eta_disagreement: 1.0
-    shown_candidate_weight: 0.25
     auto_accept_support: 3
     verify_max_support: 2
     adversarial_disagreement: 0.15
@@ -105,6 +104,7 @@ pipeline:
     min_valid_prob: 0.40
     drop_on_unknown: true
     logit_clip: 3.0
+    logit_epsilon: 1.0e-6
 
   selection:
     capacity_support_ratio: 1.0

@@ -631,7 +631,7 @@ def test_the_adversarial_condition_is_non_factual():
     for factual in ("Denmark", "Poland", "NYSE", "Nobel", "lookup", "database"):
         assert factual not in source
     assert "adversarial_classes" in source
-    assert "independent_support" in source
+    assert "supporting_acquisition_groups" in source
 
 
 def test_a_relation_without_near_misses_is_not_escalated():
