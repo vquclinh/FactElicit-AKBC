@@ -37,13 +37,14 @@ from cover_kbc.contracts.base import RelationContract
 from cover_kbc.contracts.router import compile_query
 from cover_kbc.controller import (
     DEFAULT_CONTROLLER,
+    Action,
     ActionDecision,
     ActionType,
     ControllerConfig,
     choose_action,
     record_outcome,
 )
-from cover_kbc.coverage import RCSEState
+from cover_kbc.coverage import GateState, RCSEState, trusted_keys
 from cover_kbc.elicitation.engine import ElicitationEngine
 from cover_kbc.elicitation.library import get_view, views_for
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
@@ -59,7 +60,6 @@ from cover_kbc.scoring import (
 from cover_kbc.selection import DEFAULT_SELECTION, SelectionConfig, finalize
 from cover_kbc.types import (
     Budget,
-    CandidateStatus,
     EmptyReason,
     IndependenceGroup,
     OutputType,
@@ -447,6 +447,44 @@ class CoverPipeline:
 
     # ------------------------------------------------------------- phase A --
 
+    # ------------------------------------------------------- RCSE inputs --
+
+    def _gate_state(self, graph: EvidenceGraph, contract: RelationContract) -> GateState:
+        """The existence gate as Module 6 reads it.
+
+        ``resolved`` distinguishes "the gate answered confidently" from "the
+        gate ran and could not decide". An uncertain gate must keep residual
+        high rather than reading as permission to stop.
+        """
+        present = contract.relation in GATE_QUESTIONS and self.config.enable_calibrated_gate
+        if not present:
+            return GateState(present=False, resolved=False, negative=False)
+        result = graph.gate_result
+        if result is None:
+            return GateState(present=True, resolved=False, negative=False)
+        return GateState(
+            present=True,
+            resolved=bool(result.decision),
+            negative=graph.gate_negative,
+        )
+
+    def _action_group(
+        self, contract: RelationContract, action: "Action"
+    ) -> IndependenceGroup | None:
+        """Which acquisition mechanism an action exercised, if any."""
+        if action.action_type is ActionType.CROSS_MODEL_CHECK:
+            return IndependenceGroup.CROSS_MODEL_RECALL
+        if not action.view_id:
+            return None
+        view = get_view(contract.relation, action.view_id)
+        return None if view.is_gate else view.independence_group
+
+    def _action_facet(self, contract: RelationContract, action: "Action") -> str:
+        """Which semantic facet an action covered, if the view declares one."""
+        if not action.view_id:
+            return ""
+        return get_view(contract.relation, action.view_id).facet_id
+
     def enumerate_query(self, query: Query) -> EvidenceGraph:
         """Phase A: gate + candidate discovery. Enumerator model only."""
         query, contract = compile_query(query.subject, query.relation, query.row_index)
@@ -480,7 +518,11 @@ class CoverPipeline:
                     break
                 _, tokens = self._run_discovery_view(graph, contract, view.view_id, discovered)
                 budget.charge(calls=1, generated_tokens=tokens)
-                state.covered_facets.add(view.view_id)
+                state.executed_views.add(view.view_id)
+                if view.facet_id:
+                    state.executed_facets.add(view.facet_id)
+                if not view.is_gate:
+                    state.executed_groups.add(view.independence_group)
 
         if self.config.mode is not ExecutionMode.STAGED:
             new, tokens = self._run_cross_model_recall(graph, contract)
@@ -489,6 +531,10 @@ class CoverPipeline:
 
         apply_hard_contract_rules(graph)
         graph.controller_log = [d.to_json() for d in decisions]
+        # Module 6's temporal state must cross the staged seam: Phase C cannot
+        # recover *when* a candidate was found or what it cost from the final
+        # graph, and inventing that history would fabricate yield.
+        graph.rcse_state = state.to_json()
         graph.budget_snapshot = {
             "calls_used": budget.calls_used,
             "generated_tokens_used": budget.generated_tokens_used,
@@ -523,6 +569,8 @@ class CoverPipeline:
                 config=self.config.controller,
                 cross_model_available=self.config.enable_cross_model_recall
                 and self.has_second_model,
+                gate=self._gate_state(graph, contract),
+                scoring=self.config.scoring,
             )
             action = decision.chosen
 
@@ -542,7 +590,7 @@ class CoverPipeline:
             elif action.action_type in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY):
                 if staged:
                     # Verifier is not resident in this phase; mark and move on.
-                    state.covered_facets.add(f"deferred_verify:{action.candidate_key}")
+                    state.executed_views.add(f"deferred_verify:{action.candidate_key}")
                     decisions.append(decision)
                     continue
                 verified = self._verify_one(
@@ -558,16 +606,21 @@ class CoverPipeline:
                 decisions.append(decision)
                 break
 
-            accepted = [
-                c.key for c in graph.active_candidates()
-                if c.status is CandidateStatus.ACCEPTED
-            ]
+            # Verified yield is the growth of the *trusted* set, which needs
+            # the current scores and tiers. Raw mention counts are not yield:
+            # a view repeating a name we already trust has added nothing.
+            active = graph.active_candidates()
+            for candidate in active:
+                score_candidate(candidate, contract, self.config.scoring)
+                candidate.tier = assign_tier(candidate, contract, self.config.scoring)
             record_outcome(
                 state, action,
-                new_verified=verified + new_candidates,
+                trusted_keys=trusted_keys(active, contract, self.config.scoring),
                 new_candidates=new_candidates,
                 generated_tokens=tokens,
-                accepted_keys=accepted,
+                independence_group=self._action_group(contract, action),
+                facet_id=self._action_facet(contract, action),
+                synthetic_cost=not self.runtime.spec.is_neural,
             )
             decision.state_after = {
                 "num_candidates": len(graph.candidates),

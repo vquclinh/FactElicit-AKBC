@@ -52,6 +52,10 @@ class EvidenceGraph:
     gate_result: object | None = None
     #: Controller decision records (Phase A), for the audit trail.
     controller_log: list[dict] = field(default_factory=list)
+    #: Module-6 temporal state (Phase A). Persisted because yield and
+    #: saturation record *when* and *at what cost* something was found, which
+    #: the final graph cannot reconstruct - it only records what was found.
+    rcse_state: dict = field(default_factory=dict)
     #: Call/token accounting carried across staged phases.
     budget_snapshot: dict = field(default_factory=dict)
     #: Verifier calls spent on this query (Phase B).

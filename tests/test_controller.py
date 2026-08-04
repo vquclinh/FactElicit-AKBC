@@ -58,43 +58,43 @@ def make_candidate(key, *, support=1, status=CandidateStatus.UNRESOLVED, tier=No
 def test_saturation_is_zero_when_every_action_produced_value():
     state = RCSEState()
     for _ in range(3):
-        state.record(ActionOutcome("RUN_VIEW", new_verified=2, generated_tokens=100))
+        state.record(ActionOutcome("RUN_VIEW", new_trusted=2, generated_tokens=100))
     assert state.saturation(3) == pytest.approx(0.0)
 
 
 def test_saturation_is_one_when_nothing_was_produced():
     state = RCSEState()
     for _ in range(3):
-        state.record(ActionOutcome("RUN_VIEW", new_verified=0, generated_tokens=100))
+        state.record(ActionOutcome("RUN_VIEW", new_trusted=0, generated_tokens=100))
     assert state.saturation(3) == pytest.approx(1.0)
 
 
 def test_marginal_yield_is_token_normalised():
     state = RCSEState()
-    state.record(ActionOutcome("RUN_VIEW", new_verified=2, generated_tokens=1000))
+    state.record(ActionOutcome("RUN_VIEW", new_trusted=2, generated_tokens=1000))
     assert state.marginal_yield(3) == pytest.approx(2.0)
 
 
 def test_consecutive_no_gain_counts_the_recent_tail():
     state = RCSEState()
-    state.record(ActionOutcome("RUN_VIEW", new_verified=1, generated_tokens=10))
-    state.record(ActionOutcome("RUN_VIEW", new_verified=0, generated_tokens=10))
-    state.record(ActionOutcome("RUN_VIEW", new_verified=0, generated_tokens=10))
+    state.record(ActionOutcome("RUN_VIEW", new_trusted=1, generated_tokens=10))
+    state.record(ActionOutcome("RUN_VIEW", new_trusted=0, generated_tokens=10))
+    state.record(ActionOutcome("RUN_VIEW", new_trusted=0, generated_tokens=10))
     assert state.consecutive_no_gain() == 2
 
 
 def test_set_stability_is_jaccard_of_the_last_two_sets():
     state = RCSEState()
-    state.record_accepted(["a", "b"])
-    state.record_accepted(["a", "b"])
+    state.record_trusted(["a", "b"])
+    state.record_trusted(["a", "b"])
     assert state.set_stability() == pytest.approx(1.0)
-    state.record_accepted(["a", "c"])
+    state.record_trusted(["a", "c"])
     assert state.set_stability() == pytest.approx(1 / 3)
 
 
 def test_stability_needs_two_observations():
     state = RCSEState()
-    state.record_accepted(["a"])
+    state.record_trusted(["a"])
     assert state.set_stability() == 0.0
 
 
@@ -115,9 +115,9 @@ def test_residual_falls_once_facets_are_covered_and_yield_stops():
     fresh = estimate_residual(contract, [], RCSEState())
 
     exhausted = RCSEState()
-    exhausted.covered_facets.update(contract.all_views())
+    exhausted.executed_views.update(contract.all_views())
     for _ in range(3):
-        exhausted.record(ActionOutcome("RUN_FACET", new_verified=0, generated_tokens=500))
+        exhausted.record(ActionOutcome("RUN_FACET", new_trusted=0, generated_tokens=500))
     after = estimate_residual(contract, [], exhausted)
     assert after.residual < fresh.residual
 
@@ -125,11 +125,17 @@ def test_residual_falls_once_facets_are_covered_and_yield_stops():
 def test_residual_components_are_all_traceable():
     contract = get_contract("countryLandBordersCountry")
     estimate = estimate_residual(contract, [], RCSEState())
+    # Need-oriented components: higher means more reason to keep searching.
     for key in (
-        "marginal_yield", "saturation", "unresolved_mass", "facet_gap",
-        "verifier_disagreement", "set_instability", "consecutive_no_gain",
+        "marginal_yield", "unsaturated", "unresolved_mass", "facet_gap",
+        "mandatory_gap", "mechanism_gap", "verifier_disagreement",
+        "set_instability", "inclusion_uncertainty",
     ):
         assert key in estimate.components
+    # Raw statistics keep their natural orientation, reported separately so a
+    # reader never has to guess which way a number points.
+    for key in ("saturation", "set_stability", "consecutive_no_gain"):
+        assert key in estimate.diagnostics
     assert estimate.weights
 
 
@@ -144,7 +150,7 @@ def test_residual_is_relation_typed():
 def test_unresolved_candidates_raise_the_residual():
     contract = get_contract("countryLandBordersCountry")
     state = RCSEState()
-    state.covered_facets.update(contract.all_views())
+    state.executed_views.update(contract.all_views())
     resolved = estimate_residual(
         contract, [make_candidate("a", status=CandidateStatus.ACCEPTED)], state
     )
@@ -169,7 +175,7 @@ def test_unrun_views_become_actions():
 def test_covered_views_are_not_offered_again():
     contract = get_contract("countryLandBordersCountry")
     state = RCSEState()
-    state.covered_facets.add("borders_direct")
+    state.executed_views.add("borders_direct")
     actions = legal_actions(contract, [], state, Budget())
     assert "borders_direct" not in {a.view_id for a in actions}
 
@@ -256,7 +262,7 @@ def test_decisions_are_deterministic():
 
 def test_state_snapshot_reports_budget_and_coverage():
     state = RCSEState()
-    state.covered_facets.add("borders_direct")
+    state.executed_views.add("borders_direct")
     budget = Budget(max_calls=5)
     budget.charge(calls=2, generated_tokens=100)
     snapshot = snapshot_state([make_candidate("a")], budget, state)
@@ -268,9 +274,9 @@ def test_record_outcome_marks_the_view_covered():
     state = RCSEState()
     action = Action(ActionType.RUN_VIEW, view_id="borders_direct")
     record_outcome(
-        state, action, new_verified=1, new_candidates=1, generated_tokens=50, accepted_keys=["a"]
+        state, action, trusted_keys=["a"], new_candidates=1, generated_tokens=50,
     )
-    assert "borders_direct" in state.covered_facets
+    assert "borders_direct" in state.executed_views
     assert state.outcomes[-1].produced_value
 
 
@@ -278,8 +284,16 @@ def test_record_outcome_marks_the_view_covered():
 
 
 def _covered(contract):
+    """A state where every declared view, facet and mechanism has been run."""
+    from cover_kbc.elicitation.library import views_for
+
     state = RCSEState()
-    state.covered_facets.update(contract.all_views())
+    state.executed_views.update(contract.all_views())
+    for view in views_for(contract.relation, tuple(contract.all_views())):
+        if view.facet_id:
+            state.executed_facets.add(view.facet_id)
+        if not view.is_gate:
+            state.executed_groups.add(view.independence_group)
     return state
 
 
@@ -303,8 +317,8 @@ def test_hard_budget_always_overrides_continuation():
 def test_small_set_stops_once_stable_with_nothing_unresolved():
     contract = get_contract("countryLandBordersCountry")
     state = _covered(contract)
-    state.record_accepted(["a", "b"])
-    state.record_accepted(["a", "b"])
+    state.record_trusted(["a", "b"])
+    state.record_trusted(["a", "b"])
     candidates = [make_candidate("a", status=CandidateStatus.ACCEPTED)]
     residual = estimate_residual(contract, candidates, state)
     stop, reason = should_stop(contract, candidates, state, Budget(), residual)
@@ -324,9 +338,9 @@ def test_large_open_set_stops_only_on_saturation_and_full_facet_coverage():
     contract = get_contract("awardWonBy")
     state = _covered(contract)
     for _ in range(3):
-        state.record(ActionOutcome("RUN_FACET", new_verified=0, generated_tokens=400))
-    state.record_accepted(["a"])
-    state.record_accepted(["a"])
+        state.record(ActionOutcome("RUN_FACET", new_trusted=0, generated_tokens=400))
+    state.record_trusted(["a"])
+    state.record_trusted(["a"])
     candidates = [make_candidate("a", status=CandidateStatus.ACCEPTED)]
     residual = estimate_residual(contract, candidates, state)
     stop, reason = should_stop(contract, candidates, state, Budget(), residual)
@@ -337,8 +351,8 @@ def test_large_open_set_stops_only_on_saturation_and_full_facet_coverage():
 def test_large_open_set_keeps_going_while_facets_remain():
     contract = get_contract("awardWonBy")
     state = RCSEState()
-    state.covered_facets.update(contract.mandatory_views)
-    state.record(ActionOutcome("RUN_FACET", new_verified=3, generated_tokens=400))
+    state.executed_views.update(contract.mandatory_views)
+    state.record(ActionOutcome("RUN_FACET", new_trusted=3, generated_tokens=400))
     candidates = [make_candidate("a", status=CandidateStatus.ACCEPTED)]
     residual = estimate_residual(contract, candidates, state)
     stop, _ = should_stop(contract, candidates, state, Budget(), residual)

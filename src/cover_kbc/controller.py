@@ -29,15 +29,18 @@ from cover_kbc.elicitation.library import get_view
 from cover_kbc.coverage import (
     DEFAULT_RCSE,
     ActionOutcome,
+    GateState,
     RCSEConfig,
     RCSEState,
     ResidualEstimate,
     estimate_residual,
 )
+from cover_kbc.scoring import DEFAULT_SCORING, ScoringConfig
 from cover_kbc.types import (
     Budget,
     Candidate,
     CandidateStatus,
+    IndependenceGroup,
     ProgramType,
     VerificationTier,
 )
@@ -211,7 +214,7 @@ def snapshot_state(
         "calls_left": budget.calls_left,
         "tokens_used": budget.generated_tokens_used,
         "tokens_left": budget.tokens_left,
-        "covered_views": sorted(state.covered_facets),
+        "covered_views": sorted(state.executed_views),
         "consecutive_no_gain": state.consecutive_no_gain(),
     }
 
@@ -236,7 +239,7 @@ def legal_actions(
     actions: list[Action] = []
 
     for view_id in contract.all_views():
-        if view_id in state.covered_facets:
+        if view_id in state.executed_views:
             continue
         # Candidate-conditioned views need a candidate, so they are not
         # subject-only actions. Module 2 exposes them via `run_reverse_view`;
@@ -314,7 +317,7 @@ def score_action(
         gap = residual.components.get("facet_gap", 0.0)
         if action.action_type is ActionType.RUN_VIEW:
             gap += 0.5  # mandatory structure has priority over optional facets
-        redundancy = 1.0 if action.view_id in state.covered_facets else 0.0
+        redundancy = 1.0 if action.view_id in state.executed_views else 0.0
         uncertainty = residual.components.get("unresolved_mass", 0.0) * 0.5
 
     elif action.action_type in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY):
@@ -330,7 +333,6 @@ def score_action(
         expected_yield = residual.components.get("marginal_yield", 0.0) * 0.5
         uncertainty = residual.components.get("unresolved_mass", 0.0)
         # Redundant if the second family already recalled independently.
-        from cover_kbc.types import IndependenceGroup
 
         already = any(
             IndependenceGroup.CROSS_MODEL_RECALL in c.groups for c in candidates
@@ -370,6 +372,8 @@ def choose_action(
     *,
     config: ControllerConfig = DEFAULT_CONTROLLER,
     cross_model_available: bool = False,
+    gate: GateState | None = None,
+    scoring: ScoringConfig = DEFAULT_SCORING,
 ) -> ActionDecision:
     """Pick the highest-scoring legal action, with a full decision record.
 
@@ -377,7 +381,9 @@ def choose_action(
     (spec section 13.2 step 6): when yield has collapsed but uncertainty has
     not, resolving what we already have beats generating more of it.
     """
-    residual = estimate_residual(contract, candidates, state, config.rcse)
+    residual = estimate_residual(
+        contract, candidates, state, config.rcse, gate=gate, scoring=scoring
+    )
     state_before = snapshot_state(candidates, budget, state)
 
     actions = legal_actions(
@@ -449,7 +455,7 @@ def should_stop(
 
     stopping = resolve_stopping(contract, config)
 
-    mandatory_done = set(contract.mandatory_views) <= state.covered_facets
+    mandatory_done = set(contract.mandatory_views) <= state.executed_views
     if not mandatory_done:
         return False, "mandatory views incomplete"
 
@@ -489,20 +495,43 @@ def record_outcome(
     state: RCSEState,
     action: Action,
     *,
-    new_verified: int,
+    trusted_keys: Sequence[str],
     new_candidates: int,
     generated_tokens: int,
-    accepted_keys: Sequence[str],
+    independence_group: IndependenceGroup | None = None,
+    facet_id: str = "",
+    synthetic_cost: bool = False,
 ) -> ActionOutcome:
-    """Fold an executed action's result back into the RCSE state."""
+    """Fold an executed action's result back into the RCSE state.
+
+    Verified yield is the **increase in the trusted set**, computed here from
+    before/after rather than passed in. That is the smallest provenance-correct
+    attribution available: the gain is credited to the action that produced it,
+    and no later verification is retro-attributed to an earlier action.
+
+    Raw mention counts and verifier call counts are deliberately not yield - a
+    view repeating a name already trusted has added nothing.
+    """
+    before = state.last_trusted
+    after = frozenset(trusted_keys)
+
     outcome = ActionOutcome(
         action=action.action_type.value,
-        new_verified=new_verified,
+        new_trusted=len(after - before),
         new_candidates=new_candidates,
         generated_tokens=generated_tokens,
+        is_verification=action.action_type
+        in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY),
+        synthetic_cost=synthetic_cost,
     )
     state.record(outcome)
-    state.record_accepted(accepted_keys)
+    state.record_trusted(after)
+
+    # Three separate registers, one per coverage axis.
     if action.view_id:
-        state.covered_facets.add(action.view_id)
+        state.executed_views.add(action.view_id)
+    if facet_id:
+        state.executed_facets.add(facet_id)
+    if independence_group is not None:
+        state.executed_groups.add(independence_group)
     return outcome

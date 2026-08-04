@@ -45,7 +45,7 @@ from cover_kbc.types import (
     ViewFamily,
 )
 
-STAGE_FILE_VERSION = 3
+STAGE_FILE_VERSION = 4
 
 
 class StageError(RuntimeError):
@@ -183,6 +183,7 @@ def graph_to_json(graph: EvidenceGraph, *, keep_prompts: bool = False) -> dict[s
         "gate_reason": graph.gate_reason,
         "gate_result": gate.to_json() if gate is not None and hasattr(gate, "to_json") else None,
         "controller_log": list(graph.controller_log),
+        "rcse_state": dict(graph.rcse_state),
         "budget_snapshot": dict(graph.budget_snapshot),
         "verification_calls": graph.verification_calls,
         "records": [
@@ -205,6 +206,7 @@ def graph_from_json(payload: dict[str, Any]) -> EvidenceGraph:
     graph.gate_negative = payload.get("gate_negative", False)
     graph.gate_reason = payload.get("gate_reason")
     graph.controller_log = list(payload.get("controller_log", []))
+    graph.rcse_state = dict(payload.get("rcse_state", {}))
     graph.budget_snapshot = dict(payload.get("budget_snapshot", {}))
     graph.verification_calls = payload.get("verification_calls", 0)
 
