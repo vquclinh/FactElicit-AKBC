@@ -61,6 +61,7 @@ from cover_kbc.selection import DEFAULT_SELECTION, SelectionConfig, finalize
 from cover_kbc.types import (
     Budget,
     EmptyReason,
+    ModelRole,
     IndependenceGroup,
     OutputType,
     Prediction,
@@ -98,6 +99,22 @@ class ExecutionMode(str, Enum):
     STAGED = "staged"
 
 
+class GateRoleUnavailable(RuntimeError):
+    """The configured gate model role has no runtime loaded in this phase."""
+
+
+class UnsupportedAction(RuntimeError):
+    """The orchestrator was handed an action it has no executor for."""
+
+
+class CorruptPendingAction(RuntimeError):
+    """A persisted pending action could not be reconstructed."""
+
+
+class PendingActionNotConsumed(RuntimeError):
+    """Finalization was attempted while executable work remained."""
+
+
 @dataclass
 class PipelineConfig:
     """Every threshold the pipeline uses. Nothing hidden in code."""
@@ -125,6 +142,9 @@ class PipelineConfig:
 
     # -- gates ---------------------------------------------------------------
     enable_calibrated_gate: bool = False
+    #: Which model role scores the existence gate. Explicit, and identical in
+    #: staged and interleaved execution - see ``CoverPipeline._gate_runtime``.
+    gate_model_role: ModelRole = ModelRole.VERIFIER
     gate_min_margin: float = 1.0
     gate_min_prob: float = 0.5
 
@@ -166,6 +186,8 @@ class PipelineConfig:
         )
         if "mode" in config:
             config["mode"] = ExecutionMode(config["mode"])
+        if "gate_model_role" in config:
+            config["gate_model_role"] = ModelRole(config["gate_model_role"])
         if "disagreement_template_ids" in config:
             config["disagreement_template_ids"] = tuple(config["disagreement_template_ids"])
         fields = set(cls.__dataclass_fields__) - {"scoring", "selection", "controller"}
@@ -257,6 +279,45 @@ class CoverPipeline:
 
     # ---------------------------------------------------------------- gate --
 
+    def _gate_deferred(self) -> bool:
+        """Is the gate's model role absent from this phase?
+
+        Deferring keeps the *same logical role* scoring the gate in staged and
+        interleaved runs. The alternative - letting the enumerator score it
+        because it happens to be loaded - changes the factual decision-maker
+        based on execution mode, which is not a property a frozen config may
+        have.
+        """
+        if not self.config.enable_calibrated_gate:
+            return False
+        if self.config.gate_model_role is ModelRole.ENUMERATOR:
+            return False
+        return not self.has_second_model
+
+    def _gate_runtime(self) -> LMRuntime:
+        """The runtime that scores the existence gate.
+
+        The gate is a **configured architectural choice**, not a consequence of
+        which model happens to be resident. It is calibrated label scoring, so
+        it belongs to the verifier role by default - and if that role is not
+        loaded, this raises rather than silently substituting the enumerator.
+
+        Without this, the same frozen config changed its factual decision-maker
+        purely by execution mode: Qwen scored the gate interleaved, Mistral
+        scored it in staged Phase A where the verifier is not resident.
+        """
+        role = self.config.gate_model_role
+        if role is ModelRole.ENUMERATOR:
+            return self.runtime
+        if self.verifier_runtime is self.runtime and not self.has_second_model:
+            raise GateRoleUnavailable(
+                f"the calibrated gate is configured for the {role.value} role, but no "
+                f"{role.value} runtime is loaded. Load it for this phase, or set "
+                "pipeline.gate_model_role explicitly - substituting another model "
+                "would silently change which model makes the null decision."
+            )
+        return self.verifier_runtime
+
     def _run_gate(self, graph: EvidenceGraph, contract: RelationContract) -> int:
         """Calibrated existence gate. Returns model calls spent.
 
@@ -267,9 +328,11 @@ class CoverPipeline:
         question = GATE_QUESTIONS.get(contract.relation)
         if not question or not self.config.enable_calibrated_gate:
             return 0
+        if graph.gate_result is not None:
+            return 0                       # already scored in an earlier phase
         try:
             result = score_gate(
-                self.verifier_runtime,
+                self._gate_runtime(),
                 question.format(subject=graph.query.subject),
                 relation=contract.relation,
                 subject=graph.query.subject,
@@ -345,6 +408,88 @@ class CoverPipeline:
                 touched = graph.add_entity_mentions(outcome.record, outcome.entities)
                 discovered.extend(c.display_value for c in touched)
         return len(graph.candidates) - before, tokens
+
+    def _run_reverse_check(
+        self,
+        graph: EvidenceGraph,
+        contract: RelationContract,
+        view_id: str,
+        candidate_key: str,
+    ) -> tuple[int, int]:
+        """Candidate-conditioned reverse/alternate acquisition.
+
+        Asks the relation the other way round about one specific candidate. It
+        is **acquisition, not verification**: free text, no label scoring, no
+        calibration, and its output becomes ordinary candidate mentions under
+        ``REVERSE_ALTERNATE``. Module 4 owns verification.
+        """
+        candidate = graph.candidates.get(candidate_key)
+        if candidate is None:
+            return 0, 0
+        view = get_view(contract.relation, view_id)
+        outcome = self.engine.run_reverse_view(
+            graph.query, contract, view, candidate.display_value
+        )
+        if self.tracer is not None:
+            self.tracer.log_record(outcome.record)
+
+        before = len(graph.candidates)
+        if contract.output_type is OutputType.NUMBER:
+            graph.add_numeric_mentions(outcome.record, outcome.observations)
+        else:
+            graph.add_entity_mentions(outcome.record, outcome.entities)
+        return len(graph.candidates) - before, outcome.record.generated_tokens or 0
+
+    def _run_resample(
+        self,
+        graph: EvidenceGraph,
+        contract: RelationContract,
+        view_id: str,
+        discovered: list[str],
+        run_id: int,
+    ) -> tuple[int, int]:
+        """Repeat an already-executed acquisition view as a further run.
+
+        Subordinate to structural diversity by construction: the repeat carries
+        the same view id and independence group, so Module 3 sees one mechanism
+        sampled again rather than a new one, and ``g(o)`` does not move (spec
+        section 7.3).
+
+        It must carry a *distinct* ``run_id``, or it would produce a record and
+        edge identical to the original run - which Module 3 correctly rejects
+        as a duplicate rather than silently double-counting.
+        """
+        view = get_view(contract.relation, view_id)
+        if view.is_gate or view.is_reverse:
+            return 0, 0
+        outcome = self.engine.run_view(
+            graph.query,
+            contract,
+            view,
+            run_id=run_id,
+            accepted=discovered if view.needs_accepted_set else None,
+        )
+        if self.tracer is not None:
+            self.tracer.log_record(outcome.record)
+        before = len(graph.candidates)
+        if contract.output_type is OutputType.NUMBER:
+            graph.add_numeric_mentions(outcome.record, outcome.observations)
+        else:
+            touched = graph.add_entity_mentions(outcome.record, outcome.entities)
+            discovered.extend(c.display_value for c in touched)
+        return len(graph.candidates) - before, outcome.record.generated_tokens or 0
+
+    def _cross_model_done(self, graph: EvidenceGraph) -> bool:
+        """Has independent cross-model recall already run for this query?
+
+        Under the active controller it is a schedulable action, so Phase B must
+        not run it a second time - the repeat would regenerate the same record
+        and Module 3 would (correctly) reject the duplicate edge.
+        """
+        return any(
+            IndependenceGroup.CROSS_MODEL_RECALL in candidate.groups
+            for candidate in graph.candidates.values()
+        )
 
     def _run_cross_model_recall(
         self, graph: EvidenceGraph, contract: RelationContract
@@ -492,8 +637,11 @@ class CoverPipeline:
         budget = self.config.budget(contract)
         state = RCSEState()
 
-        gate_calls = self._run_gate(graph, contract)
-        budget.charge(calls=gate_calls)
+        # The gate is a verifier-role action. In staged mode that role is not
+        # resident during Phase A, so it is deferred to Phase B rather than
+        # scored by whichever model happens to be loaded.
+        if not self._gate_deferred():
+            budget.charge(calls=self._run_gate(graph, contract))
         if graph.gate_negative:
             graph.controller_log = []
             return graph
@@ -524,7 +672,10 @@ class CoverPipeline:
                 if not view.is_gate:
                     state.executed_groups.add(view.independence_group)
 
-        if self.config.mode is not ExecutionMode.STAGED:
+        # Under the active controller this is a schedulable action, so run it
+        # here only if the controller has not already done so - a second run
+        # would regenerate an identical record and duplicate its edge.
+        if self.config.mode is not ExecutionMode.STAGED and not self._cross_model_done(graph):
             new, tokens = self._run_cross_model_recall(graph, contract)
             if tokens or new:
                 budget.charge(calls=1, generated_tokens=tokens)
@@ -556,6 +707,7 @@ class CoverPipeline:
         deferred to Phase B rather than executed here.
         """
         staged = self.config.mode is ExecutionMode.STAGED
+        resample_runs: dict[str, int] = {}
         for step in range(self.config.max_steps_per_query):
             if budget.exhausted:
                 break
@@ -587,12 +739,32 @@ class CoverPipeline:
                     graph, contract, action.view_id, discovered
                 )
                 budget.charge(calls=1, generated_tokens=tokens)
+            elif action.action_type is ActionType.REVERSE_CHECK:
+                new_candidates, tokens = self._run_reverse_check(
+                    graph, contract, action.view_id, action.candidate_key
+                )
+                budget.charge(calls=1, generated_tokens=tokens)
+            elif action.action_type is ActionType.RESAMPLE:
+                # Each repeat needs its own run id: the view's declared runs
+                # are 0..runs-1, so further samples continue from there.
+                resample_runs[action.view_id] = resample_runs.get(
+                    action.view_id, get_view(contract.relation, action.view_id).runs
+                )
+                new_candidates, tokens = self._run_resample(
+                    graph, contract, action.view_id, discovered,
+                    run_id=resample_runs[action.view_id],
+                )
+                resample_runs[action.view_id] += 1
+                budget.charge(calls=1, generated_tokens=tokens)
             elif action.action_type in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY):
                 if staged:
-                    # Verifier is not resident in this phase; mark and move on.
-                    state.executed_views.add(f"deferred_verify:{action.candidate_key}")
+                    # The verifier is not resident in this phase. Persist the
+                    # exact chosen instance for the orchestrator to dispatch
+                    # after a role swap, and stop here rather than substituting
+                    # a lesser action or pretending the query is finished.
+                    graph.pending_action = action.to_json()
                     decisions.append(decision)
-                    continue
+                    break
                 verified = self._verify_one(
                     graph, contract, action.candidate_key,
                     action.action_type is ActionType.ADVERSARIAL_VERIFY,
@@ -640,9 +812,12 @@ class CoverPipeline:
         second model produces on its own is in the graph (as CROSS_MODEL_RECALL)
         before tiering decides what to spend verifier calls on.
         """
+        if self._gate_deferred() is False and self.config.enable_calibrated_gate:
+            # Verifier role is resident here: score any gate deferred by Phase A.
+            graph.verification_calls += self._run_gate(graph, graph.contract)
         if graph.gate_negative:
             return graph
-        if self.config.mode is ExecutionMode.STAGED:
+        if self.config.mode is ExecutionMode.STAGED and not self._cross_model_done(graph):
             new, tokens = self._run_cross_model_recall(graph, graph.contract)
             if new or tokens:
                 apply_hard_contract_rules(graph)
@@ -652,7 +827,13 @@ class CoverPipeline:
                     int(snapshot.get("generated_tokens_used", 0)) + tokens
                 )
                 graph.budget_snapshot = snapshot
-        calls = self._verify_pending(graph, graph.contract)
+        if self.config.enable_active_controller:
+            calls = self._controlled_phase(
+                graph, graph.contract,
+                frozenset({ModelRole.VERIFIER, ModelRole.NONE}), phase="verify",
+            )
+        else:
+            calls = self._verify_pending(graph, graph.contract)
         graph.verification_calls += calls
         if self.tracer is not None and calls:
             self.tracer.write(
@@ -665,10 +846,232 @@ class CoverPipeline:
             )
         return graph
 
+    def _execute_action(
+        self,
+        graph: EvidenceGraph,
+        contract: RelationContract,
+        action: Action,
+        discovered: list[str],
+        resample_runs: dict[str, int],
+    ) -> tuple[int, int, int]:
+        """Run one controller action. Returns ``(calls, new_candidates, tokens)``.
+
+        One selected *semantic* action executes exactly once here, whatever
+        number of runtime forwards its primitive needs internally - a
+        description-first view makes two generation calls and a multi-template
+        verification several, and both are charged for what they really cost
+        while remaining one controller action with one outcome record.
+        """
+        if action.action_type in (ActionType.RUN_VIEW, ActionType.RUN_FACET):
+            new, tokens = self._run_discovery_view(
+                graph, contract, action.view_id, discovered
+            )
+            return 1, new, tokens
+        if action.action_type is ActionType.REVERSE_CHECK:
+            new, tokens = self._run_reverse_check(
+                graph, contract, action.view_id, action.candidate_key
+            )
+            return 1, new, tokens
+        if action.action_type is ActionType.RESAMPLE:
+            run_id = resample_runs.get(
+                action.view_id, get_view(contract.relation, action.view_id).runs
+            )
+            resample_runs[action.view_id] = run_id + 1
+            new, tokens = self._run_resample(
+                graph, contract, action.view_id, discovered, run_id=run_id
+            )
+            return 1, new, tokens
+        if action.action_type in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY):
+            spent = self._verify_one(
+                graph, contract, action.candidate_key,
+                action.action_type is ActionType.ADVERSARIAL_VERIFY,
+            )
+            graph.verification_calls += spent
+            return max(1, spent), 0, 0
+        if action.action_type is ActionType.CROSS_MODEL_CHECK:
+            new, tokens = self._run_cross_model_recall(graph, contract)
+            apply_hard_contract_rules(graph)
+            return 1, new, tokens
+        raise UnsupportedAction(f"no executor for {action.action_type.value}")
+
+    def _controlled_phase(
+        self,
+        graph: EvidenceGraph,
+        contract: RelationContract,
+        allowed_roles: frozenset[ModelRole],
+        *,
+        phase: str,
+    ) -> int:
+        """One controller phase, restricted to the roles resident right now.
+
+        This is what makes staged execution genuinely *active* rather than a
+        decision trace computed after all model work is finished: the controller
+        re-runs against reloaded state, and an action it selects really does
+        spend a model call.
+
+        It resumes rather than restarts. Any ``pending_action`` whose role is
+        resident is executed **first** - that exact instance, not a fresh
+        choice - and cleared only once consumed. An action needing the other
+        role is persisted as the new pending action for the orchestrator to
+        dispatch after a role swap, never silently dropped.
+        """
+        state = RCSEState.from_json(graph.rcse_state)
+        budget = self.config.budget(contract)
+        snapshot = graph.budget_snapshot or {}
+        budget.charge(
+            calls=int(snapshot.get("calls_used", 0)),
+            generated_tokens=int(snapshot.get("generated_tokens_used", 0)),
+        )
+
+        decisions = [dict(d) for d in graph.controller_log]
+        discovered = [c.display_value for c in graph.active_candidates()]
+        resample_runs: dict[str, int] = {}
+        calls = 0
+
+        pending = self._take_pending(graph, allowed_roles)
+        for _ in range(self.config.max_steps_per_query):
+            # Round number is the decision's position in the persisted log, so
+            # it is contiguous, unique, and never restarts at a role swap.
+            step = len(decisions)
+            if budget.exhausted:
+                break
+
+            candidates = graph.active_candidates()
+            for candidate in candidates:
+                score_candidate(candidate, contract, self.config.scoring)
+                candidate.tier = assign_tier(candidate, contract, self.config.scoring)
+
+            if pending is not None:
+                # A resumed action was already scored in the phase that chose
+                # it; log it again here so the trace is contiguous and shows
+                # exactly where the role swap happened.
+                # Already logged by the phase that chose it; executing it here
+                # must not add a second entry for the same action.
+                action, decision = pending, None
+                pending = None
+            else:
+                decision = choose_action(
+                    contract, candidates, state, budget, step,
+                    config=self.config.controller,
+                    cross_model_available=self.config.enable_cross_model_recall
+                    and self.has_second_model
+                    and not self._cross_model_done(graph),
+                    gate=self._gate_state(graph, contract),
+                    scoring=self.config.scoring,
+                    # Deliberately *not* role-filtered: the controller must
+                    # choose the best action over the whole legal space. If the
+                    # winner needs the other model, that is a role swap to
+                    # schedule, not an action to hide - filtering here would
+                    # make `pending_action` unreachable and quietly downgrade
+                    # staged execution to "whatever this phase can manage".
+                )
+                action = decision.chosen
+                record = decision.to_json()
+
+                if action.action_type is ActionType.STOP:
+                    decisions.append(record)
+                    break
+                if action.model_role not in allowed_roles:
+                    # Needs the other model: hand it to orchestration rather
+                    # than running it against the wrong one. The decision is
+                    # logged once, here, and marked so the trace shows exactly
+                    # where the role swap was required.
+                    record["pended_for_role"] = action.model_role.value
+                    decisions.append(record)
+                    graph.pending_action = action.to_json()
+                    break
+                decisions.append(record)
+                if action.estimated_cost > budget.calls_left:
+                    # Known minimum cost exceeds what is left; do not start it.
+                    break
+
+            spent, new_candidates, tokens = self._execute_action(
+                graph, contract, action, discovered, resample_runs
+            )
+            calls += spent
+            budget.charge(calls=spent, generated_tokens=tokens)
+
+            for candidate in graph.active_candidates():
+                score_candidate(candidate, contract, self.config.scoring)
+                candidate.tier = assign_tier(candidate, contract, self.config.scoring)
+            record_outcome(
+                state, action,
+                trusted_keys=trusted_keys(
+                    graph.active_candidates(), contract, self.config.scoring
+                ),
+                new_candidates=new_candidates,
+                generated_tokens=tokens,
+                independence_group=self._action_group(contract, action),
+                facet_id=self._action_facet(contract, action),
+                synthetic_cost=not self.runtime.spec.is_neural,
+            )
+            if self.tracer is not None and decision is not None:
+                self.tracer.write({"kind": "decision", "phase": phase, **decision.to_json()})
+
+        graph.controller_log = decisions
+        graph.rcse_state = state.to_json()
+        graph.budget_snapshot = {
+            "calls_used": budget.calls_used,
+            "generated_tokens_used": budget.generated_tokens_used,
+        }
+        return calls
+
+    def _take_pending(
+        self, graph: EvidenceGraph, allowed_roles: frozenset[ModelRole]
+    ) -> Action | None:
+        """Reconstruct and consume a pending action whose role is resident.
+
+        Fails loudly on a payload it cannot execute. Silently discarding one
+        would abandon work the controller decided was worth doing, and returning
+        a prediction anyway would claim the query settled when it did not.
+        """
+        payload = graph.pending_action
+        if not payload:
+            return None
+        try:
+            action_type = ActionType(payload["action_type"])
+            action = Action(
+                action_type=action_type,
+                view_id=str(payload.get("view_id", "")),
+                facet_id=str(payload.get("facet_id", "")),
+                candidate_key=str(payload.get("candidate_key", "")),
+                reason=str(payload.get("reason", "")),
+                estimated_cost=float(payload.get("estimated_cost", 1.0)),
+            )
+        except (KeyError, ValueError, TypeError) as exc:
+            raise CorruptPendingAction(
+                f"cannot reconstruct pending action from {payload!r}: {exc}"
+            ) from exc
+        if action.model_role not in allowed_roles:
+            return None
+        graph.pending_action = {}
+        return action
+
     # ------------------------------------------------------------- phase C --
 
     def decide_graph(self, graph: EvidenceGraph) -> Prediction:
-        """Phase C: RCSE, scoring, relation-specific selection. No model calls."""
+        """Phase C: RCSE, scoring, relation-specific selection. No model calls.
+
+        Refuses to finalize while the controller still has executable work and
+        the budget to do it. Abandoning a chosen action and emitting a row
+        anyway would claim the query settled when the controller had decided it
+        had not - and it is Module 7's job to finish, not Module 8's to guess.
+        """
+        if graph.pending_action:
+            budget = self.config.budget(graph.contract)
+            snapshot = graph.budget_snapshot or {}
+            budget.charge(
+                calls=int(snapshot.get("calls_used", 0)),
+                generated_tokens=int(snapshot.get("generated_tokens_used", 0)),
+            )
+            if not budget.exhausted:
+                raise PendingActionNotConsumed(
+                    f"{graph.query.subject}/{graph.query.relation}: the controller "
+                    f"selected {graph.pending_action.get('action_type')} needing the "
+                    f"{graph.pending_action.get('model_role')} role and "
+                    f"{budget.calls_left} calls remain. Run the staged orchestrator to "
+                    "completion before finalizing."
+                )
         budget_snapshot = graph.budget_snapshot or {}
         verification_calls = graph.verification_calls
         stopped = "gate_negative" if graph.gate_negative else "fixed_budget_views_complete"
@@ -710,6 +1113,39 @@ class CoverPipeline:
             yield self.verify_graph(graph)
             if progress and (index + 1) % 25 == 0:
                 print(f"  ... verified {index + 1}", flush=True)
+
+    def resume(
+        self, graphs: Iterable[EvidenceGraph], *, progress: bool = False
+    ) -> Iterator[EvidenceGraph]:
+        """Execute pending enumerator-role work and continue the controller.
+
+        The other half of the staged role swap: Phase B leaves an action that
+        needs the enumerator, orchestration reloads that role, and this runs
+        the exact instance the controller chose before carrying on from the
+        persisted state - no mandatory view is repeated and no counter resets.
+        """
+        for index, graph in enumerate(graphs):
+            if not graph.gate_negative:
+                self._controlled_phase(
+                    graph, graph.contract,
+                    frozenset({ModelRole.ENUMERATOR, ModelRole.NONE}), phase="resume",
+                )
+            yield graph
+            if progress and (index + 1) % 25 == 0:
+                print(f"  ... resumed {index + 1}", flush=True)
+
+    @staticmethod
+    def pending_role(graph: EvidenceGraph) -> ModelRole | None:
+        """Which runtime the graph is waiting on, if any."""
+        payload = graph.pending_action
+        if not payload:
+            return None
+        try:
+            return ModelRole(payload["model_role"])
+        except (KeyError, ValueError) as exc:
+            raise CorruptPendingAction(
+                f"pending action has no usable model role: {payload!r}"
+            ) from exc
 
     def decide(self, graphs: Iterable[EvidenceGraph]) -> PipelineResult:
         """Phase C over many graphs, producing the final result."""

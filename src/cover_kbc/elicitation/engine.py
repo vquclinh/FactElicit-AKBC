@@ -54,8 +54,22 @@ class ElicitationEngine:
         self.runtime = runtime
         self.seed = seed
 
-    def _record_id(self, query: Query, view: ViewSpec, run_id: int, stage: str = "") -> str:
-        raw = f"{query.subject}|{query.relation}|{view.view_id}|{run_id}|{stage}"
+    def _record_id(
+        self,
+        query: Query,
+        view: ViewSpec,
+        run_id: int,
+        stage: str = "",
+        candidate: str = "",
+    ) -> str:
+        """Deterministic identity of one generation.
+
+        The conditioning ``candidate`` is part of it: a candidate-conditioned
+        view asked about two different candidates is two different generations,
+        and omitting it would give them the same id - which Module 3 rightly
+        rejects as a duplicate edge, making the second probe unschedulable.
+        """
+        raw = f"{query.subject}|{query.relation}|{view.view_id}|{run_id}|{stage}|{candidate}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
     def _role(self) -> ModelRole:
@@ -135,7 +149,7 @@ class ElicitationEngine:
             entities = parse_entities(raw_output, contract)
 
         record = GenerationRecord(
-            record_id=self._record_id(query, view, run_id, stage),
+            record_id=self._record_id(query, view, run_id, stage, candidate),
             query=query,
             view_id=view.view_id,
             view_family=view.family,

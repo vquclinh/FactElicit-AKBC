@@ -37,10 +37,16 @@ from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
-from cover_kbc.types import Query
+from cover_kbc.types import ModelRole, Query
 
 ENUMERATED = "stage_a_enumerated.jsonl"
 VERIFIED = "stage_b_verified.jsonl"
+#: One file per role-swap cycle, so every intermediate state stays inspectable.
+RESUMED = "stage_r{cycle}_{role}.jsonl"
+#: Bug detector, not a stopping rule: the call/token budget is what actually
+#: bounds the loop. Exceeding this means the orchestration is cycling, which
+#: must fail loudly rather than quietly return a half-finished row.
+MAX_ROLE_SWAPS = 12
 
 
 def load_config(path: Path) -> dict:
@@ -119,6 +125,10 @@ def phase_enumerate(args, config: dict) -> Path:
     split = args.split or (config.get("experiment") or {}).get("split", "val")
     dataset = load_dataset(split)
     queries = dataset.queries()
+    if getattr(args, "relation", None):
+        queries = [q for q in queries if q.relation == args.relation]
+        if not queries:
+            raise SystemExit(f"no {args.relation} queries in split {split}")
     if args.limit:
         queries = queries[: args.limit]
 
@@ -170,14 +180,65 @@ def phase_verify(args, config: dict) -> Path:
     return run_dir
 
 
+def phase_resolve(args, config: dict) -> Path:
+    """Drive the role-swap loop until no query has executable work left.
+
+    Algorithm 1 does not end after one enumerate and one verify: the controller
+    keeps choosing until a relation-specific stop or the hard budget. Staged
+    execution may swap which model is resident between those choices, but it
+    may not drop ``Execute(action)`` from the loop - so this reloads whichever
+    role the pending actions need and runs them, repeatedly, until none remain.
+
+    The same code path serves the scripted smoke and a real Mistral/Qwen run;
+    only the runtime implementations differ.
+    """
+    run_dir = Path(args.run_dir)
+    source = run_dir / VERIFIED
+    if not source.is_file():
+        source = run_dir / ENUMERATED
+
+    for cycle in range(1, MAX_ROLE_SWAPS + 1):
+        graphs = list(read_stage(source))
+        roles = {CoverPipeline.pending_role(g) for g in graphs}
+        roles.discard(None)
+        if not roles:
+            return source
+        if not roles <= {ModelRole.ENUMERATOR, ModelRole.VERIFIER}:
+            raise SystemExit(f"unsupported pending model role(s): {sorted(r.value for r in roles)}")
+
+        # One role at a time: staged execution exists so the two models need
+        # never be co-resident.
+        role = ModelRole.ENUMERATOR if ModelRole.ENUMERATOR in roles else ModelRole.VERIFIER
+        waiting = sum(1 for g in graphs if CoverPipeline.pending_role(g) is role)
+        print(f"\n[RESUME {cycle}] role={role.value}  queries_waiting={waiting}  dir={run_dir}")
+
+        target = run_dir / RESUMED.format(cycle=cycle, role=role.value)
+        phase = "enumerate" if role is ModelRole.ENUMERATOR else "verify"
+        with RunTracer(run_dir / f"calls_resume_{cycle}.jsonl") as tracer:
+            pipeline = build_pipeline(config, phase=phase, tracer=tracer)
+            driver = pipeline.resume if role is ModelRole.ENUMERATOR else pipeline.verify
+            with StageWriter(target) as writer:
+                for graph in driver(iter(graphs), progress=True):
+                    writer.write(graph)
+        source = target
+        print(json.dumps(stage_summary(source), indent=2))
+
+    raise SystemExit(
+        f"orchestration exceeded {MAX_ROLE_SWAPS} role swaps without settling; "
+        "this is a control-loop bug, not a stopping condition"
+    )
+
+
 def phase_decide(args, config: dict) -> Path:
     run_dir = Path(args.run_dir) if args.run_dir else None
     if run_dir is None:
         raise SystemExit("--run-dir is required for the decide phase")
-    source = run_dir / VERIFIED
-    if not source.is_file():
-        source = run_dir / ENUMERATED
-        print(f"note: no verified stage found; deciding from {source.name}")
+    source = Path(args.decide_source) if getattr(args, "decide_source", None) else None
+    if source is None:
+        source = run_dir / VERIFIED
+        if not source.is_file():
+            source = run_dir / ENUMERATED
+            print(f"note: no verified stage found; deciding from {source.name}")
 
     split = args.split or (config.get("experiment") or {}).get("split", "val")
     dataset = load_dataset(split)
@@ -211,10 +272,11 @@ def phase_decide(args, config: dict) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=["enumerate", "verify", "decide", "all"])
+    parser.add_argument("phase", choices=["enumerate", "verify", "resolve", "decide", "all"])
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--split")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--relation", help="restrict the run to one relation")
     parser.add_argument("--run-dir")
     args = parser.parse_args()
 
@@ -226,12 +288,17 @@ def main() -> int:
         phase_enumerate(args, config)
     elif args.phase == "verify":
         phase_verify(args, config)
+    elif args.phase == "resolve":
+        phase_resolve(args, config)
     elif args.phase == "decide":
         phase_decide(args, config)
     else:
         run_dir = phase_enumerate(args, config)
         args.run_dir = str(run_dir)
         phase_verify(args, config)
+        # Keep swapping roles until the controller settles or the budget runs
+        # out. Finalizing before this would abandon chosen actions.
+        args.decide_source = str(phase_resolve(args, config))
         phase_decide(args, config)
     return 0
 

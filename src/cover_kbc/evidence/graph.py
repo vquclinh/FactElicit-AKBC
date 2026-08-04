@@ -52,6 +52,10 @@ class EvidenceGraph:
     gate_result: object | None = None
     #: Controller decision records (Phase A), for the audit trail.
     controller_log: list[dict] = field(default_factory=list)
+    #: An action the controller selected but whose model role was not resident
+    #: in that phase. Persisted so staged orchestration can execute it after a
+    #: role swap, rather than silently dropping it.
+    pending_action: dict = field(default_factory=dict)
     #: Module-6 temporal state (Phase A). Persisted because yield and
     #: saturation record *when* and *at what cost* something was found, which
     #: the final graph cannot reconstruct - it only records what was found.

@@ -88,6 +88,8 @@ class ModelRole(str, Enum):
     ENUMERATOR = "enumerator"
     VERIFIER = "verifier"
     STUB = "stub"
+    #: No model at all - a control action such as STOP.
+    NONE = "none"
 
 
 class EvidenceMode(str, Enum):

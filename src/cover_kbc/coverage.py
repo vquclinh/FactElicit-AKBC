@@ -204,6 +204,14 @@ class RCSEState:
     executed_facets: set[str] = field(default_factory=set)
     #: Independence groups with at least one executed action.
     executed_groups: set[IndependenceGroup] = field(default_factory=set)
+    #: Identities of action *instances* already executed. Keyed on the full
+    #: identity, so ``reverse(alpha)`` and ``reverse(beta)`` are tracked apart.
+    #:
+    #: Needed because an action's effect need not land on the candidate it was
+    #: about: a reverse probe asking about `gamma` may answer "Alpha", leaving
+    #: gamma without the mechanism. Keying legality on the candidate's evidence
+    #: would then re-offer that identical probe forever.
+    executed_actions: set[tuple[str, str, str]] = field(default_factory=set)
 
     def record(self, outcome: ActionOutcome) -> None:
         self.outcomes.append(outcome)
@@ -287,6 +295,7 @@ class RCSEState:
             "executed_views": sorted(self.executed_views),
             "executed_facets": sorted(self.executed_facets),
             "executed_groups": sorted(g.value for g in self.executed_groups),
+            "executed_actions": sorted(list(a) for a in self.executed_actions),
         }
 
     @classmethod
@@ -299,6 +308,9 @@ class RCSEState:
             executed_facets=set(payload.get("executed_facets", [])),
             executed_groups={
                 IndependenceGroup(g) for g in payload.get("executed_groups", [])
+            },
+            executed_actions={
+                tuple(a) for a in payload.get("executed_actions", [])
             },
         )
 

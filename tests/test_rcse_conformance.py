@@ -1021,31 +1021,31 @@ def test_programmes_that_stop_on_balance_declare_no_blocking_signal():
 # --- 65. blocking Module-7 dependency ----------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Module 7 blocking dependency: legal_actions() skips candidate-conditioned "
-           "reverse views, so REVERSE_ALTERNATE is counted available by Module 5 but "
-           "is never schedulable. mechanism_gap therefore has an irreducible floor for "
-           "every relation declaring a reverse family. Recorded in audit 0009 §41; "
-           "fixing it belongs to Module 7, and this test flips to passing when it is.",
-)
 def test_every_available_mechanism_is_reachable_by_some_legal_action():
+    """Resolves the audit 0009 §41 blocking dependency.
+
+    Every mechanism Module 5 counts as available must be reachable by some
+    legal controller action. Candidate-conditioned families (reverse) are only
+    offered once a candidate exists, which is their genuine legality condition,
+    so the sweep supplies one.
+    """
     from cover_kbc.controller import legal_actions
     from cover_kbc.elicitation.library import get_view
     from cover_kbc.scoring import acquisition_groups
 
     for contract in all_contracts():
         state = RCSEState()
+        found = [candidate("alpha", contract.relation, mechanisms=1)]
         for _ in range(20):
             actions = legal_actions(
-                contract, [], state, Budget(max_calls=999, max_generated_tokens=99_999)
+                contract, found, state, Budget(max_calls=999, max_generated_tokens=99_999)
             )
-            view_ids = [a.view_id for a in actions if a.view_id]
-            if not view_ids:
+            fresh = [a for a in actions if a.view_id and a.view_id not in state.executed_views]
+            if not fresh:
                 break
-            for view_id in view_ids:
-                state.executed_views.add(view_id)
-                view = get_view(contract.relation, view_id)
+            for action in fresh:
+                state.executed_views.add(action.view_id)
+                view = get_view(contract.relation, action.view_id)
                 if not view.is_gate:
                     state.executed_groups.add(view.independence_group)
         unreachable = set(acquisition_groups(contract)) - state.executed_groups

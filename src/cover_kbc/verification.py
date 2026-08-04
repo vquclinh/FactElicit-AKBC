@@ -318,6 +318,17 @@ class ContextualCalibrator:
 
     def gate_control_logits(self, runtime: LMRuntime, relation: str) -> dict[str, float]:
         """Content-free control for the YES/NO/UNKNOWN gate template."""
+        # Imported at call time because these are defined below this class in
+        # the same module. It must happen *before* the first use of the names -
+        # a local import inside the branch below would make them function-local
+        # for the whole body and leave the key computation unbound.
+        from cover_kbc.verification import (
+            CONTENT_FREE_GATE_QUESTION,
+            GATE_LABELS,
+            GATE_SYSTEM_PROMPT,
+            GATE_TEMPLATE,
+        )
+
         key = _control_cache_key(
             runtime.spec.model_id,
             relation,
@@ -327,13 +338,6 @@ class ContextualCalibrator:
             label_signature=_label_signature(GATE_LABELS),
         )
         if key not in self._controls:
-            from cover_kbc.verification import (  # local import: same module, avoids cycle at def time
-                CONTENT_FREE_GATE_QUESTION,
-                GATE_LABELS,
-                GATE_SYSTEM_PROMPT,
-                GATE_TEMPLATE,
-            )
-
             result = runtime.score_labels(
                 LabelScoreRequest(
                     prompt=GATE_TEMPLATE.format(question=CONTENT_FREE_GATE_QUESTION),

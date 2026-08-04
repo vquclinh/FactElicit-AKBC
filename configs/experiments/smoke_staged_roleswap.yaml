@@ -1,0 +1,45 @@
+# Multi-role-swap staged smoke, with NO neural models.
+#
+# Exercises the full Algorithm-1 outer loop the frozen Mistral+Qwen
+# architecture uses on Colab: enumerate -> verify -> role swap back to the
+# enumerator -> ... -> STOP, using the non-neural scripted backend. It proves
+# the control contract survives model residency changes; it says nothing about
+# factual quality and must never be reported as a system result.
+
+experiment:
+  name: smoke_staged_roleswap
+  split: val
+  seed: 42
+  notes: Non-neural staged role-swap check. Not a system result.
+
+model_profile:
+  enumerator:
+    backend: "scripted"
+    model_id: offline/scripted-enumerator
+    family: offline-mistral
+    role: enumerator
+    # Canned text so the loop has candidates to reason about. Not facts.
+    default_response: "Alpha"
+    responses:
+      award_direct: "Alpha; Gamma"
+  verifier:
+    backend: "scripted"
+    model_id: offline/scripted-verifier
+    family: offline-qwen
+    role: verifier
+    # The second model independently recalls a name the enumerator never
+    # produced, which is what leaves enumerator-role work after verification.
+    default_response: "Delta"
+
+pipeline:
+  mode: staged
+  enable_active_controller: true
+  max_steps_per_query: 10
+  max_calls_per_query: 24
+  max_generated_tokens_per_query: 4000
+  enable_calibrated_gate: false
+  enable_verifier: true
+  use_calibration: true
+  max_verifications_per_query: 4
+  enable_prompt_disagreement: true
+  enable_cross_model_recall: true

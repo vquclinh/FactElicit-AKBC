@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from cover_kbc.models.base import LMRuntime, ModelSpec
-from cover_kbc.models.offline import NullRuntime, ScriptedRuntime
+from cover_kbc.models.offline import ABSTAIN_OUTPUT, NullRuntime, ScriptedRuntime
 
 #: Backends that need no optional dependencies.
 _OFFLINE_BACKENDS = {"null", "scripted"}
@@ -37,7 +37,25 @@ def build_runtime(config: Mapping[str, Any]) -> LMRuntime:
         return NullRuntime(model_id=config.get("model_id", "offline/null"))
 
     if backend == "scripted":
-        return ScriptedRuntime(model_id=config.get("model_id", "offline/scripted"))
+        # Optional canned outputs, so a scripted smoke can produce candidates
+        # and exercise the control loop rather than abstaining on every call.
+        # Purely a plumbing fixture: these are not facts and any metric derived
+        # from them is meaningless.
+        responses = config.get("responses") or {}
+        default = str(config.get("default_response", "")) or None
+
+        def fallback(request, _responses=dict(responses), _default=default):
+            view_id = str(request.metadata.get("view_id", ""))
+            if view_id in _responses:
+                return str(_responses[view_id])
+            return _default if _default is not None else ABSTAIN_OUTPUT
+
+        return ScriptedRuntime(
+            model_id=config.get("model_id", "offline/scripted"),
+            family=str(config.get("family", "offline")),
+            role=str(config.get("role", "enumerator")),
+            fallback=fallback if (responses or default) else None,
+        )
 
     if backend in {"huggingface", "hf"}:
         model_id = config.get("model_id")

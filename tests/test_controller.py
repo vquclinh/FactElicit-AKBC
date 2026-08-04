@@ -221,7 +221,9 @@ def test_resampling_is_scored_as_redundant():
         Action(ActionType.RUN_VIEW, view_id="borders_direct"),
         contract, [], RCSEState(), residual,
     )
-    assert components["redundancy"] == 1.0
+    # Redundancy is configured, not a hidden constant, and it grows per repeat
+    # so resampling becomes steadily less attractive.
+    assert components["redundancy"] >= DEFAULT_CONTROLLER.resample_redundancy
     assert resample < fresh
 
 
