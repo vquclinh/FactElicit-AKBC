@@ -229,9 +229,28 @@ def inspect_label_encoding(tokenizer, labels: Mapping[str, str] = LABEL_TOKENS) 
 
 
 def _control_cache_key(
-    model_id: str, relation: str, template_id: str, decode_identity: str
-) -> tuple[str, str, str, str]:
-    return (model_id, relation, template_id, decode_identity)
+    model_id: str,
+    relation: str,
+    template_id: str,
+    decode_identity: str,
+    revision: str = "",
+    label_signature: str = "",
+) -> tuple[str, str, str, str, str, str]:
+    """Identity of one content-free control measurement.
+
+    A control measures *template bias for a specific scoring setup*, so it may
+    only be reused where every part of that setup matches: the same checkpoint
+    **and revision**, the same label set and scoring convention, the same
+    verifier template, the same relation contract, and the same decoding
+    identity. Reusing one across a revision change or a different label set
+    would silently subtract the wrong bias from every candidate.
+    """
+    return (model_id, revision, label_signature, relation, template_id, decode_identity)
+
+
+def _label_signature(labels: Mapping[str, str]) -> str:
+    """Stable signature of the label set and its continuations."""
+    return ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
 
 
 @dataclass
@@ -265,7 +284,12 @@ class ContextualCalibrator:
     ) -> dict[str, float]:
         """Fetch (or compute once) the content-free control distribution."""
         key = _control_cache_key(
-            runtime.spec.model_id, contract.relation, template.template_id, decode_identity
+            runtime.spec.model_id,
+            contract.relation,
+            template.template_id,
+            decode_identity,
+            revision=runtime.spec.revision,
+            label_signature=_label_signature(LABEL_TOKENS),
         )
         if key not in self._controls:
             prompt = template.render(
@@ -294,7 +318,14 @@ class ContextualCalibrator:
 
     def gate_control_logits(self, runtime: LMRuntime, relation: str) -> dict[str, float]:
         """Content-free control for the YES/NO/UNKNOWN gate template."""
-        key = _control_cache_key(runtime.spec.model_id, relation, "calibrated_gate", "default")
+        key = _control_cache_key(
+            runtime.spec.model_id,
+            relation,
+            "calibrated_gate",
+            "default",
+            revision=runtime.spec.revision,
+            label_signature=_label_signature(GATE_LABELS),
+        )
         if key not in self._controls:
             from cover_kbc.verification import (  # local import: same module, avoids cycle at def time
                 CONTENT_FREE_GATE_QUESTION,
@@ -365,7 +396,7 @@ def read_labels(
         bias_logits=dict(control) if control else None,
         calibrated=calibrated,
         margin=margin,
-        entropy=entropy(probabilities),
+        entropy=max(0.0, entropy(probabilities)),
         model_id=result.model_id,
     )
 
@@ -622,7 +653,7 @@ def score_gate(
         bias_logits=control,
         calibrated=calibrated,
         margin=margin,
-        entropy=entropy(probabilities),
+        entropy=max(0.0, entropy(probabilities)),
         decision=decision,
         model_id=result.model_id,
     )

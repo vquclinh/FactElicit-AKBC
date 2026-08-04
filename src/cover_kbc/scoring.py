@@ -60,6 +60,20 @@ class ScoringConfig:
     verify_max_support: int = 2
     #: Normalised prompt disagreement above which a candidate is escalated.
     adversarial_disagreement: float = 0.15
+    #: Escalate to the adversarial template when the relation contract declares
+    #: near-miss classes and the candidate is this weakly supported.
+    #:
+    #: Spec section 10.5 puts a candidate in the adversarial tier when it "is a
+    #: common near miss specified by the contract". Deciding that a *particular*
+    #: candidate is a near miss would require factual knowledge, which is
+    #: forbidden here. The proxy is non-factual and uses only what the
+    #: architecture already knows: this relation is near-miss-prone (Module 0
+    #: declares the classes) and this candidate rests on the thinnest evidence
+    #: (Module 3 counts the mechanisms) - precisely where a near miss slips
+    #: through. Better-supported candidates get the ordinary verifier.
+    adversarial_max_support: int = 1
+    #: Turn the rule above off entirely (the contract still supplies classes).
+    adversarial_on_declared_near_misses: bool = True
 
     # -- acceptance ----------------------------------------------------------
     #: S(o) at or above which a candidate is emitted. Set so that a candidate
@@ -318,8 +332,16 @@ def assign_tier(
     if candidate.independent_support >= threshold:
         return VerificationTier.AUTO_ACCEPT
 
-    # 4. Weak or threshold-adjacent support: worth a call.
+    # 4. Weak or threshold-adjacent support: worth a call. A thinly supported
+    #    candidate of a near-miss-prone relation gets the adversarial template,
+    #    which names the contract's near-miss classes.
     if candidate.independent_support <= config.verify_max_support:
+        if (
+            config.adversarial_on_declared_near_misses
+            and contract.verification.adversarial_classes
+            and candidate.independent_support <= config.adversarial_max_support
+        ):
+            return VerificationTier.ADVERSARIAL_VERIFY
         return VerificationTier.VERIFY
 
     return VerificationTier.UNRESOLVED

@@ -323,8 +323,37 @@ def test_tier_auto_accept_for_broad_support(borders_contract):
     assert assign_tier(_candidate(support=3), borders_contract) is VerificationTier.AUTO_ACCEPT
 
 
-def test_tier_verify_for_weak_support(borders_contract):
-    assert assign_tier(_candidate(support=1), borders_contract) is VerificationTier.VERIFY
+def test_tier_verify_for_weak_support(area_contract):
+    """A relation with no declared near misses gets the ordinary verifier."""
+    assert not area_contract.verification.adversarial_classes
+    assert assign_tier(_candidate(support=1), area_contract) is VerificationTier.VERIFY
+
+
+def test_a_thin_candidate_of_a_near_miss_prone_relation_is_escalated(borders_contract):
+    """Spec §10.5's adversarial tier, routed on a non-factual condition."""
+    assert borders_contract.verification.adversarial_classes
+    assert assign_tier(_candidate(support=1), borders_contract) is (
+        VerificationTier.ADVERSARIAL_VERIFY
+    )
+
+
+def test_a_better_supported_candidate_is_not_escalated(stock_contract):
+    """Escalation targets the thinnest evidence, not every weak candidate.
+
+    Stock declares near misses and auto-accepts only at 3 mechanisms, so a
+    2-mechanism candidate lands in the ordinary verifier tier.
+    """
+    assert stock_contract.verification.adversarial_classes
+    candidate = _candidate(support=2)
+    candidate.relation = stock_contract.relation
+    assert assign_tier(candidate, stock_contract) is VerificationTier.VERIFY
+
+
+def test_the_escalation_rule_can_be_switched_off(borders_contract):
+    config = ScoringConfig(adversarial_on_declared_near_misses=False)
+    assert assign_tier(_candidate(support=1), borders_contract, config) is (
+        VerificationTier.VERIFY
+    )
 
 
 def test_tier_adversarial_on_contradiction(borders_contract):
@@ -344,13 +373,25 @@ def test_contradiction_beats_broad_support_in_tiering(borders_contract):
 
 
 def test_verification_targets_prioritise_adversarial_then_weakest(borders_contract):
+    """Adversarial first; within a tier, the weakest evidence first."""
+    config = ScoringConfig(adversarial_on_declared_near_misses=False)
     candidates = [
         _candidate("weak", support=1),
         _candidate("conflict", support=2, contradictions=1),
         _candidate("solid", support=3),
     ]
-    targets = verification_targets(candidates, borders_contract, budget=2)
+    targets = verification_targets(candidates, borders_contract, config, budget=2)
     assert [c.key for c in targets] == ["conflict", "weak"]
+
+
+def test_within_the_adversarial_tier_the_weakest_goes_first(borders_contract):
+    candidates = [
+        _candidate("thin", support=1),
+        _candidate("conflict", support=2, contradictions=1),
+    ]
+    targets = verification_targets(candidates, borders_contract, budget=2)
+    assert {c.tier for c in targets} == {VerificationTier.ADVERSARIAL_VERIFY}
+    assert [c.key for c in targets] == ["thin", "conflict"]
 
 
 def test_verification_targets_respect_the_budget(borders_contract):
