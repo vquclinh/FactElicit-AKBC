@@ -257,11 +257,14 @@ def test_pipeline_collects_multi_view_evidence():
     result = CoverPipeline(ScriptedRuntime(script)).run([Query(subject, relation, 0)])
     prediction = result.predictions[0]
 
-    assert sorted(prediction.object_entities) == ["Alpha", "Beta", "Gamma"]
     by_key = {c.key: c for c in prediction.candidates}
-    # Alpha came from two structurally different views; Beta from only one.
+    # Alpha came from two structurally different views; Beta and Gamma from one.
     assert by_key["alpha"].independent_support == 2
     assert by_key["beta"].independent_support == 1
+    assert by_key["gamma"].independent_support == 1
+    # Only Alpha clears the acceptance bar on structural support alone; the
+    # single-mechanism candidates stay unresolved without verification.
+    assert prediction.object_entities == ["Alpha"]
 
 
 def test_pipeline_stops_discovery_when_a_gate_answers_no():
@@ -346,7 +349,7 @@ def test_malformed_model_output_still_produces_a_valid_row():
     subject, relation = "Testland", "countryLandBordersCountry"
     script = {
         ("borders_direct", subject, relation): ["```json\n{{{ Alpha"],
-        ("borders_compass", subject, relation): ["I'm sorry, I cannot help with that."],
+        ("borders_compass", subject, relation): ["Alpha"],
     }
     result = CoverPipeline(ScriptedRuntime(script)).run([Query(subject, relation, 0)])
     prediction = result.predictions[0]
@@ -369,7 +372,10 @@ def test_pure_refusals_yield_an_empty_prediction():
 def test_every_emitted_candidate_traces_back_to_a_generation_record():
     """Spec invariant 3: no untraceable prediction."""
     subject, relation = "Testland", "countryLandBordersCountry"
-    script = {("borders_direct", subject, relation): ["Alpha; Beta"]}
+    script = {
+        ("borders_direct", subject, relation): ["Alpha; Beta"],
+        ("borders_compass", subject, relation): ["Alpha; Beta"],
+    }
     result = CoverPipeline(ScriptedRuntime(script)).run([Query(subject, relation, 0)])
     prediction = result.predictions[0]
     emitted = [c for c in prediction.candidates if c.display_value in prediction.object_entities]

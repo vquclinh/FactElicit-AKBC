@@ -1,0 +1,30 @@
+# Ablation rung: fixed multi-view, no controller, no verification.
+#
+# Spec section 27.2's "Multi-view" row. Every declared view - mandatory and
+# optional - is force-run in a fixed order, and nothing adapts. This is the only
+# configuration in which `run_optional_views` has any effect: with the active
+# controller enabled it is ignored, because the controller owns optional-view
+# scheduling.
+#
+# Uses the non-neural scripted backend, so it is a plumbing rung rather than a
+# system result. Point it at a real model profile to run the actual ablation.
+
+experiment:
+  name: ablation_fixed_multiview
+  split: val
+  seed: 42
+  notes: Fixed multi-view ablation - all optional views force-run, no adaptation.
+
+model_profile:
+  backend: "scripted"
+  model_id: offline/scripted-enumerator
+  family: offline-mistral
+  role: enumerator
+
+pipeline:
+  mode: interleaved
+  run_optional_views: true      # meaningful here: the controller is OFF
+  enable_active_controller: false
+  enable_verifier: false
+  enable_calibrated_gate: false
+  enable_cross_model_recall: false

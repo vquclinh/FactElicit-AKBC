@@ -70,7 +70,10 @@ budget_assertion:
 
 pipeline:
   mode: staged
-  run_optional_views: true
+  # The active controller owns optional-view scheduling: mandatory initial views
+  # run first, then it selects optional facets by expected value. `run_optional_views`
+  # is deliberately absent (it force-runs every optional view and is ignored while
+  # the controller is on); it belongs to the fixed-multi-view ablation instead.
   enable_active_controller: true
   max_steps_per_query: 12
   max_calls_per_query: 12

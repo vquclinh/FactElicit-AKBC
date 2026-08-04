@@ -57,7 +57,12 @@ COUNTRY_LAND_BORDERS = RelationContract(
         "a sub-national region, province or city rather than a country",
     ),
     mandatory_views=("borders_direct", "borders_compass"),
-    optional_views=("borders_land_vs_maritime", "borders_missing"),
+    optional_views=(
+        "borders_land_vs_maritime",
+        "borders_missing",
+        "borders_description",
+        "borders_reverse_check",
+    ),
     normalization=_ENTITY_NORMALIZATION,
     verification=VerificationPolicy(
         auto_accept_independent_support=2,
@@ -73,13 +78,22 @@ COUNTRY_LAND_BORDERS = RelationContract(
     ),
     selection=SelectionPolicy(min_independent_support=1, max_objects=0),
     eligible_independence_groups=eligible_groups_for(
-        (ViewFamily.DIRECT, ViewFamily.STRUCTURAL, ViewFamily.CONTRASTIVE, ViewFamily.MISSINGNESS)
+        (
+            ViewFamily.DIRECT,
+            ViewFamily.STRUCTURAL,
+            ViewFamily.DESCRIPTION,
+            ViewFamily.CONTRASTIVE,
+            ViewFamily.MISSINGNESS,
+            ViewFamily.REVERSE,
+        )
     ),
     view_families=(
         ViewFamily.DIRECT,
         ViewFamily.STRUCTURAL,
+        ViewFamily.DESCRIPTION,
         ViewFamily.CONTRASTIVE,
         ViewFamily.MISSINGNESS,
+        ViewFamily.REVERSE,
     ),
 )
 
@@ -107,7 +121,7 @@ PERSON_HAS_CITY_OF_DEATH = RelationContract(
         "a guess supplied because the model was asked to name a city",
     ),
     mandatory_views=("death_status_gate", "death_city_direct"),
-    optional_views=("death_locality_granularity",),
+    optional_views=("death_locality_granularity", "death_description"),
     normalization=_ENTITY_NORMALIZATION,
     verification=VerificationPolicy(
         auto_accept_independent_support=3,
@@ -121,10 +135,18 @@ PERSON_HAS_CITY_OF_DEATH = RelationContract(
         notes="Existence gate first; empty is a first-class answer, not a parse failure.",
     ),
     selection=SelectionPolicy(min_independent_support=1, max_objects=1),
+    # The gate family is declared but is not an acquisition mechanism, so it is
+    # deliberately absent from the eligible groups: no candidate can be
+    # supported by a yes/no existence probe.
     eligible_independence_groups=eligible_groups_for(
-        (ViewFamily.DIRECT, ViewFamily.STRUCTURAL, ViewFamily.CONTRASTIVE)
+        (ViewFamily.DIRECT, ViewFamily.DESCRIPTION, ViewFamily.CONTRASTIVE)
     ),
-    view_families=(ViewFamily.DIRECT, ViewFamily.STRUCTURAL, ViewFamily.CONTRASTIVE),
+    view_families=(
+        ViewFamily.GATE,
+        ViewFamily.DIRECT,
+        ViewFamily.DESCRIPTION,
+        ViewFamily.CONTRASTIVE,
+    ),
 )
 
 
@@ -151,7 +173,7 @@ COMPANY_TRADES_AT_STOCK_EXCHANGE = RelationContract(
         "a stock index, a broker, a market segment, or a ticker symbol rather than an exchange",
     ),
     mandatory_views=("stock_listing_gate", "stock_exchange_direct"),
-    optional_views=("stock_parent_contrast",),
+    optional_views=("stock_parent_contrast", "stock_description", "stock_reverse_check"),
     normalization=_ENTITY_NORMALIZATION,
     verification=VerificationPolicy(
         auto_accept_independent_support=3,
@@ -165,9 +187,20 @@ COMPANY_TRADES_AT_STOCK_EXCHANGE = RelationContract(
     ),
     selection=SelectionPolicy(min_independent_support=1, max_objects=0),
     eligible_independence_groups=eligible_groups_for(
-        (ViewFamily.DIRECT, ViewFamily.STRUCTURAL, ViewFamily.CONTRASTIVE)
+        (
+            ViewFamily.DIRECT,
+            ViewFamily.DESCRIPTION,
+            ViewFamily.CONTRASTIVE,
+            ViewFamily.REVERSE,
+        )
     ),
-    view_families=(ViewFamily.DIRECT, ViewFamily.STRUCTURAL, ViewFamily.CONTRASTIVE),
+    view_families=(
+        ViewFamily.GATE,
+        ViewFamily.DIRECT,
+        ViewFamily.DESCRIPTION,
+        ViewFamily.CONTRASTIVE,
+        ViewFamily.REVERSE,
+    ),
 )
 
 
@@ -295,7 +328,11 @@ AWARD_WON_BY = RelationContract(
         "award_facet_recipient_type",
         "award_missing",
     ),
-    optional_views=("award_facet_category", "award_exact_identity_contrast"),
+    optional_views=(
+        "award_facet_category",
+        "award_exact_identity_contrast",
+        "award_reverse_check",
+    ),
     normalization=_ENTITY_NORMALIZATION,
     verification=VerificationPolicy(
         auto_accept_independent_support=2,
@@ -314,13 +351,20 @@ AWARD_WON_BY = RelationContract(
     ),
     selection=SelectionPolicy(min_independent_support=1, max_objects=0),
     eligible_independence_groups=eligible_groups_for(
-        (ViewFamily.DIRECT, ViewFamily.STRUCTURAL, ViewFamily.CONTRASTIVE, ViewFamily.MISSINGNESS)
+        (
+            ViewFamily.DIRECT,
+            ViewFamily.STRUCTURAL,
+            ViewFamily.CONTRASTIVE,
+            ViewFamily.MISSINGNESS,
+            ViewFamily.REVERSE,
+        )
     ),
     view_families=(
         ViewFamily.DIRECT,
         ViewFamily.STRUCTURAL,
         ViewFamily.CONTRASTIVE,
         ViewFamily.MISSINGNESS,
+        ViewFamily.REVERSE,
     ),
 )
 

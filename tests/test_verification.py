@@ -365,7 +365,7 @@ def test_verification_targets_respect_the_budget(borders_contract):
 def test_score_components_are_stored_separately(borders_contract):
     candidate = _candidate(support=2)
     breakdown = score_candidate(candidate, borders_contract)
-    assert breakdown.support == pytest.approx(0.5)
+    assert breakdown.support == pytest.approx(2 / borders_contract.coverage_denominator())
     assert set(breakdown.to_json()) >= {
         "F_support", "L_logit", "X_cross_model", "C_contradiction", "U_disagreement",
         "weights", "total",

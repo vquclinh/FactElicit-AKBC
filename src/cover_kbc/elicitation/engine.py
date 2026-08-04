@@ -50,9 +50,13 @@ class ElicitationEngine:
         self.runtime = runtime
         self.seed = seed
 
-    def _record_id(self, query: Query, view: ViewSpec, run_id: int) -> str:
-        raw = f"{query.subject}|{query.relation}|{view.view_id}|{run_id}"
+    def _record_id(self, query: Query, view: ViewSpec, run_id: int, stage: str = "") -> str:
+        raw = f"{query.subject}|{query.relation}|{view.view_id}|{run_id}|{stage}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def _role(self) -> ModelRole:
+        role = self.runtime.spec.role
+        return ModelRole(role) if role in {r.value for r in ModelRole} else ModelRole.ENUMERATOR
 
     def run_view(
         self,
@@ -63,6 +67,10 @@ class ElicitationEngine:
         run_id: int = 0,
         accepted: list[str] | None = None,
         independence_group: "IndependenceGroup | None" = None,
+        context: str = "",
+        candidate: str = "",
+        stage: str = "",
+        source_record_id: str = "",
     ) -> ViewOutcome:
         """Execute one view once and parse its output.
 
@@ -78,6 +86,8 @@ class ElicitationEngine:
             subject=query.subject,
             definition=contract.verifier_definition(),
             accepted=accepted,
+            context=context,
+            candidate=candidate,
         )
         decode = view.decode
         if not decode.deterministic and decode.seed is None:
@@ -93,6 +103,8 @@ class ElicitationEngine:
                 "subject": query.subject,
                 "relation": query.relation,
                 "run_id": run_id,
+                "stage": stage,
+                "candidate": candidate,
             },
         )
 
@@ -117,7 +129,7 @@ class ElicitationEngine:
             entities = parse_entities(raw_output, contract)
 
         record = GenerationRecord(
-            record_id=self._record_id(query, view, run_id),
+            record_id=self._record_id(query, view, run_id, stage),
             query=query,
             view_id=view.view_id,
             view_family=view.family,
@@ -125,10 +137,11 @@ class ElicitationEngine:
             run_id=run_id,
             model_id=self.runtime.spec.model_id,
             model_family=self.runtime.spec.family,
-            model_role=ModelRole(self.runtime.spec.role)
-            if self.runtime.spec.role in {r.value for r in ModelRole}
-            else ModelRole.ENUMERATOR,
+            model_role=self._role(),
             facet_id=view.facet,
+            stage=stage,
+            source_record_id=source_record_id,
+            source_candidate_key=candidate,
             prompt=prompt,
             prompt_hash=prompt_hash(prompt),
             raw_output=raw_output,
@@ -140,6 +153,143 @@ class ElicitationEngine:
             error=error,
         )
         return ViewOutcome(record=record, entities=entities, numbers=numbers, gate=gate)
+
+    def run_description_view(
+        self,
+        query: Query,
+        contract: RelationContract,
+        view: ViewSpec,
+        *,
+        run_id: int = 0,
+    ) -> tuple[ViewOutcome, ViewOutcome]:
+        """Relation-focused description: generate context, then extract from it.
+
+        Two model calls, **one** acquisition mechanism. Returns
+        ``(description, extraction)``.
+
+        The description stage is prose. It is recorded for traceability and it
+        yields no candidates and no evidence edge - a self-generated context is
+        an intermediate memory-elicitation artifact, never proof. Only the
+        extraction stage produces candidate mentions, and its record points back
+        at the description that produced them via ``source_record_id``.
+        """
+        if not view.is_description:
+            raise ValueError(f"{view.view_id} is not a two-stage description view")
+
+        prompt = view.render_description(
+            subject=query.subject, definition=contract.verifier_definition()
+        )
+        error: str | None = None
+        try:
+            result = self.runtime.generate(
+                GenerationRequest(
+                    prompt=prompt,
+                    decode=view.decode,
+                    system_prompt=view.system_prompt,
+                    metadata={
+                        "view_id": view.view_id,
+                        "subject": query.subject,
+                        "relation": query.relation,
+                        "run_id": run_id,
+                        "stage": "description",
+                    },
+                )
+            )
+            context = result.text
+        except Exception as exc:  # noqa: BLE001 - one query must not kill the run
+            error = f"{type(exc).__name__}: {exc}"
+            context = ""
+            result = None
+
+        description_record = GenerationRecord(
+            record_id=self._record_id(query, view, run_id, "description"),
+            query=query,
+            view_id=view.view_id,
+            view_family=view.family,
+            independence_group=view.independence_group,
+            run_id=run_id,
+            model_id=self.runtime.spec.model_id,
+            model_family=self.runtime.spec.family,
+            model_role=self._role(),
+            facet_id=view.facet,
+            stage="description",
+            prompt=prompt,
+            prompt_hash=prompt_hash(prompt),
+            raw_output=context,
+            decode_profile=view.decode,
+            # Deliberately empty: prose is not a candidate.
+            parsed_values=[],
+            prompt_tokens=result.prompt_tokens if result else None,
+            generated_tokens=result.generated_tokens if result else None,
+            latency_ms=result.latency_ms if result else None,
+            error=error,
+        )
+        description = ViewOutcome(record=description_record, entities=[], numbers=[])
+
+        extraction = self.run_view(
+            query,
+            contract,
+            view,
+            run_id=run_id,
+            context=context,
+            stage="extraction",
+            source_record_id=description_record.record_id,
+        )
+        return description, extraction
+
+    def run_reverse_view(
+        self,
+        query: Query,
+        contract: RelationContract,
+        view: ViewSpec,
+        candidate: str,
+        *,
+        run_id: int = 0,
+    ) -> ViewOutcome:
+        """Reverse / alternate framing, conditioned on one candidate.
+
+        Asks the relation the other way round - "does <candidate> hold for
+        <subject>?" - and parses the free-text answer with the ordinary parser.
+
+        This is **not** the blind verifier: no fixed A/B/C label set, no logit
+        scoring, no calibration. It is an acquisition mechanism that happens to
+        take a candidate as input, and its output is a candidate mention like
+        any other. Module 4 owns verification.
+        """
+        if not view.is_reverse:
+            raise ValueError(f"{view.view_id} is not a candidate-conditioned view")
+        if not candidate:
+            raise ValueError(f"{view.view_id}: a reverse view needs a candidate to ask about")
+        return self.run_view(
+            query, contract, view, run_id=run_id, candidate=candidate, stage="reverse"
+        )
+
+    def run_view_repeats(
+        self,
+        query: Query,
+        contract: RelationContract,
+        view: ViewSpec,
+        *,
+        accepted: list[str] | None = None,
+        independence_group: "IndependenceGroup | None" = None,
+    ) -> list[ViewOutcome]:
+        """Execute one view ``view.runs`` times, as run 0, 1, ... n-1.
+
+        Every repeat carries the same ``view_id`` and independence group, so
+        Module 3 sees one mechanism sampled n times rather than n mechanisms.
+        Repetition amplifies evidence; it never manufactures independence.
+        """
+        return [
+            self.run_view(
+                query,
+                contract,
+                view,
+                run_id=run_id,
+                accepted=accepted,
+                independence_group=independence_group,
+            )
+            for run_id in range(max(1, view.runs))
+        ]
 
     def run_views(
         self,

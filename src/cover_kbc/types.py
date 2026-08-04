@@ -52,12 +52,29 @@ class Cardinality(str, Enum):
 
 
 class ViewFamily(str, Enum):
-    """Elicitation view families implemented in Milestone 1."""
+    """Elicitation view families (spec section 7.2, Table 5).
+
+    The first four are *candidate-acquisition* mechanisms: each one is a
+    structurally different way of getting object candidates out of the model,
+    and each maps to its own independence group.
+
+    ``GATE`` is deliberately not one of them. An existence gate asks a yes/no
+    question and returns no candidates at all, so counting it as an acquisition
+    mechanism would inflate the coverage denominator ``m(o)`` with a mechanism
+    that can never support a candidate.
+    """
 
     DIRECT = "direct"
     STRUCTURAL = "structural"
+    #: Relation-focused description: generate context to trigger parametric
+    #: memory, then extract candidates from it. Two stages, one mechanism.
+    DESCRIPTION = "description"
     CONTRASTIVE = "contrastive"
     MISSINGNESS = "missingness"
+    #: Reverse / alternate framing: a candidate-conditioned re-ask, structurally
+    #: different from subject-only enumeration.
+    REVERSE = "reverse"
+    GATE = "gate"
 
 
 class ModelRole(str, Enum):
@@ -95,13 +112,21 @@ class IndependenceGroup(str, Enum):
 
     DIRECT_RECALL = "DIRECT_RECALL"
     STRUCTURAL_DECOMPOSITION = "STRUCTURAL_DECOMPOSITION"
+    #: Candidates extracted from self-generated relation-focused context.
+    RELATION_FOCUSED_DESCRIPTION = "RELATION_FOCUSED_DESCRIPTION"
     CONTRASTIVE_SEPARATION = "CONTRASTIVE_SEPARATION"
     MISSINGNESS_SEARCH = "MISSINGNESS_SEARCH"
+    #: Candidate-conditioned alternate framing. Distinct from BLIND_VERIFIER:
+    #: it acquires a free-text answer, it does not score fixed labels.
+    REVERSE_ALTERNATE = "REVERSE_ALTERNATE"
     #: The verifier model judging a candidate it was *shown*.
     BLIND_VERIFIER = "BLIND_VERIFIER"
     #: The verifier-family model *independently recalling* objects, having been
     #: shown no candidate list. A genuinely separate source of evidence.
     CROSS_MODEL_RECALL = "CROSS_MODEL_RECALL"
+    #: Provenance for existence-gate calls. Never carries candidate evidence and
+    #: is never an eligible group, so it cannot dilute ``q(o) = g(o) / m(o)``.
+    EXISTENCE_GATE = "EXISTENCE_GATE"
     # Reserved for the experimental factual-decoding branch.
     FACTUAL_DECODING = "FACTUAL_DECODING"
 
@@ -219,6 +244,14 @@ class GenerationRecord:
     facet_id: str = ""
     model_family: str = ""
     model_role: ModelRole = ModelRole.ENUMERATOR
+    #: Which stage of a multi-stage acquisition produced this record, e.g.
+    #: ``"description"`` then ``"extraction"``. Empty for single-stage views.
+    stage: str = ""
+    #: The record this one was derived from - the description whose prose was
+    #: mined for candidates. Keeps the context/extraction chain traceable.
+    source_record_id: str = ""
+    #: The candidate a candidate-conditioned view was asked about.
+    source_candidate_key: str = ""
     parsed_values: list[str] = field(default_factory=list)
     prompt_tokens: int | None = None
     generated_tokens: int | None = None

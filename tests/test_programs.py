@@ -303,7 +303,12 @@ def test_small_set_does_not_inherit_unrestricted_open_set_expansion():
     small = get_contract("countryLandBordersCountry")
     large = get_contract("awardWonBy")
     small_actions = legal_actions(small, [], RCSEState(), Budget(max_calls=999))
-    assert {a.view_id for a in small_actions if a.view_id} == set(small.all_views())
+    # Candidate-conditioned views are not subject-only actions, so the offered
+    # set is the declared views minus those.
+    from cover_kbc.elicitation.library import get_view as _get_view
+
+    subject_only = {v for v in small.all_views() if not _get_view(small.relation, v).is_reverse}
+    assert {a.view_id for a in small_actions if a.view_id} == subject_only
     # The open-set regime genuinely has more to explore than the small one.
     assert len(large.all_views()) > len(small.all_views())
 

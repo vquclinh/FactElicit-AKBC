@@ -291,29 +291,43 @@ class CoverPipeline:
     ) -> tuple[int, int]:
         """Run one discovery view. Returns ``(new_candidates, generated_tokens)``."""
         view = get_view(contract.relation, view_id)
-        outcome = self.engine.run_view(
-            graph.query,
-            contract,
-            view,
-            run_id=0,
-            accepted=discovered if view.needs_accepted_set else None,
-        )
-        if self.tracer is not None:
-            self.tracer.log_record(outcome.record)
-
-        if outcome.gate is not None:
-            graph.register_record(outcome.record)
-            if outcome.gate.is_negative and not self.config.enable_calibrated_gate:
-                graph.close_gate(f"{view.view_id} answered NO (uncalibrated)")
-            return 0, outcome.record.generated_tokens or 0
+        if view.is_reverse:
+            # Candidate-conditioned: it cannot run as a subject-only discovery
+            # action. Module 2 exposes `run_reverse_view` for it.
+            return 0, 0
+        if view.is_description:
+            # Two calls, one mechanism: prose first, then extraction from it.
+            description, extraction = self.engine.run_description_view(
+                graph.query, contract, view
+            )
+            outcomes = [description, extraction]
+        else:
+            outcomes = self.engine.run_view_repeats(
+                graph.query,
+                contract,
+                view,
+                accepted=discovered if view.needs_accepted_set else None,
+            )
 
         before = len(graph.candidates)
-        if contract.output_type is OutputType.NUMBER:
-            graph.add_numeric_mentions(outcome.record, outcome.numbers)
-        else:
-            touched = graph.add_entity_mentions(outcome.record, outcome.entities)
-            discovered.extend(c.display_value for c in touched)
-        return len(graph.candidates) - before, outcome.record.generated_tokens or 0
+        tokens = 0
+        for outcome in outcomes:
+            if self.tracer is not None:
+                self.tracer.log_record(outcome.record)
+            tokens += outcome.record.generated_tokens or 0
+
+            if outcome.gate is not None:
+                graph.register_record(outcome.record)
+                if outcome.gate.is_negative and not self.config.enable_calibrated_gate:
+                    graph.close_gate(f"{view.view_id} answered NO (uncalibrated)")
+                continue
+
+            if contract.output_type is OutputType.NUMBER:
+                graph.add_numeric_mentions(outcome.record, outcome.numbers)
+            else:
+                touched = graph.add_entity_mentions(outcome.record, outcome.entities)
+                discovered.extend(c.display_value for c in touched)
+        return len(graph.candidates) - before, tokens
 
     def _run_cross_model_recall(
         self, graph: EvidenceGraph, contract: RelationContract

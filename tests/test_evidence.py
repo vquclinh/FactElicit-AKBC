@@ -75,7 +75,8 @@ def test_structurally_different_views_are_independent_supports(borders_query, bo
     candidate = graph.candidates["alpha"]
     assert candidate.independent_support == 3
     assert candidate.raw_support_count == 3
-    assert candidate.coverage(borders_contract.eligible_independence_groups) == pytest.approx(0.75)
+    expected = 3 / borders_contract.coverage_denominator()
+    assert candidate.coverage(borders_contract.eligible_independence_groups) == pytest.approx(expected)
 
 
 def test_repeated_mention_inside_one_generation_counts_once(borders_query, borders_contract):
@@ -192,12 +193,45 @@ def test_single_object_relation_emits_at_most_one(death_contract):
 
 
 def test_multi_object_relation_emits_every_supported_candidate(borders_query, borders_contract):
+    """Two mechanisms clear the acceptance bar for every candidate they name."""
     graph = build_graph(borders_query, borders_contract)
-    graph.add_entity_mentions(
-        make_record(borders_query, "borders_direct", ViewFamily.DIRECT, IndependenceGroup.DIRECT_RECALL),
-        ["Alpha", "Beta", "Gamma"],
-    )
+    for view_id, family, group in (
+        ("borders_direct", ViewFamily.DIRECT, IndependenceGroup.DIRECT_RECALL),
+        ("borders_compass", ViewFamily.STRUCTURAL, IndependenceGroup.STRUCTURAL_DECOMPOSITION),
+    ):
+        graph.add_entity_mentions(
+            make_record(borders_query, view_id, family, group), ["Alpha", "Beta", "Gamma"]
+        )
     assert sorted(finalize(graph).object_entities) == ["Alpha", "Beta", "Gamma"]
+
+
+def test_single_mechanism_support_is_scored_against_all_declared_mechanisms():
+    """F(o) normalises by *declared* mechanisms, not by those actually run.
+
+    Recorded as a Module-5 review item in audit 0005: a relation that declares
+    many optional mechanisms scores a one-mechanism candidate lower than a
+    relation that declares few, even when both ran the same number of views.
+    """
+    from cover_kbc.contracts.registry import get_contract
+    from cover_kbc.scoring import DEFAULT_SCORING, score_candidate
+
+    borders = get_contract("countryLandBordersCountry")
+    area = get_contract("hasArea")
+    assert borders.coverage_denominator() > area.coverage_denominator()
+
+    def one_mechanism(contract, relation_query):
+        graph = build_graph(relation_query, contract)
+        graph.add_entity_mentions(
+            make_record(relation_query, contract.mandatory_views[0],
+                        ViewFamily.DIRECT, IndependenceGroup.DIRECT_RECALL),
+            ["Alpha"],
+        )
+        candidate = graph.candidates["alpha"]
+        return score_candidate(candidate, contract).support
+
+    borders_f = one_mechanism(borders, Query("S", borders.relation, 0))
+    assert borders_f == pytest.approx(1 / borders.coverage_denominator())
+    assert borders_f < DEFAULT_SCORING.accept_score
 
 
 def test_numeric_relation_emits_the_dominant_cluster_median(area_contract):

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from cover_kbc.contracts.registry import CONTRACTS
 from cover_kbc.elicitation.views import (
+    DESCRIPTION_FORMAT,
     ENTITY_FORMAT,
     GATE_FORMAT,
     NUMERIC_FORMAT,
@@ -38,6 +39,8 @@ def _view(
     is_gate: bool = False,
     needs_accepted_set: bool = False,
     facet_id: str = "",
+    description_body: str = "",
+    is_reverse: bool = False,
 ) -> ViewSpec:
     return ViewSpec(
         view_id=view_id,
@@ -48,7 +51,22 @@ def _view(
         decode=decode,
         is_gate=is_gate,
         needs_accepted_set=needs_accepted_set,
+        description_template=(
+            f"{description_body.strip()}\n\n{DESCRIPTION_FORMAT}" if description_body else ""
+        ),
+        is_reverse=is_reverse,
     )
+
+
+#: Stage-2 extraction instruction shared by every relation-focused description.
+#: It reads only the generated context, which is what makes this mechanism
+#: structurally different from direct recall.
+_EXTRACT_FROM_CONTEXT = (
+    "Below is a description you produced.\n\n"
+    "---\n{context}\n---\n\n"
+    "Extract from that description only the items that satisfy the definition "
+    "above. Add nothing that the description does not mention."
+)
 
 
 _BORDER_VIEWS = [
@@ -71,10 +89,32 @@ _BORDER_VIEWS = [
         "borders_land_vs_maritime",
         "countryLandBordersCountry",
         ViewFamily.CONTRASTIVE,
-        "For {subject}, separate true land neighbours from near misses.\n"
-        "{definition}\n"
-        "Name only the countries that share an actual land boundary with {subject}, "
-        "excluding any country separated from it only by water.",
+        "{definition}\n\n"
+        "For {subject}, separate true land neighbours from the near misses listed "
+        "above. Work through each doubtful neighbour in turn and keep only those "
+        "that satisfy the definition.",
+    ),
+    _view(
+        "borders_description",
+        "countryLandBordersCountry",
+        ViewFamily.DESCRIPTION,
+        "{definition}\n\n" + _EXTRACT_FROM_CONTEXT,
+        description_body=(
+            "Describe the land frontier of {subject}: its overall shape, which "
+            "way each stretch of the boundary faces, and what lies on the other "
+            "side of it. Describe the geography; do not answer with a list."
+        ),
+    ),
+    _view(
+        "borders_reverse_check",
+        "countryLandBordersCountry",
+        ViewFamily.REVERSE,
+        "{definition}\n\n"
+        "Consider {subject} and {candidate} specifically. Does {candidate} share "
+        "a physical land boundary with {subject} under the definition above? "
+        "If it does, answer with the name of {candidate}. If it does not, or you "
+        "are unsure, answer NONE.",
+        is_reverse=True,
     ),
     _view(
         "borders_missing",
@@ -92,9 +132,10 @@ _DEATH_VIEWS = [
     _view(
         "death_status_gate",
         "personHasCityOfDeath",
-        ViewFamily.STRUCTURAL,
-        "Is {subject} deceased? Answer NO if the person is still living, and "
-        "UNKNOWN if you are not sure.",
+        ViewFamily.GATE,
+        "{definition}\n\n"
+        "Under that definition, is {subject} deceased? Answer NO only if you are "
+        "confident the person is still living, and UNKNOWN if you are not sure.",
         fmt=GATE_FORMAT,
         decode=GREEDY_SHORT,
         is_gate=True,
@@ -109,14 +150,25 @@ _DEATH_VIEWS = [
         decode=GREEDY_SHORT,
     ),
     _view(
+        "death_description",
+        "personHasCityOfDeath",
+        ViewFamily.DESCRIPTION,
+        "{definition}\n\n" + _EXTRACT_FROM_CONTEXT,
+        description_body=(
+            "Describe the last period of {subject}'s life and the circumstances "
+            "of their death, including where they were living and where they "
+            "died. If {subject} is still alive, say so plainly instead."
+        ),
+        decode=GREEDY,
+    ),
+    _view(
         "death_locality_granularity",
         "personHasCityOfDeath",
         ViewFamily.CONTRASTIVE,
-        "{definition}\n"
-        "For {subject}, name the locality of death at city level. Do not answer with "
-        "a country, state, province or region, and do not substitute the place of "
-        "birth, of residence or of burial. Output NONE if only a country or region "
-        "is known to you.",
+        "{definition}\n\n"
+        "For {subject}, name the locality of death at the granularity the "
+        "definition requires, checking your answer against each exclusion above. "
+        "Output NONE if only a coarser place is known to you.",
         decode=GREEDY_SHORT,
     ),
 ]
@@ -126,10 +178,11 @@ _STOCK_VIEWS = [
     _view(
         "stock_listing_gate",
         "companyTradesAtStockExchange",
-        ViewFamily.STRUCTURAL,
-        "Are shares of {subject} itself publicly traded on any stock exchange? "
-        "Answer NO if {subject} is privately held, wholly owned by another company, "
-        "or has been delisted, even when its parent is listed.",
+        ViewFamily.GATE,
+        "{definition}\n\n"
+        "Under that definition, are shares of {subject} itself publicly traded on "
+        "any stock exchange? Answer NO only if {subject} itself would have an "
+        "empty answer set.",
         fmt=GATE_FORMAT,
         decode=GREEDY_SHORT,
         is_gate=True,
@@ -142,13 +195,34 @@ _STOCK_VIEWS = [
         "Name the exchanges, not ticker symbols or market indices.",
     ),
     _view(
+        "stock_description",
+        "companyTradesAtStockExchange",
+        ViewFamily.DESCRIPTION,
+        "{definition}\n\n" + _EXTRACT_FROM_CONTEXT,
+        description_body=(
+            "Describe the ownership and trading status of {subject}: whether it "
+            "is a listed company in its own right, who owns it, and where its "
+            "shares change hands. Describe the situation in prose."
+        ),
+    ),
+    _view(
+        "stock_reverse_check",
+        "companyTradesAtStockExchange",
+        ViewFamily.REVERSE,
+        "{definition}\n\n"
+        "Consider {subject} and {candidate} specifically. Are shares of {subject} "
+        "itself traded on {candidate} under the definition above? If they are, "
+        "answer with the name of {candidate}. Otherwise answer NONE.",
+        is_reverse=True,
+    ),
+    _view(
         "stock_parent_contrast",
         "companyTradesAtStockExchange",
         ViewFamily.CONTRASTIVE,
-        "{definition}\n"
-        "Name only the exchanges where {subject} itself is listed. Exclude any "
-        "exchange where only a parent, subsidiary or affiliate of {subject} is "
-        "listed, and exclude exchanges where {subject} traded only in the past.",
+        "{definition}\n\n"
+        "For each exchange you associate with {subject}, decide whether it "
+        "satisfies the definition above or matches one of the exclusions, and "
+        "name only those that satisfy it.",
     ),
 ]
 
@@ -166,9 +240,9 @@ _AREA_VIEWS = [
         "area_total_vs_land",
         "hasArea",
         ViewFamily.CONTRASTIVE,
-        "{definition}\n"
-        "For {subject}, give the total area including inland water, not the "
-        "land-only area and not the area of a surrounding region.",
+        "{definition}\n\n"
+        "For {subject}, give the figure the definition asks for, checking it "
+        "against each exclusion above before answering.",
         fmt=NUMERIC_FORMAT,
         decode=GREEDY_SHORT,
     ),
@@ -197,10 +271,10 @@ _CAPACITY_VIEWS = [
         "capacity_contrast",
         "hasCapacity",
         ViewFamily.CONTRASTIVE,
-        "{definition}\n"
-        "For {subject}, give the highest published maximum spectator capacity. "
-        "Do not give record attendance, average attendance, or a seated-only figure "
-        "when the total capacity is higher.",
+        "{definition}\n\n"
+        "For {subject}, give the figure the definition asks for. Consider each "
+        "excluded quantity above in turn and make sure you are not reporting one "
+        "of them by mistake.",
         fmt=NUMERIC_FORMAT,
         decode=GREEDY_SHORT,
     ),
@@ -267,23 +341,33 @@ _AWARD_VIEWS = [
         "award_missing",
         "awardWonBy",
         ViewFamily.MISSINGNESS,
+        "{definition}\n\n"
         "Recipients of the {subject} already identified: {accepted}\n"
         "Choose one period, category or recipient type that the list above covers "
         "poorly, and name only additional recipients of the {subject} from it. "
-        "Do not repeat any listed name, and do not name nominees, winning works, or "
-        "recipients of a similarly named but distinct award.",
+        "Do not repeat any listed name, and respect every exclusion above.",
         decode=GREEDY_LONG,
         needs_accepted_set=True,
         facet_id="award_missingness",
     ),
     _view(
+        "award_reverse_check",
+        "awardWonBy",
+        ViewFamily.REVERSE,
+        "{definition}\n\n"
+        "Consider the {subject} and {candidate} specifically. Did {candidate} "
+        "receive the {subject} itself under the definition above? If so, answer "
+        "with the name of {candidate}. Otherwise answer NONE.",
+        decode=GREEDY,
+        is_reverse=True,
+    ),
+    _view(
         "award_exact_identity_contrast",
         "awardWonBy",
         ViewFamily.CONTRASTIVE,
-        "{definition}\n"
-        "Name only entities that received the {subject} exactly. Exclude nominees, "
-        "recipients of predecessor or successor awards, recipients of other awards "
-        "from the same organisation, and anyone whose award was rescinded.",
+        "{definition}\n\n"
+        "Name only entities that received the {subject} exactly. For each name you "
+        "consider, check it against every exclusion above before including it.",
         decode=GREEDY_LONG,
         facet_id="award_exact_identity",
     ),
@@ -337,15 +421,42 @@ def check_library_covers_contracts() -> None:
 
         for view_id in sorted(declared & implemented):
             view = get_view(relation, view_id)
+            try:
+                view.validate()
+            except ValueError as exc:
+                problems.append(str(exc))
             if view.family not in contract.view_families:
                 problems.append(
                     f"{relation}/{view_id}: family {view.family.value} is not in the "
                     f"contract's declared families"
                 )
+            # A gate carries provenance but no candidate evidence, so its group
+            # is intentionally outside the contract's eligible set.
+            if view.is_gate:
+                if view.family is not ViewFamily.GATE:
+                    problems.append(
+                        f"{relation}/{view_id}: a gate view must use the GATE family, "
+                        f"not {view.family.value} - otherwise it inflates m(o) with a "
+                        "mechanism that can never support a candidate"
+                    )
+                continue
             if view.independence_group not in contract.eligible_independence_groups:
                 problems.append(
                     f"{relation}/{view_id}: independence group "
                     f"{view.independence_group.value} is not eligible for this contract"
                 )
+
+        # Every eligible group must be reachable by some candidate-producing
+        # view. An unreachable group caps q(o) = g(o)/m(o) below 1.0 forever.
+        reachable = {
+            get_view(relation, v).independence_group
+            for v in declared & implemented
+            if not get_view(relation, v).is_gate
+        }
+        for orphan in sorted(set(contract.eligible_independence_groups) - reachable, key=str):
+            problems.append(
+                f"{relation}: independence group {orphan.value} is declared eligible "
+                "but no candidate-producing view can ever reach it"
+            )
     if problems:
         raise ValueError("View library / contract mismatch:\n  - " + "\n  - ".join(problems))

@@ -231,11 +231,19 @@ class RelationContract:
 
 
 def eligible_groups_for(families: Sequence[ViewFamily]) -> tuple[IndependenceGroup, ...]:
-    """Map view families onto the independence groups they produce."""
+    """Map view families onto the independence groups they can produce.
+
+    Only *candidate-acquisition* families count. A gate family is skipped: it
+    returns a verdict rather than candidates, so including it would put a
+    mechanism into ``m(o)`` that no candidate can ever reach - capping ``q(o)``
+    and ``F(o)`` below 1.0 for every gated relation.
+    """
     mapping = {
         ViewFamily.DIRECT: IndependenceGroup.DIRECT_RECALL,
         ViewFamily.STRUCTURAL: IndependenceGroup.STRUCTURAL_DECOMPOSITION,
+        ViewFamily.DESCRIPTION: IndependenceGroup.RELATION_FOCUSED_DESCRIPTION,
         ViewFamily.CONTRASTIVE: IndependenceGroup.CONTRASTIVE_SEPARATION,
         ViewFamily.MISSINGNESS: IndependenceGroup.MISSINGNESS_SEARCH,
+        ViewFamily.REVERSE: IndependenceGroup.REVERSE_ALTERNATE,
     }
-    return tuple(dict.fromkeys(mapping[f] for f in families))
+    return tuple(dict.fromkeys(mapping[f] for f in families if f in mapping))

@@ -25,7 +25,7 @@ model_profile:
 
 pipeline:
   mode: staged
-  run_optional_views: true
+  # Controller owns optional-view scheduling; see the target config.
   enable_active_controller: true
   max_steps_per_query: 8
   max_calls_per_query: 8

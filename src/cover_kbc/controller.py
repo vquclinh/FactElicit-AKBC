@@ -25,6 +25,7 @@ from enum import Enum
 from typing import Any, Sequence
 
 from cover_kbc.contracts.base import RelationContract
+from cover_kbc.elicitation.library import get_view
 from cover_kbc.coverage import (
     DEFAULT_RCSE,
     ActionOutcome,
@@ -236,6 +237,11 @@ def legal_actions(
 
     for view_id in contract.all_views():
         if view_id in state.covered_facets:
+            continue
+        # Candidate-conditioned views need a candidate, so they are not
+        # subject-only actions. Module 2 exposes them via `run_reverse_view`;
+        # scheduling them is a Module 7 item (see audit 0005 §22).
+        if get_view(contract.relation, view_id).is_reverse:
             continue
         mandatory = view_id in contract.mandatory_views
         actions.append(
