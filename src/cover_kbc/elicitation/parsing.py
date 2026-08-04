@@ -59,6 +59,22 @@ _LIST_COMMA = re.compile(r",(?!\d)|(?<!\d),")
 
 
 @dataclass(frozen=True)
+class NumericObservation:
+    """One scalar as the model expressed it, plus its normalised value.
+
+    Module 3 stores all four parts so a converted figure stays auditable: the
+    numeral the model wrote, the unit it used, the value after deterministic
+    conversion, and the relation's target unit. Without the first two, 2145
+    square miles and 5556 km2 are indistinguishable once converted.
+    """
+
+    value: float           # normalised, in the contract's target unit
+    raw_text: str          # the numeral exactly as written
+    source_unit: str | None
+    target_unit: str | None
+
+
+@dataclass(frozen=True)
 class GateVerdict:
     """Result of a YES/NO/UNKNOWN gate view."""
 
@@ -171,8 +187,10 @@ def parse_entities(text: str, contract: RelationContract) -> list[str]:
     return out
 
 
-def parse_numeric_values(text: str, contract: RelationContract) -> list[float]:
-    """Extract scalars for a numeric relation, converted to the target unit.
+def parse_numeric_observations(
+    text: str, contract: RelationContract
+) -> list[NumericObservation]:
+    """Extract scalars for a numeric relation, keeping their source provenance.
 
     ``hasArea`` converts everything to km2.  ``hasCapacity`` is a person count,
     so any value carrying an area unit is a type error and is dropped.
@@ -183,14 +201,21 @@ def parse_numeric_values(text: str, contract: RelationContract) -> list[float]:
     target = contract.selection.numeric_target_unit
     values: list[NumericValue] = parse_numbers(text, default_unit=None)
 
-    out: list[float] = []
+    out: list[NumericObservation] = []
     for value in values:
         if target == "km2":
             unit = value.unit or "km2"
             factor = AREA_UNITS_TO_KM2.get(unit)
             if factor is None:
                 continue
-            out.append(value.value * factor)
+            out.append(
+                NumericObservation(
+                    value=value.value * factor,
+                    raw_text=value.raw,
+                    source_unit=unit,
+                    target_unit=target,
+                )
+            )
         else:
             # Person counts: reject anything explicitly measured in area units,
             # and reject negative counts.
@@ -198,5 +223,17 @@ def parse_numeric_values(text: str, contract: RelationContract) -> list[float]:
                 continue
             if value.value < 0:
                 continue
-            out.append(value.value)
+            out.append(
+                NumericObservation(
+                    value=value.value,
+                    raw_text=value.raw,
+                    source_unit=value.unit,
+                    target_unit=target,
+                )
+            )
     return out
+
+
+def parse_numeric_values(text: str, contract: RelationContract) -> list[float]:
+    """Normalised scalars only. Prefer :func:`parse_numeric_observations`."""
+    return [o.value for o in parse_numeric_observations(text, contract)]

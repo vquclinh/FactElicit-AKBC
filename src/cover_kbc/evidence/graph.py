@@ -20,8 +20,9 @@ from dataclasses import dataclass, field
 from typing import Iterable, Iterator
 
 from cover_kbc.contracts.base import RelationContract
+from cover_kbc.elicitation.parsing import NumericObservation
 from cover_kbc.normalization.numeric import format_numeric
-from cover_kbc.normalization.strings import preferred_surface_form
+from cover_kbc.normalization.strings import is_abstain, preferred_surface_form
 from cover_kbc.types import (
     Candidate,
     CandidateStatus,
@@ -55,6 +56,8 @@ class EvidenceGraph:
     budget_snapshot: dict = field(default_factory=dict)
     #: Verifier calls spent on this query (Phase B).
     verification_calls: int = 0
+    #: Every edge id seen, so a duplicate insertion fails loudly.
+    _edge_ids: set = field(default_factory=set)
 
     # -- construction --------------------------------------------------------
 
@@ -68,8 +71,26 @@ class EvidenceGraph:
         """Store a generation record so every edge can be traced back to it."""
         self.records[record.record_id] = record
 
+    def _attach(self, candidate: Candidate, evidence: Evidence) -> None:
+        """Attach one edge, refusing a duplicate rather than silently merging."""
+        evidence.edge_id = evidence.edge_id or evidence.derive_edge_id()
+        if evidence.edge_id in self._edge_ids:
+            raise ValueError(
+                f"duplicate evidence edge {evidence.edge_id} for candidate "
+                f"{evidence.candidate_key!r} from record {evidence.record_id!r}"
+            )
+        self._edge_ids.add(evidence.edge_id)
+        candidate.add_evidence(evidence)
+
     def _candidate_key(self, value: str) -> str:
-        return self.contract.key(value)
+        """Candidate identity: the evaluator's own normalisation.
+
+        Hard merge happens only where the scorer itself would treat two surface
+        forms as one prediction. The looser alias hint is recorded on the
+        candidate but never keys the graph - a hint that turns out to be wrong
+        would otherwise destroy an entity irrecoverably.
+        """
+        return self.contract.strict_key(value)
 
     def _get_or_create(
         self,
@@ -106,13 +127,19 @@ class EvidenceGraph:
         seen_in_record: set[str] = set()
 
         for surface in surfaces:
+            # Defensive: the parser already drops these, but the graph must not
+            # rely on that. "NONE"/"UNKNOWN"/"" express absence, not an object.
+            if is_abstain(surface):
+                continue
             key = self._candidate_key(surface)
             if not key:
                 continue
 
             candidate = self._get_or_create(key, surface)
             if not candidate.strict_key:
-                candidate.strict_key = self.contract.strict_key(surface)
+                candidate.strict_key = key
+            if not candidate.alias_hint:
+                candidate.alias_hint = self.contract.key(surface)
             # A facet is a partition *inside* one mechanism, so it is recorded
             # as provenance only - never as extra independent support.
             candidate.add_facet(record.facet_id or record.view_id)
@@ -126,7 +153,8 @@ class EvidenceGraph:
                 continue
             seen_in_record.add(key)
 
-            candidate.add_evidence(
+            self._attach(
+                candidate,
                 Evidence(
                     candidate_key=key,
                     edge_type=EdgeType.SUPPORT,
@@ -138,21 +166,35 @@ class EvidenceGraph:
                     model_family=record.model_family,
                     mode=EvidenceMode.INDEPENDENT_RECALL,
                     token_cost=record.generated_tokens or 0,
-                )
+                ),
             )
             touched.append(candidate)
         return touched
 
     def add_numeric_mentions(
-        self, record: GenerationRecord, values: Iterable[float]
+        self,
+        record: GenerationRecord,
+        values: Iterable[float] | Iterable["NumericObservation"],
     ) -> list[Candidate]:
-        """Add supporting evidence for each scalar produced by one generation."""
+        """Add supporting evidence for each scalar produced by one generation.
+
+        Accepts bare floats or ``NumericObservation`` values. An observation
+        additionally preserves the numeral as the model wrote it and the unit it
+        used, so a converted value stays auditable: 2145 sq mi and 5556 km2 both
+        normalise to the same candidate but remain distinguishable in the trace.
+        """
         self.register_record(record)
         integer_only = self.contract.selection.numeric_integer_only
         touched: list[Candidate] = []
         seen_in_record: set[str] = set()
 
-        for value in values:
+        for item in values:
+            raw_text, source_unit = "", None
+            if isinstance(item, NumericObservation):
+                value, raw_text, source_unit = item.value, item.raw_text, item.source_unit
+            else:
+                value = float(item)
+
             key = format_numeric(value, integer_only=integer_only)
             if key in seen_in_record:
                 continue
@@ -160,9 +202,14 @@ class EvidenceGraph:
 
             candidate = self._get_or_create(key, key, numeric_value=value)
             candidate.strict_key = candidate.strict_key or key
+            candidate.alias_hint = candidate.alias_hint or key
+            if raw_text and not candidate.raw_text:
+                candidate.raw_text = raw_text
+                candidate.source_unit = source_unit
             candidate.add_facet(record.facet_id or record.view_id)
             candidate.add_surface_form(key)
-            candidate.add_evidence(
+            self._attach(
+                candidate,
                 Evidence(
                     candidate_key=key,
                     edge_type=EdgeType.SUPPORT,
@@ -174,7 +221,7 @@ class EvidenceGraph:
                     model_family=record.model_family,
                     mode=EvidenceMode.INDEPENDENT_RECALL,
                     token_cost=record.generated_tokens or 0,
-                )
+                ),
             )
             touched.append(candidate)
         return touched
@@ -190,7 +237,8 @@ class EvidenceGraph:
         if candidate is None:
             return None
         candidate.verifications.append(result)
-        candidate.add_evidence(
+        self._attach(
+            candidate,
             Evidence(
                 candidate_key=result.candidate_key,
                 edge_type=result.edge_type,
@@ -204,7 +252,7 @@ class EvidenceGraph:
                 valid_prob=result.valid_prob,
                 invalid_prob=result.invalid_prob,
                 unknown_prob=result.unknown_prob,
-            )
+            ),
         )
         return candidate
 
@@ -227,6 +275,36 @@ class EvidenceGraph:
         """
         self.gate_negative = True
         self.gate_reason = reason
+
+    def alias_groups(self) -> dict[str, list[str]]:
+        """Soft grouping of candidate keys that share an alias hint.
+
+        Purely advisory. The graph keeps these as separate nodes because the
+        hint is not proof of identity; this exposes the grouping so the output
+        writer (and later modules) can avoid submitting two surface forms of
+        what is probably one entity, without the graph having merged them.
+        """
+        groups: dict[str, list[str]] = {}
+        for candidate in self.candidates.values():
+            groups.setdefault(candidate.alias_hint or candidate.key, []).append(candidate.key)
+        return {k: sorted(v) for k, v in sorted(groups.items()) if len(v) > 1}
+
+    def executed_independence_groups(self) -> set[IndependenceGroup]:
+        """Groups that actually ran for this query, gates included.
+
+        Module 5 needs this to tell "mechanism declared" from "mechanism
+        executed" when it computes a per-run coverage denominator. Module 3 only
+        records it; the denominator itself is Module 5's to define.
+        """
+        return {record.independence_group for record in self.records.values()}
+
+    def candidate_producing_groups(self) -> set[IndependenceGroup]:
+        """Groups that actually produced at least one candidate edge."""
+        return {
+            edge.independence_group
+            for candidate in self.candidates.values()
+            for edge in candidate.all_evidence()
+        }
 
     def model_family_summary(self) -> dict[str, int]:
         """How many candidates each model family independently recalled."""
@@ -288,6 +366,13 @@ class EvidenceGraph:
             "gate_reason": self.gate_reason,
             "independence_summary": self.independence_summary(),
             "facet_summary": self.facet_summary(),
+            "alias_groups": self.alias_groups(),
+            "executed_independence_groups": sorted(
+                g.value for g in self.executed_independence_groups()
+            ),
+            "candidate_producing_groups": sorted(
+                g.value for g in self.candidate_producing_groups()
+            ),
             "model_family_summary": self.model_family_summary(),
             "gate": self.gate_result.to_json() if self.gate_result is not None else None,
             "candidates": [c.to_json() for c in self.active_candidates()],

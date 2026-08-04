@@ -33,8 +33,14 @@ from typing import Iterable, Sequence
 
 from cover_kbc.evaluation.official import official_normalize_string
 
-#: Articles stripped from the *key* so "The Hague" and "Hague" collapse.
-LEADING_ARTICLES = ("the", "a", "an", "la", "le", "el", "los", "las", "der", "die", "das")
+#: Articles stripped from the *alias hint* so "The Hague" and "Hague" group.
+#:
+#: English only, deliberately. Romance and Germanic articles are routinely part
+#: of a proper name rather than a detachable article, and stripping them merges
+#: genuinely different places: "Le Havre" -> "havre" collides with Havre,
+#: Montana; "Los Angeles" -> "angeles" with Angeles, Philippines; likewise
+#: El Paso / Paso, La Paz / Paz, Las Vegas / Vegas.
+LEADING_ARTICLES = ("the", "a", "an")
 
 _PARENTHETICAL = re.compile(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]")
 _LIST_MARKER = re.compile(r"^\s*(?:[-*•–—]+|\d{1,3}[.)])\s*")

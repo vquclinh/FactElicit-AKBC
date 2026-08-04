@@ -278,8 +278,25 @@ class Evidence:
     """One signed edge from an evidence event to a candidate.
 
     ``record_id`` links back to the :class:`GenerationRecord` (or verification
-    call) that produced the edge, which keeps the graph auditable.
+    call) that produced the edge, which keeps the graph auditable. There is no
+    anonymous evidence: every edge names the event that produced it.
     """
+
+    def derive_edge_id(self) -> str:
+        """Deterministic id from the edge's own identifying fields."""
+        import hashlib
+
+        raw = "|".join(
+            (
+                self.candidate_key,
+                self.record_id,
+                self.edge_type.value,
+                self.independence_group.value,
+                str(self.run_id),
+                self.view_id,
+            )
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
     candidate_key: str
     edge_type: EdgeType
@@ -288,6 +305,9 @@ class Evidence:
     model_id: str
     run_id: int
     record_id: str
+    #: Deterministic identity of this edge, so a duplicate insertion is
+    #: detectable and a reloaded graph keeps the same edges.
+    edge_id: str = ""
     model_family: str = ""
     mode: EvidenceMode = EvidenceMode.INDEPENDENT_RECALL
     valid_prob: float | None = None
@@ -458,6 +478,14 @@ class Candidate:
     output_type: OutputType = OutputType.ENTITY
     numeric_value: float | None = None
     unit: str | None = None
+    #: Soft grouping hint (strict key plus English article folding). Recorded
+    #: for later modules and for output dedup; it is NEVER the identity - the
+    #: graph keys on ``strict_key``, so a wrong fold cannot destroy an entity.
+    alias_hint: str = ""
+    #: The numeral exactly as the model wrote it, before conversion.
+    raw_text: str = ""
+    #: The unit the model expressed the value in, before conversion to ``unit``.
+    source_unit: str | None = None
     groups: dict[IndependenceGroup, EvidenceGroup] = field(default_factory=dict)
     verifications: list[VerificationResult] = field(default_factory=list)
     surface_forms: list[str] = field(default_factory=list)
@@ -540,6 +568,9 @@ class Candidate:
             "output_type": self.output_type.value,
             "numeric_value": self.numeric_value,
             "unit": self.unit,
+            "alias_hint": self.alias_hint,
+            "raw_text": self.raw_text,
+            "source_unit": self.source_unit,
             "strict_key": self.strict_key,
             "status": self.status.value,
             "tier": self.tier.value,

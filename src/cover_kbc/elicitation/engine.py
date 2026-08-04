@@ -13,15 +13,16 @@ without one.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from cover_kbc.contracts.base import RelationContract
 from cover_kbc.elicitation.library import views_for
 from cover_kbc.elicitation.parsing import (
     GateVerdict,
+    NumericObservation,
     parse_entities,
     parse_gate,
-    parse_numeric_values,
+    parse_numeric_observations,
 )
 from cover_kbc.elicitation.views import ViewSpec
 from cover_kbc.models.base import GenerationRequest, LMRuntime
@@ -41,6 +42,9 @@ class ViewOutcome:
     entities: list[str]
     numbers: list[float]
     gate: GateVerdict | None = None
+    #: The same scalars with their source numeral and unit preserved, which is
+    #: what Module 3 stores. ``numbers`` stays as the normalised values.
+    observations: list[NumericObservation] = field(default_factory=list)
 
 
 class ElicitationEngine:
@@ -119,12 +123,14 @@ class ElicitationEngine:
 
         entities: list[str] = []
         numbers: list[float] = []
+        observations: list[NumericObservation] = []
         gate: GateVerdict | None = None
 
         if view.is_gate:
             gate = parse_gate(raw_output)
         elif contract.output_type is OutputType.NUMBER:
-            numbers = parse_numeric_values(raw_output, contract)
+            observations = parse_numeric_observations(raw_output, contract)
+            numbers = [o.value for o in observations]
         else:
             entities = parse_entities(raw_output, contract)
 
@@ -152,7 +158,10 @@ class ElicitationEngine:
             latency_ms=result.latency_ms if result else None,
             error=error,
         )
-        return ViewOutcome(record=record, entities=entities, numbers=numbers, gate=gate)
+        return ViewOutcome(
+            record=record, entities=entities, numbers=numbers, gate=gate,
+            observations=observations,
+        )
 
     def run_description_view(
         self,

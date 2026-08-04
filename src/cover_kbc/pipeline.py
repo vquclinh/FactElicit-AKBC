@@ -323,7 +323,7 @@ class CoverPipeline:
                 continue
 
             if contract.output_type is OutputType.NUMBER:
-                graph.add_numeric_mentions(outcome.record, outcome.numbers)
+                graph.add_numeric_mentions(outcome.record, outcome.observations)
             else:
                 touched = graph.add_entity_mentions(outcome.record, outcome.entities)
                 discovered.extend(c.display_value for c in touched)
@@ -358,7 +358,7 @@ class CoverPipeline:
 
         before = len(graph.candidates)
         if contract.output_type is OutputType.NUMBER:
-            graph.add_numeric_mentions(outcome.record, outcome.numbers)
+            graph.add_numeric_mentions(outcome.record, outcome.observations)
         else:
             graph.add_entity_mentions(outcome.record, outcome.entities)
         return len(graph.candidates) - before, outcome.record.generated_tokens or 0

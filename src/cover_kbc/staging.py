@@ -45,7 +45,7 @@ from cover_kbc.types import (
     ViewFamily,
 )
 
-STAGE_FILE_VERSION = 2
+STAGE_FILE_VERSION = 3
 
 
 class StageError(RuntimeError):
@@ -81,6 +81,9 @@ def _record_from_json(payload: dict[str, Any]) -> GenerationRecord:
         facet_id=payload.get("facet_id", ""),
         model_family=payload.get("model_family", ""),
         model_role=ModelRole(payload.get("model_role", ModelRole.ENUMERATOR.value)),
+        stage=payload.get("stage", ""),
+        source_record_id=payload.get("source_record_id", ""),
+        source_candidate_key=payload.get("source_candidate_key", ""),
         parsed_values=list(payload.get("parsed_values", [])),
         prompt_tokens=payload.get("prompt_tokens"),
         generated_tokens=payload.get("generated_tokens"),
@@ -98,6 +101,7 @@ def _evidence_from_json(payload: dict[str, Any]) -> Evidence:
         model_id=payload.get("model_id", ""),
         run_id=payload.get("run_id", 0),
         record_id=payload.get("record_id", ""),
+        edge_id=payload.get("edge_id", ""),
         model_family=payload.get("model_family", ""),
         mode=EvidenceMode(payload.get("mode", EvidenceMode.INDEPENDENT_RECALL.value)),
         valid_prob=payload.get("valid_prob"),
@@ -136,6 +140,9 @@ def _candidate_from_json(payload: dict[str, Any]) -> Candidate:
         output_type=OutputType(payload.get("output_type", OutputType.ENTITY.value)),
         numeric_value=payload.get("numeric_value"),
         unit=payload.get("unit"),
+        alias_hint=payload.get("alias_hint", ""),
+        raw_text=payload.get("raw_text", ""),
+        source_unit=payload.get("source_unit"),
         surface_forms=list(payload.get("surface_forms", [])),
         record_ids=list(payload.get("record_ids", [])),
         status=CandidateStatus(payload.get("status", CandidateStatus.UNRESOLVED.value)),
@@ -158,6 +165,7 @@ def _candidate_from_json(payload: dict[str, Any]) -> Candidate:
         )
     for edge in payload.get("evidence", []):
         candidate.add_evidence(_evidence_from_json(edge))
+
     for verification in payload.get("verifications", []):
         candidate.verifications.append(_verification_from_json(verification))
     return candidate
@@ -205,6 +213,9 @@ def graph_from_json(payload: dict[str, Any]) -> EvidenceGraph:
     for candidate in payload.get("candidates", []):
         rebuilt = _candidate_from_json(candidate)
         graph.candidates[rebuilt.key] = rebuilt
+        for edge in rebuilt.all_evidence():
+            edge.edge_id = edge.edge_id or edge.derive_edge_id()
+            graph._edge_ids.add(edge.edge_id)
     return graph
 
 

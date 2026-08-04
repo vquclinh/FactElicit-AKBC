@@ -91,7 +91,15 @@ def test_repeated_mention_inside_one_generation_counts_once(borders_query, borde
 # --- deduplication ---------------------------------------------------------
 
 
-def test_alias_like_surface_forms_collapse_to_one_candidate(borders_query, stock_contract):
+def test_article_variants_stay_separate_nodes_but_group_softly(borders_query, stock_contract):
+    """Identity is strict; the alias hint is advisory, never a hard merge.
+
+    Merging on a hint would be irreversible, and article folding is not always
+    safe ("Le Havre" vs "Havre"). The graph keeps both nodes; the output writer
+    still submits only one surface form.
+    """
+    from cover_kbc.data.writer import dedupe_object_entities
+
     query = Query("Testcorp", "companyTradesAtStockExchange", 0)
     graph = build_graph(query, stock_contract)
     record = make_record(
@@ -99,10 +107,26 @@ def test_alias_like_surface_forms_collapse_to_one_candidate(borders_query, stock
     )
     graph.add_entity_mentions(record, ["The Alpha Stock Exchange", "Alpha Stock Exchange"])
 
+    assert len(graph.candidates) == 2                       # strict identity
+    assert len(graph.alias_groups()) == 1                   # grouped softly
+    assert {c.alias_hint for c in graph.candidates.values()} == {"alpha stock exchange"}
+    # The evaluator still sees exactly one prediction.
+    emitted = dedupe_object_entities([c.display_value for c in graph.candidates.values()])
+    assert len(emitted) == 1
+
+
+def test_exact_duplicate_surfaces_do_merge(stock_contract):
+    """Strict-identical forms are provably one prediction, so they merge."""
+    query = Query("Testcorp", "companyTradesAtStockExchange", 0)
+    graph = build_graph(query, stock_contract)
+    record = make_record(
+        query, "stock_exchange_direct", ViewFamily.DIRECT, IndependenceGroup.DIRECT_RECALL
+    )
+    graph.add_entity_mentions(record, ["Alpha Exchange", "alpha exchange", "ALPHA EXCHANGE"])
+
     assert len(graph.candidates) == 1
     candidate = next(iter(graph.candidates.values()))
-    assert len(candidate.surface_forms) == 2
-    # Exactly one surface form is emitted, because the evaluator penalises two.
+    assert len(candidate.surface_forms) == 3        # every surface preserved
     assert candidate.display_value in candidate.surface_forms
 
 
