@@ -479,6 +479,20 @@ class CoverPipeline:
             discovered.extend(c.display_value for c in touched)
         return len(graph.candidates) - before, outcome.record.generated_tokens or 0
 
+    @staticmethod
+    def _first_recall_view(contract: RelationContract) -> str:
+        """The first mandatory view that actually asks for candidates.
+
+        Not simply ``mandatory_views[0]``: for the gated relations that view is
+        the existence gate, which returns a verdict rather than names. Taking it
+        blindly made cross-model recall a silent no-op for exactly the two
+        relations whose precision most depends on a second opinion.
+        """
+        for view_id in contract.mandatory_views:
+            if not get_view(contract.relation, view_id).is_gate:
+                return view_id
+        return ""
+
     def _cross_model_done(self, graph: EvidenceGraph) -> bool:
         """Has independent cross-model recall already run for this query?
 
@@ -503,7 +517,9 @@ class CoverPipeline:
         """
         if not self.config.enable_cross_model_recall or not self.has_second_model:
             return 0, 0
-        view_id = self.config.cross_model_view or contract.mandatory_views[0]
+        view_id = self.config.cross_model_view or self._first_recall_view(contract)
+        if not view_id:
+            return 0, 0
         view = get_view(contract.relation, view_id)
         if view.is_gate:
             return 0, 0
@@ -672,10 +688,17 @@ class CoverPipeline:
                 if not view.is_gate:
                     state.executed_groups.add(view.independence_group)
 
-        # Under the active controller this is a schedulable action, so run it
-        # here only if the controller has not already done so - a second run
-        # would regenerate an identical record and duplicate its edge.
-        if self.config.mode is not ExecutionMode.STAGED and not self._cross_model_done(graph):
+        # Cross-model recall is a controller action (CROSS_MODEL_CHECK), not a
+        # phase tail. Running it unconditionally here bypassed the controller
+        # entirely and made the same config behave differently by execution
+        # mode: interleaved always ran it, staged only when a verify phase
+        # happened to occur. Both modes now run exactly what the controller
+        # chose (audit 0012 §6).
+        if (
+            not self.config.enable_active_controller
+            and self.config.mode is not ExecutionMode.STAGED     # verifier not resident
+            and not self._cross_model_done(graph)
+        ):
             new, tokens = self._run_cross_model_recall(graph, contract)
             if tokens or new:
                 budget.charge(calls=1, generated_tokens=tokens)
@@ -730,53 +753,25 @@ class CoverPipeline:
                 decisions.append(decision)
                 break
 
-            new_candidates = 0
-            tokens = 0
-            verified = 0
-
-            if action.action_type in (ActionType.RUN_VIEW, ActionType.RUN_FACET):
-                new_candidates, tokens = self._run_discovery_view(
-                    graph, contract, action.view_id, discovered
-                )
-                budget.charge(calls=1, generated_tokens=tokens)
-            elif action.action_type is ActionType.REVERSE_CHECK:
-                new_candidates, tokens = self._run_reverse_check(
-                    graph, contract, action.view_id, action.candidate_key
-                )
-                budget.charge(calls=1, generated_tokens=tokens)
-            elif action.action_type is ActionType.RESAMPLE:
-                # Each repeat needs its own run id: the view's declared runs
-                # are 0..runs-1, so further samples continue from there.
-                resample_runs[action.view_id] = resample_runs.get(
-                    action.view_id, get_view(contract.relation, action.view_id).runs
-                )
-                new_candidates, tokens = self._run_resample(
-                    graph, contract, action.view_id, discovered,
-                    run_id=resample_runs[action.view_id],
-                )
-                resample_runs[action.view_id] += 1
-                budget.charge(calls=1, generated_tokens=tokens)
-            elif action.action_type in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY):
-                if staged:
-                    # The verifier is not resident in this phase. Persist the
-                    # exact chosen instance for the orchestrator to dispatch
-                    # after a role swap, and stop here rather than substituting
-                    # a lesser action or pretending the query is finished.
-                    graph.pending_action = action.to_json()
-                    decisions.append(decision)
-                    break
-                verified = self._verify_one(
-                    graph, contract, action.candidate_key,
-                    action.action_type is ActionType.ADVERSARIAL_VERIFY,
-                )
-                graph.verification_calls += verified
-                budget.charge(calls=max(1, verified))
-            elif action.action_type is ActionType.CROSS_MODEL_CHECK:
-                new_candidates, tokens = self._run_cross_model_recall(graph, contract)
-                budget.charge(calls=1, generated_tokens=tokens)
-            else:
+            if action.model_role is not ModelRole.ENUMERATOR and staged:
+                # This phase holds the enumerator only. *Any* action needing
+                # another model is persisted for the orchestrator to dispatch
+                # after a role swap. Keying this on the model role rather than
+                # the action type stops a new verifier-role action leaking.
+                graph.pending_action = action.to_json()
                 decisions.append(decision)
                 break
+            if not budget.can_afford(self._minimum_neural_cost(contract, action)):
+                decisions.append(decision)
+                break
+
+            # One execution and charging path for both modes: measuring actual
+            # runtime invocations here is what keeps staged and interleaved
+            # spending identically for identical decisions.
+            spent, new_candidates, tokens = self._execute_action(
+                graph, contract, action, discovered, resample_runs
+            )
+            budget.charge(calls=spent, generated_tokens=tokens, logical_actions=1)
 
             # Verified yield is the growth of the *trusted* set, which needs
             # the current scores and tiers. Raw mention counts are not yield:
@@ -817,7 +812,11 @@ class CoverPipeline:
             graph.verification_calls += self._run_gate(graph, graph.contract)
         if graph.gate_negative:
             return graph
-        if self.config.mode is ExecutionMode.STAGED and not self._cross_model_done(graph):
+        if (
+            not self.config.enable_active_controller
+            and self.config.mode is ExecutionMode.STAGED
+            and not self._cross_model_done(graph)
+        ):
             new, tokens = self._run_cross_model_recall(graph, graph.contract)
             if new or tokens:
                 apply_hard_contract_rules(graph)
@@ -846,6 +845,28 @@ class CoverPipeline:
             )
         return graph
 
+    def _minimum_neural_cost(self, contract: RelationContract, action: Action) -> int:
+        """Neural calls this action is *known* to need before it starts.
+
+        A floor, not an estimate: a description-first view always makes two
+        generations, and a multi-template verification always makes one score
+        per template. Calibration controls are excluded because a cache hit
+        costs nothing, so counting them would refuse affordable actions.
+        """
+        if action.action_type in (
+            ActionType.RUN_VIEW, ActionType.RUN_FACET, ActionType.RESAMPLE
+        ):
+            view = get_view(contract.relation, action.view_id)
+            return 2 if view.is_description else max(1, view.runs)
+        if action.action_type is ActionType.ADVERSARIAL_VERIFY:
+            return (
+                len(self.config.disagreement_template_ids)
+                if self.config.enable_prompt_disagreement else 1
+            )
+        if action.action_type is ActionType.STOP:
+            return 0
+        return 1
+
     def _execute_action(
         self,
         graph: EvidenceGraph,
@@ -856,23 +877,26 @@ class CoverPipeline:
     ) -> tuple[int, int, int]:
         """Run one controller action. Returns ``(calls, new_candidates, tokens)``.
 
-        One selected *semantic* action executes exactly once here, whatever
-        number of runtime forwards its primitive needs internally - a
-        description-first view makes two generation calls and a multi-template
-        verification several, and both are charged for what they really cost
-        while remaining one controller action with one outcome record.
+        The returned call count is the number of **actual neural invocations**
+        the runtimes made, measured from their own counters - not an assumption
+        per action type. A description-first view makes two generations, a
+        multi-template verification several scores plus possibly a calibration
+        control, and a cache hit makes none. One logical action, N neural calls,
+        and the hard budget must see N.
         """
+        before = self.runtime.calls + (
+            self.verifier_runtime.calls if self.has_second_model else 0
+        )
+
         if action.action_type in (ActionType.RUN_VIEW, ActionType.RUN_FACET):
             new, tokens = self._run_discovery_view(
                 graph, contract, action.view_id, discovered
             )
-            return 1, new, tokens
-        if action.action_type is ActionType.REVERSE_CHECK:
+        elif action.action_type is ActionType.REVERSE_CHECK:
             new, tokens = self._run_reverse_check(
                 graph, contract, action.view_id, action.candidate_key
             )
-            return 1, new, tokens
-        if action.action_type is ActionType.RESAMPLE:
+        elif action.action_type is ActionType.RESAMPLE:
             run_id = resample_runs.get(
                 action.view_id, get_view(contract.relation, action.view_id).runs
             )
@@ -880,19 +904,22 @@ class CoverPipeline:
             new, tokens = self._run_resample(
                 graph, contract, action.view_id, discovered, run_id=run_id
             )
-            return 1, new, tokens
-        if action.action_type in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY):
-            spent = self._verify_one(
+        elif action.action_type in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY):
+            graph.verification_calls += self._verify_one(
                 graph, contract, action.candidate_key,
                 action.action_type is ActionType.ADVERSARIAL_VERIFY,
             )
-            graph.verification_calls += spent
-            return max(1, spent), 0, 0
-        if action.action_type is ActionType.CROSS_MODEL_CHECK:
+            new, tokens = 0, 0
+        elif action.action_type is ActionType.CROSS_MODEL_CHECK:
             new, tokens = self._run_cross_model_recall(graph, contract)
             apply_hard_contract_rules(graph)
-            return 1, new, tokens
-        raise UnsupportedAction(f"no executor for {action.action_type.value}")
+        else:
+            raise UnsupportedAction(f"no executor for {action.action_type.value}")
+
+        after = self.runtime.calls + (
+            self.verifier_runtime.calls if self.has_second_model else 0
+        )
+        return after - before, new, tokens
 
     def _controlled_phase(
         self,
@@ -981,15 +1008,17 @@ class CoverPipeline:
                     graph.pending_action = action.to_json()
                     break
                 decisions.append(record)
-                if action.estimated_cost > budget.calls_left:
-                    # Known minimum cost exceeds what is left; do not start it.
+                if not budget.can_afford(self._minimum_neural_cost(contract, action)):
+                    # A multi-call action that is guaranteed to overrun must not
+                    # start: it would push the hard counter past its ceiling
+                    # before the guard could fire.
                     break
 
             spent, new_candidates, tokens = self._execute_action(
                 graph, contract, action, discovered, resample_runs
             )
             calls += spent
-            budget.charge(calls=spent, generated_tokens=tokens)
+            budget.charge(calls=spent, generated_tokens=tokens, logical_actions=1)
 
             for candidate in graph.active_candidates():
                 score_candidate(candidate, contract, self.config.scoring)

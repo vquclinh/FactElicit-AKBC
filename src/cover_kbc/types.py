@@ -608,12 +608,24 @@ class Candidate:
 
 @dataclass
 class Budget:
-    """Hard inference budget for one query."""
+    """Hard inference budget for one query.
+
+    ``calls`` means **actual neural runtime invocations** - one
+    ``generate`` or one ``score_labels`` each. It is deliberately *not* a count
+    of controller actions: one adversarial verification is one logical action
+    but three template scores plus possibly a calibration control, and charging
+    it as "1" would let a query quietly spend several times its stated budget.
+
+    ``logical_actions`` is tracked alongside for diagnostics and for the
+    controller's own reasoning, and never bounds the hard budget.
+    """
 
     max_calls: int = 12
     max_generated_tokens: int = 6000
     calls_used: int = 0
     generated_tokens_used: int = 0
+    #: Controller actions taken. Diagnostic; never a hard limit.
+    logical_actions: int = 0
 
     @property
     def calls_left(self) -> int:
@@ -627,9 +639,25 @@ class Budget:
     def exhausted(self) -> bool:
         return self.calls_left <= 0 or self.tokens_left <= 0
 
-    def charge(self, calls: int = 1, generated_tokens: int = 0) -> None:
+    def charge(
+        self, calls: int = 1, generated_tokens: int = 0, logical_actions: int = 0
+    ) -> None:
+        """Charge actual neural calls, tokens, and (separately) logical actions."""
+        if calls < 0 or generated_tokens < 0:
+            raise ValueError("a budget charge may not be negative")
         self.calls_used += calls
         self.generated_tokens_used += generated_tokens
+        self.logical_actions += logical_actions
+
+    def can_afford(self, calls: int) -> bool:
+        """Is there room for an action whose *minimum* neural cost is known?
+
+        Used to refuse starting a multi-call action - a description-first view
+        needs two calls, a multi-template verification several - that is
+        guaranteed to overrun. Starting it anyway would push the counter past
+        the hard ceiling before the guard could fire.
+        """
+        return calls <= self.calls_left
 
 
 @dataclass

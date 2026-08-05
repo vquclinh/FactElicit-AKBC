@@ -284,6 +284,38 @@ class EvidenceGraph:
         self.gate_negative = True
         self.gate_reason = reason
 
+    def same_record_alias_hints(self) -> dict[str, list[str]]:
+        """**Diagnostic only.** Candidates from one generation sharing an alias hint.
+
+        This is *not* an identity relation and **must not** change what is
+        emitted. Co-occurrence in one generation plus a matching article-folded
+        hint is suggestive, but it does not *prove* restatement: one generation
+        may legitimately enumerate two distinct entities whose surfaces happen
+        to satisfy the same lexical fold.
+
+        The architecture has no explicit restatement evidence to appeal to - the
+        parser recognises no alias construction ("X, also known as Y"), and
+        ``GenerationRecord`` carries no ``restatement_of`` relation. Until such
+        evidence exists, strict identity is retained and this stays a trace aid
+        for a human reading a run (audit 0012 §58).
+        """
+        by_record: dict[tuple[str, str], list[str]] = {}
+        for candidate in self.candidates.values():
+            if not candidate.alias_hint:
+                continue
+            for record_id in candidate.record_ids:
+                by_record.setdefault((record_id, candidate.alias_hint), []).append(candidate.key)
+
+        groups: dict[str, list[str]] = {}
+        for (record_id, hint), keys in sorted(by_record.items()):
+            if len(keys) < 2:
+                continue
+            groups.setdefault(hint, [])
+            for key in sorted(keys):
+                if key not in groups[hint]:
+                    groups[hint].append(key)
+        return {k: sorted(v) for k, v in sorted(groups.items())}
+
     def alias_groups(self) -> dict[str, list[str]]:
         """Soft grouping of candidate keys that share an alias hint.
 

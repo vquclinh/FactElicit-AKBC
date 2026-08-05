@@ -315,11 +315,12 @@ def test_pipeline_output_is_evaluator_valid(tmp_path):
     path = write_predictions(result.predictions, tmp_path / "p.jsonl", expected_queries=[query])
     rows = [json.loads(line) for line in path.read_text().splitlines()]
 
-    # Both article variants reach the file: they are distinct strict candidates
-    # and the writer collapses only evaluator-identical duplicates. This costs
-    # a false positive against a gold whose alias set covers both forms - the
-    # documented trade-off of not reconstructing the evaluator's alias database
-    # (audit 0011 §12).
+    # Both article variants reach the file. They are distinct strict candidates
+    # and nothing in the architecture *proves* one restates the other: the
+    # parser recognises no alias construction, so same-record co-occurrence
+    # plus a matching lexical fold is suggestive, not evidence. A false merge
+    # is worse than the precision cost, so strict identity is retained
+    # (audit 0012 §58).
     assert rows[0]["ObjectEntities"] == ["Alpha Stock Exchange", "The Alpha Stock Exchange"]
 
     gold = [
@@ -330,10 +331,9 @@ def test_pipeline_output_is_evaluator_valid(tmp_path):
         }
     ]
     report = evaluate_predictions(rows, gold)
-    # The row is schema-valid and the true positive is found, but the second
-    # article variant is an unmatched prediction: precision 1/2, recall 1/1.
-    # This is the measured cost of leaving alias resolution to the evaluator
-    # instead of folding articles ourselves - recorded, not hidden.
+    # Precision 1/2, recall 1/1 against a gold whose alias set covers both
+    # forms. Recorded honestly: this is the accepted cost of refusing an
+    # unproven identity inference, not a number to optimise.
     assert report.overall_macro_f1 == pytest.approx(2 / 3)
 
 

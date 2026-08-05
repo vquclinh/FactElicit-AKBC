@@ -264,12 +264,27 @@ def _relative_mad(values: Sequence[float], epsilon: float = 1e-9) -> float:
 
 
 def cluster_values(values: Sequence[float], threshold: float = 0.05) -> list[NumericCluster]:
-    """Group values by relative distance and summarise each group.
+    """Group values into *diameter-bounded* clusters and summarise each group.
 
-    Uses single-linkage over the sorted sequence, which is deterministic and
-    adequate for the handful of scalars one query produces.  Clusters are
-    returned largest-first, ties broken by tighter dispersion then lower
-    representative, so selection never depends on input order.
+    ``threshold`` bounds the **whole cluster**, not each adjacent step:
+
+        relative_distance(min(C), max(C)) <= threshold
+
+    This is deliberately not single-linkage. Single-linkage chains: with a
+    pairwise threshold t, a run of values each just under t apart forms one
+    group whose diameter grows without bound. Measured at t = 0.025, four
+    chained values already span 7% and twenty span 37% - so the median could
+    sit further from its own cluster members than the official ±5% tolerance,
+    and "the dominant robust cluster" would no longer be one coherent
+    semantic value. Lowering t only slows the drift; it never bounds it.
+
+    A diameter bound is what "one coherent cluster" actually means, and it
+    makes the median provably within ``threshold`` of every member.
+
+    Sweeping the sorted sequence and extending a group while the diameter holds
+    is deterministic and order-independent. Clusters are returned largest-first,
+    ties broken by tighter dispersion then lower representative, so selection
+    never depends on input order.
     """
     finite = sorted(v for v in values if math.isfinite(v))
     if not finite:
@@ -277,7 +292,8 @@ def cluster_values(values: Sequence[float], threshold: float = 0.05) -> list[Num
 
     groups: list[list[float]] = [[finite[0]]]
     for value in finite[1:]:
-        if relative_distance(groups[-1][-1], value) <= threshold:
+        # Extend only while the *whole* group stays inside the diameter.
+        if relative_distance(groups[-1][0], value) <= threshold:
             groups[-1].append(value)
         else:
             groups.append([value])
