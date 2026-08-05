@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from cover_kbc.contracts.base import RelationContract
 from cover_kbc.contracts.router import compile_query
@@ -1294,11 +1294,25 @@ class CoverPipeline:
                 f"pending action has no usable model role: {payload!r}"
             ) from exc
 
-    def decide(self, graphs: Iterable[EvidenceGraph]) -> PipelineResult:
-        """Phase C over many graphs, producing the final result."""
+    def decide(
+        self,
+        graphs: Iterable[EvidenceGraph],
+        *,
+        on_result: Callable[[Prediction, EvidenceGraph], None] | None = None,
+    ) -> PipelineResult:
+        """Phase C over many graphs, producing the final result.
+
+        ``on_result`` is a progress observer, called once per finished query
+        after its prediction is collected. It takes no part in the decision and
+        must not modify what it is handed; ``decide`` behaves identically
+        whether or not one is supplied.
+        """
         result = PipelineResult()
         for graph in graphs:
-            self._collect(result, self.decide_graph(graph), graph)
+            prediction = self.decide_graph(graph)
+            self._collect(result, prediction, graph)
+            if on_result is not None:
+                on_result(prediction, graph)
         return result
 
     def run(self, queries: Iterable[Query], *, progress: bool = False) -> PipelineResult:

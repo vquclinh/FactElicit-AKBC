@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import time
+from collections import Counter
 from pathlib import Path
 
 from _bootstrap import ensure_src_on_path
@@ -57,6 +60,126 @@ MAX_ROLE_SWAPS = 12
 
 def load_config(path: Path) -> dict:
     return yaml.safe_load(Path(path).read_text()) or {}
+
+
+# --------------------------------------------------------------------------
+# Progress reporting
+#
+# Observability only. Every function below reads counters and finished objects
+# and prints; none writes to a graph, spends a neural call, or touches the RNG.
+# The pipeline is unchanged apart from ``decide``'s optional observer, so with
+# reporting stripped out the run produces byte-identical artefacts.
+# --------------------------------------------------------------------------
+
+
+def line_buffer_stdout() -> None:
+    """Flush stdout per line, so a Colab cell shows progress as it happens.
+
+    ``python -u`` and ``PYTHONUNBUFFERED=1`` already do this; this makes the
+    plain invocation behave the same rather than buffering minutes of output.
+    """
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):  # pragma: no cover - exotic streams
+        pass
+
+
+def _short(text: object, width: int = 48) -> str:
+    """One-line, length-capped rendering of a subject."""
+    collapsed = " ".join(str(text).split())
+    if len(collapsed) <= width:
+        return collapsed
+    return collapsed[: width - 1] + "…"
+
+
+def _runtime_calls(pipeline) -> int:
+    """Neural calls spent so far, counted once per distinct runtime object.
+
+    In Phase A ``verifier_runtime`` aliases ``runtime``, so identity - not
+    equality - decides whether a counter is added twice.
+    """
+    seen: set[int] = set()
+    total = 0
+    for runtime in (pipeline.runtime, getattr(pipeline, "verifier_runtime", None)):
+        if runtime is None or id(runtime) in seen:
+            continue
+        seen.add(id(runtime))
+        total += int(getattr(runtime, "calls", 0))
+    return total
+
+
+def _emit(tag: str, index: int, total: int | None, body: str, calls: int, elapsed: float) -> None:
+    position = f"[{index}/{total}]" if total else f"[{index}/?]"
+    print(f"{tag} {position} {body} calls={calls} elapsed={elapsed:.1f}s", flush=True)
+
+
+def _with_progress(graphs, tag: str, total: int | None, pipeline, describe):
+    """Pass graphs through untouched, printing one line as each is produced.
+
+    Timing brackets only the pipeline's work for an item: the clock restarts
+    after the consumer has written the graph, so persistence cost is not
+    charged to the next query.
+    """
+    mark = time.perf_counter()
+    before = _runtime_calls(pipeline)
+    for index, graph in enumerate(graphs, start=1):
+        after = _runtime_calls(pipeline)
+        _emit(tag, index, total, describe(graph), after - before, time.perf_counter() - mark)
+        yield graph
+        mark = time.perf_counter()
+        before = after
+
+
+def _describe_enumerate(graph) -> str:
+    return (
+        f"relation={graph.query.relation} "
+        f'subject="{_short(graph.query.subject)}" '
+        f"candidates={len(graph.candidates)}"
+    )
+
+
+def _describe_verify(graph) -> str:
+    candidates = list(graph.candidates.values())
+    verified = sum(1 for c in candidates if c.verifications)
+    body = (
+        f"relation={graph.query.relation} "
+        f"candidates={len(candidates)} verified={verified}"
+    )
+    # Labels are already on the candidates; tallying them computes nothing new.
+    labels = Counter(v.label.value for c in candidates for v in c.verifications)
+    if labels:
+        body += " labels=" + ",".join(f"{k}:{n}" for k, n in sorted(labels.items()))
+    return body
+
+
+def _manifest_total(run_dir: Path) -> int | None:
+    """Query count for phases that stream, so ``[i/N]`` still has an ``N``."""
+    path = run_dir / QUERY_MANIFEST
+    if not path.is_file():
+        return None
+    try:
+        return len(json.loads(path.read_text()).get("queries", []))
+    except (OSError, ValueError):
+        return None
+
+
+def _decide_reporter(total: int | None):
+    """A ``decide`` observer that prints one line per finished query."""
+    state = {"index": 0, "mark": time.perf_counter()}
+
+    def report(prediction, _graph) -> None:
+        now = time.perf_counter()
+        state["index"] += 1
+        position = f"[{state['index']}/{total}]" if total else f"[{state['index']}/?]"
+        print(
+            f"[PHASE C] {position} predictions={len(prediction.object_entities)} "
+            f'stop="{_short(prediction.stopped_reason or "none", 32)}" '
+            f"elapsed={now - state['mark']:.2f}s",
+            flush=True,
+        )
+        state["mark"] = time.perf_counter()
+
+    return report
 
 
 def audit_or_die(config: dict) -> dict:
@@ -163,7 +286,13 @@ def phase_enumerate(args, config: dict) -> Path:
         pipeline = build_pipeline(config, phase="enumerate", tracer=tracer)
         manifest.add_model(pipeline.runtime.spec)
         with StageWriter(run_dir / ENUMERATED) as writer:
-            for graph in pipeline.enumerate(queries, progress=True):
+            # The per-query line below supersedes the pipeline's coarse
+            # every-25 counter, so that one is left off to keep output clean.
+            stream = _with_progress(
+                pipeline.enumerate(queries),
+                "[PHASE A]", len(queries), pipeline, _describe_enumerate,
+            )
+            for graph in stream:
                 writer.write(graph)
 
     manifest.finish()
@@ -179,11 +308,16 @@ def phase_verify(args, config: dict) -> Path:
     source = run_dir / ENUMERATED
     audit_or_die(config)
 
-    print(f"\n[PHASE B] verify  dir={run_dir}")
+    total = _manifest_total(run_dir)
+    print(f"\n[PHASE B] verify  dir={run_dir}  queries={total if total else '?'}")
     with RunTracer(run_dir / "calls_verify.jsonl") as tracer:
         pipeline = build_pipeline(config, phase="verify", tracer=tracer)
         with StageWriter(run_dir / VERIFIED) as writer:
-            for graph in pipeline.verify(read_stage(source), progress=True):
+            stream = _with_progress(
+                pipeline.verify(read_stage(source)),
+                "[PHASE B]", total, pipeline, _describe_verify,
+            )
+            for graph in stream:
                 writer.write(graph)
 
     print(json.dumps(stage_summary(run_dir / VERIFIED), indent=2))
@@ -227,8 +361,15 @@ def phase_resolve(args, config: dict) -> Path:
         with RunTracer(run_dir / f"calls_resume_{cycle}.jsonl") as tracer:
             pipeline = build_pipeline(config, phase=phase, tracer=tracer)
             driver = pipeline.resume if role is ModelRole.ENUMERATOR else pipeline.verify
+            describe = (
+                _describe_enumerate if role is ModelRole.ENUMERATOR else _describe_verify
+            )
             with StageWriter(target) as writer:
-                for graph in driver(iter(graphs), progress=True):
+                stream = _with_progress(
+                    driver(iter(graphs)),
+                    f"[RESUME {cycle}]", len(graphs), pipeline, describe,
+                )
+                for graph in stream:
                     writer.write(graph)
         source = target
         print(json.dumps(stage_summary(source), indent=2))
@@ -285,9 +426,13 @@ def phase_decide(args, config: dict) -> Path:
     split = args.split or (config.get("experiment") or {}).get("split", "val")
     dataset = load_dataset(split)
 
-    print(f"\n[PHASE C] decide  dir={run_dir}  (no model loaded)")
+    total = _manifest_total(run_dir)
+    print(
+        f"\n[PHASE C] decide  dir={run_dir}  "
+        f"queries={total if total else '?'}  (no model loaded)"
+    )
     pipeline = build_pipeline(config, phase="decide", tracer=None)
-    result = pipeline.decide(read_stage(source))
+    result = pipeline.decide(read_stage(source), on_result=_decide_reporter(total))
 
     # Completeness is checked against the *intended* query set, not against the
     # predictions themselves - comparing output to itself could never catch an
@@ -316,6 +461,7 @@ def phase_decide(args, config: dict) -> Path:
 
 
 def main() -> int:
+    line_buffer_stdout()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=["enumerate", "verify", "resolve", "decide", "all"])
     parser.add_argument("--config", required=True, type=Path)
