@@ -122,22 +122,36 @@ def test_prediction_row_rejects_nested_objects():
         )
 
 
-def test_dedupe_collapses_alias_like_surface_forms():
-    """Two surface forms of one entity would cost precision, so only one survives.
+def test_dedupe_collapses_only_what_the_evaluator_would_collapse():
+    """The writer removes evaluator-identical duplicates and nothing else.
 
-    The writer keeps the first form, i.e. the one the selector chose.
+    "alpha stock exchange" normalises to the same string as "Alpha Stock
+    Exchange", so submitting both is a guaranteed false positive and one is
+    dropped. The article variant does *not* normalise the same, so it survives.
     """
     values = ["The Alpha Stock Exchange", "Alpha Stock Exchange", "alpha stock exchange", "ASE"]
-    assert dedupe_object_entities(values) == ["The Alpha Stock Exchange", "ASE"]
+    assert dedupe_object_entities(values) == [
+        "The Alpha Stock Exchange", "Alpha Stock Exchange", "ASE"
+    ]
 
 
-def test_dedupe_is_stricter_than_the_evaluators_own_normalisation():
-    """The evaluator would pass both forms through; we must not submit both."""
+def test_dedupe_matches_the_evaluators_own_normalisation_exactly():
+    """Not stricter, and not looser.
+
+    The writer must not reconstruct the evaluator's alias database. Folding
+    leading articles here would silently merge two *distinct* strict candidates
+    on a soft hint - which Module 3 keeps as grouping metadata precisely so it
+    can never destroy an entity.
+    """
     from cover_kbc.evaluation.official import official_normalize_string
 
     a, b = "The Alpha Exchange", "Alpha Exchange"
     assert official_normalize_string(a) != official_normalize_string(b)
-    assert dedupe_object_entities([a, b]) == [a]
+    assert dedupe_object_entities([a, b]) == [a, b]
+
+    same = "Alpha Exchange", "alpha exchange"
+    assert official_normalize_string(same[0]) == official_normalize_string(same[1])
+    assert dedupe_object_entities(list(same)) == [same[0]]
 
 
 def test_dedupe_drops_blank_values():

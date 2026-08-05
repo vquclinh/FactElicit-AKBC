@@ -90,7 +90,17 @@ class SelectionPolicy:
     #: Hard cap on emitted objects; 0 means unlimited.
     max_objects: int = 0
     #: Relative-distance threshold for numeric clustering.
-    numeric_cluster_threshold: float = 0.05
+    #: Relative distance below which two normalised values join one cluster.
+    #:
+    #: Deliberately **tighter** than the official ±5% tolerance rather than
+    #: equal to it. Clustering is single-linkage, so a chain of values each
+    #: exactly at the threshold spans far more than the threshold: with 0.05 a
+    #: three-value chain can span ~10%, and the median could then sit outside
+    #: the evaluator's tolerance of its own cluster members. Half the tolerance
+    #: keeps a cluster comfortably inside it.
+    #:
+    #: An architecture default, not a fitted value - see audit 0011 §35.
+    numeric_cluster_threshold: float = 0.025
     #: Emit integers only (capacity is a person count).
     numeric_integer_only: bool = False
     #: Unit every numeric candidate is converted to before clustering.

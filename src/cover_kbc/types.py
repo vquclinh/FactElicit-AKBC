@@ -486,6 +486,10 @@ class Candidate:
     alias_hint: str = ""
     #: The numeral exactly as the model wrote it, before conversion.
     raw_text: str = ""
+    #: A value Module 8 *derived* deterministically (a cluster median), as
+    #: opposed to anything a model produced. Kept apart from ``display_value``
+    #: so a trace never presents an aggregate as an observation.
+    derived_value: str = ""
     #: The unit the model expressed the value in, before conversion to ``unit``.
     source_unit: str | None = None
     groups: dict[IndependenceGroup, EvidenceGroup] = field(default_factory=dict)
@@ -513,6 +517,11 @@ class Candidate:
     def add_surface_form(self, surface: str) -> None:
         if surface and surface not in self.surface_forms:
             self.surface_forms.append(surface)
+
+    @property
+    def output_value(self) -> str:
+        """What Module 8 emits: the derived representative if there is one."""
+        return self.derived_value or self.display_value
 
     @property
     def independent_support(self) -> int:

@@ -1072,6 +1072,24 @@ class CoverPipeline:
                     f"{budget.calls_left} calls remain. Run the staged orchestrator to "
                     "completion before finalizing."
                 )
+            # Budget exhausted: the action is superseded by an explicit,
+            # recorded decision rather than silently abandoned, so Module 8
+            # receives a state it can legally finalize and the trace still says
+            # what was given up.
+            graph.controller_log = [
+                *graph.controller_log,
+                {
+                    "step": len(graph.controller_log),
+                    "chosen": {"action_type": ActionType.STOP.value, "view_id": "",
+                               "facet_id": "", "candidate_key": "", "estimated_cost": 0.0,
+                               "model_role": ModelRole.NONE.value,
+                               "reason": "hard budget exhausted"},
+                    "abandoned_action": dict(graph.pending_action),
+                    "score": None, "considered": [], "residual": {},
+                    "state_before": {}, "state_after": {},
+                },
+            ]
+            graph.pending_action = {}
         budget_snapshot = graph.budget_snapshot or {}
         verification_calls = graph.verification_calls
         stopped = "gate_negative" if graph.gate_negative else "fixed_budget_views_complete"

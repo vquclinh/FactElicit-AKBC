@@ -31,6 +31,7 @@ from cover_kbc.normalization.numeric import (
 )
 from cover_kbc.scoring import (
     DEFAULT_SCORING,
+    supporting_acquisition_groups,
     ScoringConfig,
     assign_tier,
     decide_status,
@@ -85,18 +86,54 @@ def _accepted(candidates: list[Candidate]) -> list[Candidate]:
     return [c for c in candidates if c.status is CandidateStatus.ACCEPTED]
 
 
-def _empty_reason(graph: EvidenceGraph, candidates: list[Candidate]) -> EmptyReason:
+def _acquisition_support(candidate: Candidate, contract: RelationContract,
+                         config: SelectionConfig) -> int:
+    """Independent *acquisition* mechanisms behind a candidate.
+
+    Module 5's corrected count, not ``Candidate.independent_support``: the raw
+    accessor also counts the blind verifier and cross-model recall, which have
+    their own score terms (``L`` and ``X``). Using it here would pay the same
+    evidence a second time at the very last step.
+    """
+    return len(supporting_acquisition_groups(candidate, contract, config.scoring))
+
+
+def _rank_key(candidate: Candidate, contract: RelationContract, config: SelectionConfig):
+    """Deterministic emission order: score, then evidence breadth, then key.
+
+    Never raw mention frequency - a name repeated ten times by one view must
+    not outrank one found by several independent mechanisms.
+    """
+    return (-candidate.score, -_acquisition_support(candidate, contract, config), candidate.key)
+
+
+def _empty_reason(graph: EvidenceGraph, active: list[Candidate]) -> EmptyReason:
     """Explain an empty prediction precisely.
 
-    These four cases must never be conflated: a confident negative gate is a
-    correct answer, an abstention is a coverage failure, and they call for
-    opposite fixes.
+    These four states must never be conflated: a confident negative gate is a
+    correct answer, "we generated nothing" is a recall failure, "we generated
+    things and rejected them all" is a precision success, and an abstention is
+    an unresolved-evidence failure. They call for opposite fixes.
+
+    Precedence, strongest claim first:
+
+    1. the gate said *no* confidently - that is an answer, not an absence;
+    2. nothing was ever generated;
+    3. something was generated and every candidate was rejected;
+    4. candidates survive but none met the acceptance policy.
+
+    ``active`` excludes rejected candidates, so case 3 must be read from the
+    **full** graph. Reading it from ``active`` was why ``CANDIDATE_REJECTED``
+    could never fire: an all-rejected query looked identical to one that
+    generated nothing.
     """
     if graph.gate_negative:
         return EmptyReason.CONFIDENT_NEGATIVE_GATE
-    if not candidates:
+    everything = list(graph.candidates.values())
+    if not everything:
         return EmptyReason.NO_CANDIDATE_GENERATED
-    if any(c.status is CandidateStatus.REJECTED for c in candidates):
+    if not active:
+        # Every candidate produced was rejected outright.
         return EmptyReason.CANDIDATE_REJECTED
     return EmptyReason.UNRESOLVED_ABSTENTION
 
@@ -117,7 +154,7 @@ def select_small_set(graph: EvidenceGraph, config: SelectionConfig) -> list[Cand
     if graph.gate_negative:
         return []
     accepted = _accepted(_resolve(graph, config))
-    accepted.sort(key=lambda c: (-c.score, -c.independent_support, c.key))
+    accepted.sort(key=lambda c: _rank_key(c, graph.contract, config))
     limit = graph.contract.max_objects
     return accepted[:limit] if limit else accepted
 
@@ -133,7 +170,7 @@ def select_null_single(graph: EvidenceGraph, config: SelectionConfig) -> list[Ca
     accepted = _accepted(_resolve(graph, config))
     if not accepted:
         return []
-    accepted.sort(key=lambda c: (-c.score, -c.independent_support, c.key))
+    accepted.sort(key=lambda c: _rank_key(c, graph.contract, config))
     # The cap is a programme fact (Module 1), not a local constant.
     return accepted[: graph.contract.max_objects]
 
@@ -147,7 +184,7 @@ def select_large_open_set(graph: EvidenceGraph, config: SelectionConfig) -> list
     applied and single-mechanism support is not automatically fatal.
     """
     accepted = _accepted(_resolve(graph, config))
-    accepted.sort(key=lambda c: (-c.score, -c.independent_support, c.key))
+    accepted.sort(key=lambda c: _rank_key(c, graph.contract, config))
     limit = graph.contract.selection.max_objects
     return accepted[:limit] if limit else accepted
 
@@ -158,21 +195,30 @@ def select_large_open_set(graph: EvidenceGraph, config: SelectionConfig) -> list
 
 
 def _numeric_clusters(
-    candidates: list[Candidate], contract: RelationContract
+    candidates: list[Candidate], contract: RelationContract, config: SelectionConfig
 ) -> list[tuple[NumericCluster, list[Candidate]]]:
     """Cluster numeric candidates and attach the candidates behind each cluster.
 
-    Each candidate contributes one value per independent supporting mechanism,
-    so a figure recalled by two different views pulls the cluster harder than
-    one seen once.
+    Cluster *geometry* is the shared ``cluster_values`` primitive, so Module 6's
+    stability diagnostic and this selector can never disagree about what a
+    cluster is. Module 8 only decides which cluster wins.
+
+    Each candidate contributes one value per independent **acquisition**
+    mechanism, so a figure two semantically different views produced pulls
+    harder than one seen once - and a figure the verifier agreed with does not
+    pull harder merely for having been verified.
     """
-    numeric = [c for c in candidates if c.numeric_value is not None]
+    numeric = [
+        c for c in candidates
+        if c.numeric_value is not None and c.status is not CandidateStatus.REJECTED
+    ]
     if not numeric:
         return []
 
     weighted: list[float] = []
     for candidate in numeric:
-        weighted.extend([candidate.numeric_value] * max(1, candidate.independent_support))
+        weight = max(1, _acquisition_support(candidate, contract, config))
+        weighted.extend([candidate.numeric_value] * weight)
 
     clusters = cluster_values(
         weighted, threshold=contract.selection.numeric_cluster_threshold
@@ -185,8 +231,15 @@ def _numeric_clusters(
     return out
 
 
-def _cluster_support(members: list[Candidate]) -> int:
-    return sum(max(1, c.independent_support) for c in members)
+def _cluster_support(
+    members: list[Candidate], contract: RelationContract, config: SelectionConfig
+) -> int:
+    """Evidence weight behind a cluster: independent acquisition mechanisms.
+
+    Not raw mention count. Ten repeats of one direct view are one mechanism;
+    three semantically distinct views are three, and must be able to win.
+    """
+    return sum(max(1, _acquisition_support(c, contract, config)) for c in members)
 
 
 def _cluster_verdict(members: list[Candidate]) -> VerificationLabel | None:
@@ -201,11 +254,29 @@ def _cluster_verdict(members: list[Candidate]) -> VerificationLabel | None:
     return VerificationLabel.UNKNOWN
 
 
+def _cluster_is_emittable(members: list[Candidate]) -> bool:
+    """Does this cluster carry a candidate the evidence policy accepted?
+
+    A numeric answer is still an answer: it must clear the same acceptance bar
+    as a string one. Emitting the best of several unresolved clusters merely
+    because the search stopped would convert "we could not resolve this" into a
+    confident scalar, which is precisely the failure Module 5 exists to stop.
+    """
+    return any(c.status is CandidateStatus.ACCEPTED for c in members)
+
+
 def _emit_numeric(
     winner: Candidate, representative: float, contract: RelationContract
 ) -> list[Candidate]:
-    winner.status = CandidateStatus.ACCEPTED
-    winner.display_value = format_numeric(
+    """Emit the cluster's derived representative, keeping its provenance.
+
+    The representative is a **derived** value - a median need never have been
+    generated verbatim - so the observed surface stays on the candidate and the
+    derived figure is recorded separately. Overwriting the observation would
+    make a deterministic aggregate indistinguishable from something a model
+    actually said.
+    """
+    winner.derived_value = format_numeric(
         representative, integer_only=contract.selection.numeric_integer_only
     )
     return [winner]
@@ -219,12 +290,12 @@ def select_numeric_robust(graph: EvidenceGraph, config: SelectionConfig) -> list
     hallucinated outlier.
     """
     candidates = _resolve(graph, config)
-    clusters = _numeric_clusters(candidates, graph.contract)
+    clusters = _numeric_clusters(candidates, graph.contract, config)
     if not clusters:
         return []
 
     cluster, members = clusters[0]
-    if not members:
+    if not members or not _cluster_is_emittable(members):
         return []
     winner = min(
         members,
@@ -250,11 +321,11 @@ def select_numeric_highest_valid(
     Clusters verified INVALID (record attendance, seated-only) are excluded.
     """
     candidates = _resolve(graph, config)
-    clusters = _numeric_clusters(candidates, graph.contract)
+    clusters = _numeric_clusters(candidates, graph.contract, config)
     if not clusters:
         return []
 
-    dominant_support = max(_cluster_support(m) for _, m in clusters)
+    dominant_support = max(_cluster_support(m, graph.contract, config) for _, m in clusters)
     threshold = dominant_support * config.capacity_support_ratio
 
     qualifying: list[tuple[NumericCluster, list[Candidate]]] = []
@@ -264,16 +335,22 @@ def select_numeric_highest_valid(
         verdict = _cluster_verdict(members)
         if verdict is VerificationLabel.INVALID:
             continue  # a near miss the verifier rejected
-        strong = _cluster_support(members) >= threshold
+        strong = _cluster_support(members, graph.contract, config) >= threshold
         trusted = config.capacity_trust_verified and verdict is VerificationLabel.VALID
         if strong or trusted:
             qualifying.append((cluster, members))
 
+    # Only clusters the evidence policy accepted may be emitted; a bigger
+    # number is not a better answer if nothing supports it.
+    qualifying = [(c, m) for c, m in qualifying if _cluster_is_emittable(m)]
     if not qualifying:
-        qualifying = [clusters[0]]
+        return []
 
     # Among qualifying clusters, the official rule is the highest figure.
-    cluster, members = max(qualifying, key=lambda cm: cm[0].representative)
+    # Ties break on the cluster key, never on iteration order.
+    cluster, members = max(
+        qualifying, key=lambda cm: (cm[0].representative, -cm[0].relative_mad)
+    )
     winner = min(
         members,
         key=lambda c: (abs((c.numeric_value or 0.0) - cluster.representative), c.key),
@@ -300,12 +377,53 @@ _BY_PROGRAM = {
 }
 
 
+#: Tokens that are never a real object, whatever the evidence says. These are
+#: verifier labels and abstention markers; if one reaches here, an upstream
+#: parser or the verifier boundary leaked, and emitting it would be worse than
+#: failing loudly.
+_NEVER_AN_OBJECT = frozenset(
+    {"valid", "invalid", "unknown", "none", "null", "n/a", "na", "nan"}
+)
+
+
+class SelectionInvariantError(RuntimeError):
+    """A selector returned a result its typed programme forbids."""
+
+
+def _check_cardinality(
+    chosen: list[Candidate], contract: RelationContract
+) -> list[Candidate]:
+    """Fail closed on an impossible selector result.
+
+    Truncating silently would hide a real selector bug behind a plausible row.
+    """
+    limit = contract.selection.max_objects
+    if limit and len(chosen) > limit:
+        raise SelectionInvariantError(
+            f"{contract.relation} ({contract.program_type.value}) allows at most "
+            f"{limit} object(s) but the selector returned {len(chosen)}: "
+            f"{[c.output_value for c in chosen]}"
+        )
+    for candidate in chosen:
+        value = (candidate.output_value or "").strip()
+        if not value:
+            raise SelectionInvariantError(
+                f"{contract.relation}: selector emitted an empty object value"
+            )
+        if value.casefold() in _NEVER_AN_OBJECT:
+            raise SelectionInvariantError(
+                f"{contract.relation}: {value!r} is a control token, not an object. "
+                "A verifier label or abstention marker reached the output path."
+            )
+    return chosen
+
+
 def select(graph: EvidenceGraph, config: SelectionConfig = DEFAULT_SELECTION) -> list[Candidate]:
     """Choose the objects to emit for one query."""
     selector = _BY_RELATION.get(graph.contract.relation)
     if selector is None:
         selector = _BY_PROGRAM[graph.contract.program_type]
-    return selector(graph, config)
+    return _check_cardinality(selector(graph, config), graph.contract)
 
 
 def finalize(
@@ -315,7 +433,19 @@ def finalize(
     config: SelectionConfig = DEFAULT_SELECTION,
     verification_calls: int = 0,
 ) -> Prediction:
-    """Turn a resolved graph into the final prediction row for one query."""
+    """Turn a resolved graph into the final prediction row for one query.
+
+    Module 7 guarantees the controller has settled or the budget is exhausted
+    before this runs. Finalizing over an executable pending action would emit a
+    row claiming the query was finished when the controller had decided it was
+    not - so that state is refused here too, not quietly accepted.
+    """
+    if graph.pending_action:
+        raise SelectionInvariantError(
+            f"{graph.query.subject}/{graph.query.relation}: cannot finalize while "
+            f"the controller has an unexecuted {graph.pending_action.get('action_type')} "
+            "pending. Run the staged orchestrator to completion."
+        )
     chosen = select(graph, config)
     candidates = graph.active_candidates()
 
@@ -326,7 +456,7 @@ def finalize(
     return Prediction(
         subject=graph.query.subject,
         relation=graph.query.relation,
-        object_entities=[c.display_value for c in chosen],
+        object_entities=[c.output_value for c in chosen],
         candidates=candidates,
         row_index=graph.query.row_index,
         stopped_reason=stopped_reason,

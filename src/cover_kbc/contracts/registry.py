@@ -239,7 +239,7 @@ HAS_AREA = RelationContract(
     selection=SelectionPolicy(
         min_independent_support=1,
         max_objects=1,
-        numeric_cluster_threshold=0.05,
+        numeric_cluster_threshold=0.025,
         numeric_integer_only=False,
         numeric_target_unit="km2",
     ),
@@ -289,7 +289,7 @@ HAS_CAPACITY = RelationContract(
     selection=SelectionPolicy(
         min_independent_support=1,
         max_objects=1,
-        numeric_cluster_threshold=0.05,
+        numeric_cluster_threshold=0.025,
         numeric_integer_only=True,
         numeric_target_unit="persons",
     ),

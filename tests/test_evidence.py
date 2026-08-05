@@ -110,9 +110,12 @@ def test_article_variants_stay_separate_nodes_but_group_softly(borders_query, st
     assert len(graph.candidates) == 2                       # strict identity
     assert len(graph.alias_groups()) == 1                   # grouped softly
     assert {c.alias_hint for c in graph.candidates.values()} == {"alpha stock exchange"}
-    # The evaluator still sees exactly one prediction.
+    # Both reach the evaluator: they are two distinct strict candidates, and
+    # the writer only removes what the evaluator itself would collapse. Folding
+    # the article here would promote a soft hint to hard identity - the exact
+    # thing `alias_hint` exists to avoid (audit 0006).
     emitted = dedupe_object_entities([c.display_value for c in graph.candidates.values()])
-    assert len(emitted) == 1
+    assert len(emitted) == 2
 
 
 def test_exact_duplicate_surfaces_do_merge(stock_contract):

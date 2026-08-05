@@ -17,22 +17,26 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from cover_kbc.data.schema import SchemaError, validate_prediction_row
-from cover_kbc.normalization.strings import alias_hint_key
+from cover_kbc.normalization.strings import strict_key
 from cover_kbc.types import Prediction, Query
 
 
 def dedupe_object_entities(values: Iterable[str]) -> list[str]:
-    """Drop later values that share a canonical key with an earlier one.
+    """Drop later values the **evaluator itself** would treat as identical.
 
     Order is preserved, so the form the selector chose first survives.
 
-    The key is the conservative *alias hint* key: the evaluator's own
-    normalisation plus leading-article folding.  The evaluator collapses only
-    exact normalised matches, so "The Alpha Exchange" and "Alpha Exchange"
-    would reach it as two predictions, and its bipartite matcher lets one gold
-    entity absorb only one of them - the second is then a guaranteed false
-    positive.  Parenthetical qualifiers are preserved, so two genuinely
-    different entities sharing a base string both survive.
+    The key is ``strict_key``, which reproduces the official evaluator's
+    ``normalize_string`` exactly. That is the only safe boundary for a writer:
+    it removes what the evaluator would collapse anyway, and nothing else.
+
+    It deliberately does **not** use ``alias_hint_key``, which additionally
+    folds leading articles. "The Alpha Exchange" and "Alpha Exchange" are two
+    *distinct* strings to the evaluator, and Module 3 keys candidates on
+    ``strict_key`` - so two values arriving here are two distinct semantic
+    candidates. Collapsing them on a soft hint would silently merge entities on
+    heuristic similarity, which audit 0006 forbids, and would be a *semantic*
+    decision taken in the writer rather than the selector.
     """
     seen: set[str] = set()
     out: list[str] = []
@@ -42,7 +46,7 @@ def dedupe_object_entities(values: Iterable[str]) -> list[str]:
         text = value.strip()
         if not text:
             continue
-        key = alias_hint_key(text)
+        key = strict_key(text)
         if not key or key in seen:
             continue
         seen.add(key)
