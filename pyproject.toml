@@ -15,7 +15,14 @@ dependencies = [
 [project.optional-dependencies]
 # Neural backends are optional so that the data/evaluation foundation stays
 # installable (and testable) on machines without a GPU stack.
-hf = ["torch", "transformers>=4.51.0", "accelerate"]
+hf = [
+    "torch",
+    "transformers>=4.51.0",
+    "accelerate",
+    # Mistral-Small-3.2 ships a Tekken tokenizer; AutoTokenizer cannot
+    # round-trip it, so the checkpoint-native tokenizer is required.
+    "mistral-common>=1.6.2",
+]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

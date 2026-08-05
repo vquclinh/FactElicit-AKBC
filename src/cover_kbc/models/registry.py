@@ -118,6 +118,7 @@ def build_runtime(config: Mapping[str, Any]) -> LMRuntime:
             parameter_source=config.get("parameter_source", ""),
             parameter_source_verified=bool(config.get("parameter_source_verified", False)),
             max_memory=config.get("max_memory"),
+            tokenizer_backend=str(config.get("tokenizer_backend", "auto")),
         )
 
     raise ValueError(

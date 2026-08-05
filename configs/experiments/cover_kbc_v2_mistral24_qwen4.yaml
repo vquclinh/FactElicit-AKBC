@@ -42,6 +42,10 @@ model_profile:
     published_total_parameters: 24011361280
     parameter_source: "https://huggingface.co/api/models/mistralai/Mistral-Small-3.2-24B-Instruct-2506 (safetensors.total)"
     parameter_source_verified: true
+    # This checkpoint ships a Tekken tokenizer; AutoTokenizer converts it
+    # lossily and the enumerator then emits byte-BPE debris. Declared
+    # explicitly rather than left to auto-detection.
+    tokenizer_backend: mistral_common
     quantization: nf4
     torch_dtype: bfloat16
     device_map: auto
@@ -58,6 +62,7 @@ model_profile:
     published_total_parameters: 4659865088
     parameter_source: "https://huggingface.co/api/models/Qwen/Qwen3.5-4B (safetensors.total)"
     parameter_source_verified: true
+    tokenizer_backend: huggingface
     quantization: nf4
     torch_dtype: bfloat16
     device_map: auto

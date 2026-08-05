@@ -40,6 +40,7 @@ from cover_kbc.models.base import (
     LabelScoreResult,
     ModelSpec,
 )
+from cover_kbc.models.mistral_tokenizer import build_tokenizer, chat_token_ids
 
 
 class HuggingFaceRuntime(BaseRuntime):
@@ -65,11 +66,11 @@ class HuggingFaceRuntime(BaseRuntime):
         parameter_source: str = "",
         parameter_source_verified: bool = False,
         max_memory: dict[str | int, str] | None = None,
+        tokenizer_backend: str = "auto",
     ) -> None:
         try:
             import torch
             import transformers
-            from transformers import AutoTokenizer
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise ImportError(
                 "The Hugging Face backend needs the optional 'hf' extra: "
@@ -97,8 +98,15 @@ class HuggingFaceRuntime(BaseRuntime):
         )
 
         self._torch = torch
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_id, revision=revision, trust_remote_code=trust_remote_code
+        # Checkpoint-native tokenisation. Mistral-Small-3.2 ships a Tekken
+        # tokenizer that AutoTokenizer converts lossily; every other checkpoint
+        # keeps the ordinary AutoTokenizer path unchanged.
+        self.tokenizer = build_tokenizer(
+            model_id,
+            revision=revision,
+            family=family,
+            trust_remote_code=trust_remote_code,
+            tokenizer_backend=tokenizer_backend,
         )
 
         load_kwargs: dict[str, Any] = {
@@ -198,6 +206,21 @@ class HuggingFaceRuntime(BaseRuntime):
             messages, tokenize=False, add_generation_prompt=True
         )
 
+    def _prompt_ids(self, request: GenerationRequest | LabelScoreRequest):
+        """Tokenise one request into a ``(1, n)`` id tensor.
+
+        An instruct checkpoint with a native chat encoder gets structured
+        messages; everything else renders a string and tokenises it, exactly as
+        before. Generation and label scoring share this so a model that swaps
+        roles is framed identically in both.
+        """
+        chat_ids = chat_token_ids(
+            self.tokenizer, request.prompt, request.system_prompt or ""
+        )
+        if chat_ids is None:
+            return self.tokenizer(self._render(request), return_tensors="pt")["input_ids"]
+        return self._torch.tensor([list(chat_ids)], dtype=self._torch.long)
+
     def inspect_labels(self, labels: dict[str, str]):
         """Encode the label set once and cache the result."""
         from cover_kbc.verification import inspect_label_encoding
@@ -216,9 +239,9 @@ class HuggingFaceRuntime(BaseRuntime):
         if request.decode.seed is not None:
             torch.manual_seed(request.decode.seed)
 
-        text = self._render(request)
-        inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
-        prompt_tokens = int(inputs["input_ids"].shape[-1])
+        input_ids = self._prompt_ids(request).to(self.model.device)
+        inputs = {"input_ids": input_ids}
+        prompt_tokens = int(input_ids.shape[-1])
 
         kwargs: dict[str, Any] = {
             "max_new_tokens": request.decode.max_new_tokens,
@@ -265,10 +288,9 @@ class HuggingFaceRuntime(BaseRuntime):
         start = time.perf_counter()
         self.calls += 1
 
-        text = self._render(request)
-        inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
+        input_ids = self._prompt_ids(request).to(self.model.device)
         with torch.no_grad():
-            logits = self.model(**inputs).logits[0, -1, :]
+            logits = self.model(input_ids=input_ids).logits[0, -1, :]
 
         scores = {
             label: float(logits[ids[0]].item()) for label, ids in encoding.token_ids.items()
@@ -276,7 +298,7 @@ class HuggingFaceRuntime(BaseRuntime):
         return LabelScoreResult(
             logits=scores,
             model_id=self.spec.model_id,
-            prompt_tokens=int(inputs["input_ids"].shape[-1]),
+            prompt_tokens=int(input_ids.shape[-1]),
             latency_ms=(time.perf_counter() - start) * 1000.0,
         )
 
@@ -290,8 +312,7 @@ class HuggingFaceRuntime(BaseRuntime):
         torch = self._torch
         start = time.perf_counter()
 
-        text = self._render(request)
-        prompt_ids = self.tokenizer(text, return_tensors="pt")["input_ids"]
+        prompt_ids = self._prompt_ids(request)
         scores: dict[str, float] = {}
 
         for label, ids in encoding.token_ids.items():
