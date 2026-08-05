@@ -22,6 +22,7 @@ tokens - which would make "A" and "Australia" indistinguishable.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
@@ -273,6 +274,36 @@ class ContextualCalibrator:
     temperature: float = 1.0
     _controls: dict[tuple[str, str, str, str], dict[str, float]] = field(default_factory=dict)
     calls: int = 0
+
+    def control_calls_needed(
+        self,
+        runtime: LMRuntime,
+        contract: RelationContract,
+        templates: "Sequence[VerifierTemplate]",
+        *,
+        decode_identity: str = "default",
+    ) -> int:
+        """How many *new* control measurements these templates would cost.
+
+        Zero for every template whose control is already cached: a cache hit
+        performs no inference. The controller needs this before acting, because
+        a hard call ceiling cannot be repaired after it is crossed.
+        """
+        needed = 0
+        seen: set[tuple[str, ...]] = set()
+        for template in templates:
+            key = _control_cache_key(
+                runtime.spec.model_id,
+                contract.relation,
+                template.template_id,
+                decode_identity,
+                revision=runtime.spec.revision,
+                label_signature=_label_signature(LABEL_TOKENS),
+            )
+            if key not in self._controls and key not in seen:
+                seen.add(key)
+                needed += 1
+        return needed
 
     def control_logits(
         self,
@@ -581,6 +612,18 @@ class GateResult:
     @property
     def is_confident_negative(self) -> bool:
         return self.decision == "NO"
+
+    @classmethod
+    def from_json(cls, payload: "dict | None") -> "GateResult | None":
+        """Rebuild a gate read-out from its serialised form, losslessly.
+
+        Every field round-trips: a confident negative must not become ``None``
+        after a model swap, and an UNKNOWN must not come back unscored.
+        """
+        if not payload:
+            return None
+        fields = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in payload.items() if k in fields})
 
     def to_json(self) -> dict:
         return {

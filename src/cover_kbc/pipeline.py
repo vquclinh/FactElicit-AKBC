@@ -70,6 +70,7 @@ from cover_kbc.types import (
 )
 from cover_kbc.verification import (
     ContextualCalibrator,
+    TEMPLATES_BY_ID,
     DISAGREEMENT_TEMPLATE_IDS,
     TEMPLATE_ADVERSARIAL,
     TEMPLATE_STANDARD,
@@ -147,6 +148,14 @@ class PipelineConfig:
     gate_model_role: ModelRole = ModelRole.VERIFIER
     gate_min_margin: float = 1.0
     gate_min_prob: float = 0.5
+
+    # -- logical model roles -------------------------------------------------
+    #: The model ids the *architecture* assigns to each role, independent of
+    #: which runtime objects happen to be resident right now. Staged Phase B
+    #: passes one Qwen runtime as both ``runtime`` and ``verifier_runtime``;
+    #: capability must not be inferred from that coincidence.
+    enumerator_model_id: str = ""
+    verifier_model_id: str = ""
 
     # -- budget --------------------------------------------------------------
     max_calls_per_query: int = 12
@@ -275,7 +284,53 @@ class CoverPipeline:
 
     @property
     def has_second_model(self) -> bool:
-        return self.verifier_runtime.spec.model_id != self.runtime.spec.model_id
+        """Deprecated alias for :attr:`cross_model_recall_available`.
+
+        Retained only so older call sites keep working; new code should say
+        which *capability* it means.
+        """
+        return self.cross_model_recall_available
+
+    @property
+    def verifier_available(self) -> bool:
+        """Can the verifier-role scoring capability execute right now?
+
+        A capability question, not a residency one. In staged Phase B the same
+        Qwen runtime is passed as both ``runtime`` and ``verifier_runtime``;
+        judging availability by object or id inequality made blind
+        verification, gate scoring and cross-model recall all vanish exactly
+        when Qwen finally *was* loaded.
+
+        Available when the runtime bound to the verifier role can score labels
+        **and** genuinely fills that role - either it is a distinct object from
+        the enumerator, or it identifies itself as the configured verifier. A
+        bare enumerator standing in for an absent verifier is *not* the
+        capability, and must not silently score gates or candidates.
+        """
+        spec = self.verifier_runtime.spec
+        if not spec.supports_logits:
+            return False
+        if self.verifier_runtime is not self.runtime:
+            return True
+        configured = self.config.verifier_model_id
+        if configured:
+            return spec.model_id == configured
+        return spec.role == ModelRole.VERIFIER.value
+
+    @property
+    def cross_model_recall_available(self) -> bool:
+        """Is Qwen's independent recall genuinely *heterogeneous* evidence?
+
+        Measured against the **configured enumerator model**, not against
+        whichever runtime object is resident. Qwen recalling a name in Phase B
+        is a second opinion relative to Mistral's enumeration even though only
+        one runtime object exists at that moment.
+        """
+        if not self.config.enable_cross_model_recall or not self.verifier_available:
+            return False
+        enumerator = self.config.enumerator_model_id or self.runtime.spec.model_id
+        verifier = self.config.verifier_model_id or self.verifier_runtime.spec.model_id
+        return bool(enumerator) and bool(verifier) and enumerator != verifier
 
     # ---------------------------------------------------------------- gate --
 
@@ -292,7 +347,8 @@ class CoverPipeline:
             return False
         if self.config.gate_model_role is ModelRole.ENUMERATOR:
             return False
-        return not self.has_second_model
+        # Deferred only while the verifier-role capability is genuinely absent.
+        return not self.verifier_available
 
     def _gate_runtime(self) -> LMRuntime:
         """The runtime that scores the existence gate.
@@ -309,7 +365,7 @@ class CoverPipeline:
         role = self.config.gate_model_role
         if role is ModelRole.ENUMERATOR:
             return self.runtime
-        if self.verifier_runtime is self.runtime and not self.has_second_model:
+        if not self.verifier_available:
             raise GateRoleUnavailable(
                 f"the calibrated gate is configured for the {role.value} role, but no "
                 f"{role.value} runtime is loaded. Load it for this phase, or set "
@@ -515,7 +571,7 @@ class CoverPipeline:
         genuinely independent evidence - recorded under CROSS_MODEL_RECALL
         rather than merged into the enumerator's own families.
         """
-        if not self.config.enable_cross_model_recall or not self.has_second_model:
+        if not self.cross_model_recall_available:
             return 0, 0
         view_id = self.config.cross_model_view or self._first_recall_view(contract)
         if not view_id:
@@ -680,8 +736,15 @@ class CoverPipeline:
             for view in ordered:
                 if graph.gate_negative or budget.exhausted:
                     break
+                # Measured, not assumed: a description-first view makes two
+                # generations, and charging it as one understated the fixed
+                # ablation's budget by exactly that difference.
+                before = self._total_runtime_calls()
                 _, tokens = self._run_discovery_view(graph, contract, view.view_id, discovered)
-                budget.charge(calls=1, generated_tokens=tokens)
+                budget.charge(
+                    calls=self._total_runtime_calls() - before,
+                    generated_tokens=tokens, logical_actions=1,
+                )
                 state.executed_views.add(view.view_id)
                 if view.facet_id:
                     state.executed_facets.add(view.facet_id)
@@ -742,8 +805,7 @@ class CoverPipeline:
             decision = choose_action(
                 contract, candidates, state, budget, step,
                 config=self.config.controller,
-                cross_model_available=self.config.enable_cross_model_recall
-                and self.has_second_model,
+                cross_model_available=self.cross_model_recall_available,
                 gate=self._gate_state(graph, contract),
                 scoring=self.config.scoring,
             )
@@ -761,7 +823,7 @@ class CoverPipeline:
                 graph.pending_action = action.to_json()
                 decisions.append(decision)
                 break
-            if not budget.can_afford(self._minimum_neural_cost(contract, action)):
+            if not budget.can_afford(self._planned_neural_cost(contract, action)):
                 decisions.append(decision)
                 break
 
@@ -832,7 +894,16 @@ class CoverPipeline:
                 frozenset({ModelRole.VERIFIER, ModelRole.NONE}), phase="verify",
             )
         else:
+            # The fixed path spends verifier calls too, and they belong to the
+            # *same* query budget. Charging them onto the persisted snapshot is
+            # what stops the final row reporting a stale Phase-A figure.
+            before = self._total_runtime_calls()
             calls = self._verify_pending(graph, graph.contract)
+            snapshot = dict(graph.budget_snapshot)
+            snapshot["calls_used"] = int(snapshot.get("calls_used", 0)) + (
+                self._total_runtime_calls() - before
+            )
+            graph.budget_snapshot = snapshot
         graph.verification_calls += calls
         if self.tracer is not None and calls:
             self.tracer.write(
@@ -845,27 +916,59 @@ class CoverPipeline:
             )
         return graph
 
-    def _minimum_neural_cost(self, contract: RelationContract, action: Action) -> int:
-        """Neural calls this action is *known* to need before it starts.
+    def _total_runtime_calls(self) -> int:
+        """Neural invocations made so far across the resident runtimes.
 
-        A floor, not an estimate: a description-first view always makes two
-        generations, and a multi-template verification always makes one score
-        per template. Calibration controls are excluded because a cache hit
-        costs nothing, so counting them would refuse affordable actions.
+        Object identity is the right question *here*, unlike for capability:
+        staged Phase B passes one runtime under both names, and adding its
+        counter twice would double-charge every call it makes.
         """
+        total = self.runtime.calls
+        if self.verifier_runtime is not self.runtime:
+            total += self.verifier_runtime.calls
+        return total
+
+    def _planned_neural_cost(self, contract: RelationContract, action: Action) -> int:
+        """Neural calls this action will need, given the **current** cache state.
+
+        Exact, not a floor. A hard ceiling cannot be repaired after it is
+        crossed, so the plan must include every invocation the action can make -
+        including an uncached contextual-calibration control, whose omission
+        was what let a 1-call remainder run a 2-call verification and finish at
+        ``calls_used = 5/4``.
+
+        Cache hits contribute zero, so a warm calibrator correctly makes the
+        same action cheaper rather than permanently unaffordable.
+        """
+        if action.action_type is ActionType.STOP:
+            return 0
+
         if action.action_type in (
             ActionType.RUN_VIEW, ActionType.RUN_FACET, ActionType.RESAMPLE
         ):
             view = get_view(contract.relation, action.view_id)
             return 2 if view.is_description else max(1, view.runs)
-        if action.action_type is ActionType.ADVERSARIAL_VERIFY:
-            return (
-                len(self.config.disagreement_template_ids)
-                if self.config.enable_prompt_disagreement else 1
-            )
-        if action.action_type is ActionType.STOP:
-            return 0
+
+        if action.action_type in (ActionType.VERIFY, ActionType.ADVERSARIAL_VERIFY):
+            adversarial = action.action_type is ActionType.ADVERSARIAL_VERIFY
+            if adversarial and self.config.enable_prompt_disagreement:
+                templates = [
+                    TEMPLATES_BY_ID[t] for t in self.config.disagreement_template_ids
+                    if t in TEMPLATES_BY_ID
+                ] or [TEMPLATE_STANDARD]
+            else:
+                templates = [TEMPLATE_ADVERSARIAL if adversarial else TEMPLATE_STANDARD]
+            cost = len(templates)
+            if self.config.use_calibration:
+                cost += self.calibrator.control_calls_needed(
+                    self.verifier_runtime, contract, templates
+                )
+            return cost
+
         return 1
+
+    #: Retained name for callers that only need the floor.
+    _minimum_neural_cost = _planned_neural_cost
 
     def _execute_action(
         self,
@@ -884,9 +987,7 @@ class CoverPipeline:
         control, and a cache hit makes none. One logical action, N neural calls,
         and the hard budget must see N.
         """
-        before = self.runtime.calls + (
-            self.verifier_runtime.calls if self.has_second_model else 0
-        )
+        before = self._total_runtime_calls()
 
         if action.action_type in (ActionType.RUN_VIEW, ActionType.RUN_FACET):
             new, tokens = self._run_discovery_view(
@@ -916,10 +1017,7 @@ class CoverPipeline:
         else:
             raise UnsupportedAction(f"no executor for {action.action_type.value}")
 
-        after = self.runtime.calls + (
-            self.verifier_runtime.calls if self.has_second_model else 0
-        )
-        return after - before, new, tokens
+        return self._total_runtime_calls() - before, new, tokens
 
     def _controlled_phase(
         self,
@@ -980,8 +1078,7 @@ class CoverPipeline:
                 decision = choose_action(
                     contract, candidates, state, budget, step,
                     config=self.config.controller,
-                    cross_model_available=self.config.enable_cross_model_recall
-                    and self.has_second_model
+                    cross_model_available=self.cross_model_recall_available
                     and not self._cross_model_done(graph),
                     gate=self._gate_state(graph, contract),
                     scoring=self.config.scoring,
@@ -1008,7 +1105,7 @@ class CoverPipeline:
                     graph.pending_action = action.to_json()
                     break
                 decisions.append(record)
-                if not budget.can_afford(self._minimum_neural_cost(contract, action)):
+                if not budget.can_afford(self._planned_neural_cost(contract, action)):
                     # A multi-call action that is guaranteed to overrun must not
                     # start: it would push the hard counter past its ceiling
                     # before the guard could fire.
@@ -1146,6 +1243,9 @@ class CoverPipeline:
         graph = self.enumerate_query(query)
         self.verify_graph(graph)
         return self.decide_graph(graph)
+
+    # ``verify_graph`` folds its own spend into ``graph.budget_snapshot``, so
+    # ``decide_graph`` reads one authoritative figure for every mode.
 
     def enumerate(self, queries: Iterable[Query], *, progress: bool = False) -> Iterator[EvidenceGraph]:
         """Phase A over many queries, yielding graphs for persistence."""

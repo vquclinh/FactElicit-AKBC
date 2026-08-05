@@ -606,6 +606,10 @@ class Candidate:
 # --------------------------------------------------------------------------
 
 
+class BudgetExceeded(RuntimeError):
+    """A neural call was attempted that would cross the hard call ceiling."""
+
+
 @dataclass
 class Budget:
     """Hard inference budget for one query.
@@ -648,6 +652,24 @@ class Budget:
         self.calls_used += calls
         self.generated_tokens_used += generated_tokens
         self.logical_actions += logical_actions
+
+    def reserve(self, calls: int = 1) -> None:
+        """Charge a neural call *before* it is made, refusing an overrun.
+
+        The last line of defence. Action-level planning is exact today, but a
+        hard ceiling must not depend on a prediction staying exact: if an
+        estimate is ever wrong this raises at the invocation boundary rather
+        than letting ``calls_used`` cross ``max_calls`` and reporting the
+        overrun afterwards.
+        """
+        if calls < 0:
+            raise ValueError("a budget reservation may not be negative")
+        if self.calls_used + calls > self.max_calls:
+            raise BudgetExceeded(
+                f"a neural call would take this query to "
+                f"{self.calls_used + calls} of {self.max_calls} allowed calls"
+            )
+        self.calls_used += calls
 
     def can_afford(self, calls: int) -> bool:
         """Is there room for an action whose *minimum* neural cost is known?

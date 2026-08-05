@@ -15,6 +15,24 @@ from cover_kbc.models.offline import ABSTAIN_OUTPUT, NullRuntime, ScriptedRuntim
 _OFFLINE_BACKENDS = {"null", "scripted"}
 
 
+def model_blocks(config: Mapping[str, Any]) -> tuple[dict, dict]:
+    """Resolve ``(enumerator_cfg, verifier_cfg)`` from an experiment config.
+
+    The one canonical profile resolver. Both shapes are accepted - a flat
+    single-model profile, and the frozen target's nested
+    ``{enumerator: ..., verifier: ...}`` - so no entry point has to guess, and
+    none can silently mistake a nested profile for a backend-less flat one.
+    """
+    profile = dict(config.get("model_profile") or {})
+    if "enumerator" in profile or "verifier" in profile:
+        enumerator = dict(profile.get("enumerator") or {})
+        verifier = dict(profile.get("verifier") or enumerator)
+    else:
+        enumerator = profile
+        verifier = profile
+    return enumerator, verifier
+
+
 def build_runtime(config: Mapping[str, Any]) -> LMRuntime:
     """Construct a runtime from a ``model_profile`` config block.
 
@@ -29,8 +47,17 @@ def build_runtime(config: Mapping[str, Any]) -> LMRuntime:
         ValueError: on an unknown backend or a neural backend with no recorded
             parameter count.
     """
-    # A bare `backend: null` in YAML parses to None, which means the same thing
-    # here as the string "null".
+    if "backend" not in config:
+        # Failing closed matters: a nested profile handed straight to this
+        # function has no top-level backend, and defaulting to NullRuntime made
+        # the frozen target config "run" with no model at all.
+        raise ValueError(
+            "model profile has no 'backend'. Resolve it through "
+            "`model_blocks(config)` first, or set `backend: null` explicitly "
+            f"to request a stub. Got keys: {sorted(config)}"
+        )
+    # An explicit `backend: null` in YAML parses to None, which means the same
+    # thing here as the string "null".
     backend = str(config.get("backend") or "null").lower()
 
     if backend == "null":

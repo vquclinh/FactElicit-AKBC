@@ -213,7 +213,7 @@ def calibratable() -> tuple[Parameter, ...]:
     """The only parameters a calibration run may fit.
 
     Deliberately few, and deliberately *global* wherever the relations do not
-    genuinely differ: six degrees of freedom is plausibly estimable from the
+    genuinely differ: **five** decisions are plausibly estimable from the
     available train data, whereas per-relation variants of each would not be.
     """
     return by_category(Category.CALIBRATABLE)

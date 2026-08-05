@@ -21,7 +21,9 @@ import argparse
 import json
 from pathlib import Path
 
-import _bootstrap  # noqa: F401
+from _bootstrap import ensure_src_on_path
+
+ensure_src_on_path()
 
 import yaml
 
@@ -31,7 +33,7 @@ from cover_kbc.data.writer import write_predictions, write_trace
 from cover_kbc.elicitation.library import check_library_covers_contracts
 from cover_kbc.evaluation.harness import evaluate_predictions, write_report
 from cover_kbc.models.budget import audit_parameter_budget
-from cover_kbc.models.registry import build_runtime, spec_from_config
+from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_config
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
@@ -43,6 +45,10 @@ ENUMERATED = "stage_a_enumerated.jsonl"
 VERIFIED = "stage_b_verified.jsonl"
 #: One file per role-swap cycle, so every intermediate state stays inspectable.
 RESUMED = "stage_r{cycle}_{role}.jsonl"
+#: The query set this invocation actually selected. Written in Phase A and
+#: compared against at output time, because phases may run separately and
+#: predictions must never be validated against themselves.
+QUERY_MANIFEST = "query_manifest.json"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -51,18 +57,6 @@ MAX_ROLE_SWAPS = 12
 
 def load_config(path: Path) -> dict:
     return yaml.safe_load(Path(path).read_text()) or {}
-
-
-def model_blocks(config: dict) -> tuple[dict, dict]:
-    """Return ``(enumerator_cfg, verifier_cfg)`` from a config."""
-    profile = config.get("model_profile", {}) or {}
-    if "enumerator" in profile or "verifier" in profile:
-        enumerator = profile.get("enumerator", {})
-        verifier = profile.get("verifier", enumerator)
-    else:
-        enumerator = profile
-        verifier = profile
-    return enumerator, verifier
 
 
 def audit_or_die(config: dict) -> dict:
@@ -118,6 +112,10 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         runtime = build_runtime({"backend": "null", "model_id": "offline/null"})
         verifier = None
 
+    # Declare the *logical* role assignment, so capability never depends on
+    # which runtime objects happen to be resident in this phase.
+    pipeline_cfg.enumerator_model_id = enumerator_cfg.get("model_id", "")
+    pipeline_cfg.verifier_model_id = verifier_cfg.get("model_id", "")
     return CoverPipeline(runtime, pipeline_cfg, tracer=tracer, verifier_runtime=verifier)
 
 
@@ -147,6 +145,18 @@ def phase_enumerate(args, config: dict) -> Path:
         budget_audit=audit,
     )
     manifest.start()
+
+    # Persist the selected query identity set, honouring this invocation's
+    # split, relation filter and limit exactly.
+    (run_dir / QUERY_MANIFEST).write_text(json.dumps({
+        "split": split,
+        "relation": getattr(args, "relation", None),
+        "limit": args.limit or 0,
+        "queries": [
+            {"SubjectEntity": q.subject, "Relation": q.relation, "row_index": q.row_index}
+            for q in queries
+        ],
+    }, indent=2))
 
     print(f"\n[PHASE A] enumerate  split={split}  queries={len(queries)}  dir={run_dir}")
     with RunTracer(run_dir / "calls_enumerate.jsonl") as tracer:
@@ -229,6 +239,38 @@ def phase_resolve(args, config: dict) -> Path:
     )
 
 
+def _expected_queries(run_dir: Path, predictions) -> list[Query]:
+    """The queries this run was asked to answer, from the persisted manifest.
+
+    Falls back to the predictions only when no manifest exists - an older run
+    directory - and says so, rather than silently self-validating.
+    """
+    path = run_dir / QUERY_MANIFEST
+    if not path.is_file():
+        print(f"warning: no {QUERY_MANIFEST}; cannot verify row completeness")
+        return [Query(p.subject, p.relation, p.row_index) for p in predictions]
+
+    payload = json.loads(path.read_text())
+    expected = [
+        Query(row["SubjectEntity"], row["Relation"], int(row.get("row_index", -1)))
+        for row in payload.get("queries", [])
+    ]
+    wanted = [(q.subject, q.relation) for q in expected]
+    produced = [(p.subject, p.relation) for p in predictions]
+
+    missing = [k for k in wanted if k not in produced]
+    extra = [k for k in produced if k not in wanted]
+    duplicated = sorted({k for k in produced if produced.count(k) > 1})
+    if missing or extra or duplicated:
+        raise SystemExit(
+            "prediction set does not match the queries this run selected:\n"
+            f"  missing   : {missing[:5]}{' ...' if len(missing) > 5 else ''}\n"
+            f"  unexpected: {extra[:5]}{' ...' if len(extra) > 5 else ''}\n"
+            f"  duplicated: {duplicated[:5]}{' ...' if len(duplicated) > 5 else ''}"
+        )
+    return expected
+
+
 def phase_decide(args, config: dict) -> Path:
     run_dir = Path(args.run_dir) if args.run_dir else None
     if run_dir is None:
@@ -247,9 +289,12 @@ def phase_decide(args, config: dict) -> Path:
     pipeline = build_pipeline(config, phase="decide", tracer=None)
     result = pipeline.decide(read_stage(source))
 
-    queries = [Query(p.subject, p.relation, p.row_index) for p in result.predictions]
+    # Completeness is checked against the *intended* query set, not against the
+    # predictions themselves - comparing output to itself could never catch an
+    # omitted row.
+    expected = _expected_queries(run_dir, result.predictions)
     predictions_path = write_predictions(
-        result.predictions, run_dir / "predictions.jsonl", expected_queries=queries
+        result.predictions, run_dir / "predictions.jsonl", expected_queries=expected
     )
     write_trace(result.predictions, run_dir / "trace.jsonl")
     print(f"predictions : {predictions_path}")

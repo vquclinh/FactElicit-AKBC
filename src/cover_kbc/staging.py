@@ -26,6 +26,7 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from cover_kbc.contracts.registry import get_contract
 from cover_kbc.evidence.graph import EvidenceGraph
+from cover_kbc.verification import GateResult
 from cover_kbc.types import (
     Candidate,
     CandidateScore,
@@ -45,7 +46,7 @@ from cover_kbc.types import (
     ViewFamily,
 )
 
-STAGE_FILE_VERSION = 5
+STAGE_FILE_VERSION = 6
 
 
 class StageError(RuntimeError):
@@ -206,6 +207,10 @@ def graph_from_json(payload: dict[str, Any]) -> EvidenceGraph:
     graph = EvidenceGraph(query=query, contract=get_contract(payload["relation"]))
     graph.gate_negative = payload.get("gate_negative", False)
     graph.gate_reason = payload.get("gate_reason")
+    # The gate read-out is real state, not a diagnostic: without restoring it a
+    # confident negative silently became None across a role swap and the gate
+    # looked never to have run.
+    graph.gate_result = GateResult.from_json(payload.get("gate_result"))
     graph.controller_log = list(payload.get("controller_log", []))
     graph.rcse_state = dict(payload.get("rcse_state", {}))
     graph.pending_action = dict(payload.get("pending_action", {}))

@@ -16,7 +16,9 @@ import argparse
 import json
 from pathlib import Path
 
-import _bootstrap  # noqa: F401
+from _bootstrap import ensure_src_on_path
+
+ensure_src_on_path()
 
 import yaml
 
@@ -26,9 +28,9 @@ from cover_kbc.data.writer import write_predictions, write_trace
 from cover_kbc.elicitation.library import check_library_covers_contracts
 from cover_kbc.evaluation.harness import evaluate_predictions, write_report
 from cover_kbc.models.budget import audit_parameter_budget
-from cover_kbc.models.registry import build_runtime
+from cover_kbc.models.registry import build_runtime, model_blocks
 from cover_kbc.paths import OUTPUTS_DIR
-from cover_kbc.pipeline import CoverPipeline, PipelineConfig
+from cover_kbc.pipeline import CoverPipeline, ExecutionMode, PipelineConfig
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.runtime.tracing import RunTracer
 
@@ -44,7 +46,7 @@ def main() -> int:
 
     config = yaml.safe_load(args.config.read_text()) or {}
     experiment = config.get("experiment", {})
-    model_profile = config.get("model_profile", {})
+    enumerator_cfg, verifier_cfg = model_blocks(config)
     pipeline_cfg = config.get("pipeline", {})
 
     # Fail fast on a contract/router/library mismatch rather than mid-run.
@@ -57,8 +59,18 @@ def main() -> int:
     if args.limit:
         queries = queries[: args.limit]
 
-    runtime = build_runtime(model_profile)
-    audit = audit_parameter_budget([runtime.spec])
+    # Resolve both logical roles through the *canonical* resolver, so this
+    # entry point cannot disagree with `run_staged.py` about which models a
+    # config declares - and cannot silently fall back to a stub when handed the
+    # frozen target's nested profile.
+    runtime = build_runtime(enumerator_cfg)
+    verifier_runtime = (
+        runtime if verifier_cfg == enumerator_cfg else build_runtime(verifier_cfg)
+    )
+    specs = [runtime.spec]
+    if verifier_runtime is not runtime:
+        specs.append(verifier_runtime.spec)
+    audit = audit_parameter_budget(specs)
     if not audit.passed:
         print(audit.summary())
         raise SystemExit(
@@ -92,17 +104,18 @@ def main() -> int:
     print(f"outputs     : {out_dir}")
 
     with RunTracer(out_dir / "calls.jsonl") as tracer:
+        # The canonical config path, so this runner cannot drift from
+        # `run_staged.py` on any factual setting. Interleaved is forced: the
+        # staged seam is the other runner's job, and honouring `mode: staged`
+        # here would run half an architecture.
+        config_block = dict(pipeline_cfg)
+        config_block["mode"] = ExecutionMode.INTERLEAVED.value
+        config_block.setdefault("seed", manifest.seed)
+        pipeline_config = PipelineConfig.from_mapping(config_block)
+        pipeline_config.enumerator_model_id = enumerator_cfg.get("model_id", "")
+        pipeline_config.verifier_model_id = verifier_cfg.get("model_id", "")
         pipeline = CoverPipeline(
-            runtime,
-            PipelineConfig(
-                seed=manifest.seed,
-                run_optional_views=bool(pipeline_cfg.get("run_optional_views", False)),
-                enable_verifier=bool(pipeline_cfg.get("enable_verifier", False)),
-                max_verifications_per_query=int(
-                    pipeline_cfg.get("max_verifications_per_query", 0)
-                ),
-            ),
-            tracer=tracer,
+            runtime, pipeline_config, tracer=tracer, verifier_runtime=verifier_runtime,
         )
         result = pipeline.run(queries, progress=True)
 

@@ -875,10 +875,12 @@ def test_an_adversarial_verification_declares_its_template_cost():
     pipeline = CoverPipeline(
         ScriptedRuntime({}), PipelineConfig(**{**ACTIVE, "enable_prompt_disagreement": True})
     )
-    cost = pipeline._minimum_neural_cost(
+    templates = len(pipeline.config.disagreement_template_ids)
+    cold = pipeline._planned_neural_cost(
         contract, Action(ActionType.ADVERSARIAL_VERIFY, candidate_key="a")
     )
-    assert cost == len(pipeline.config.disagreement_template_ids) >= 2
+    # Cold cache: one score per template *plus* each uncached control.
+    assert cold == 2 * templates >= 4
 
 
 def test_a_cached_calibration_control_is_not_charged_twice():

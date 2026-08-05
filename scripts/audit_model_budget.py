@@ -14,7 +14,9 @@ import argparse
 import json
 from pathlib import Path
 
-import _bootstrap  # noqa: F401
+from _bootstrap import ensure_src_on_path
+
+ensure_src_on_path()
 
 import yaml
 

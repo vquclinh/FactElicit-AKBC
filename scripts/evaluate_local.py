@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import sys
 
-import _bootstrap  # noqa: F401
+from _bootstrap import ensure_src_on_path
+
+ensure_src_on_path()
 
 from cover_kbc.evaluation.harness import evaluate_files, evaluate_via_cli, write_report
 from cover_kbc.paths import SPLIT_FILES

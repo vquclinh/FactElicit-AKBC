@@ -90,16 +90,17 @@ class SelectionPolicy:
     #: Hard cap on emitted objects; 0 means unlimited.
     max_objects: int = 0
     #: Relative-distance threshold for numeric clustering.
-    #: Relative distance below which two normalised values join one cluster.
+    #: Bound on a cluster's **whole diameter**, not on each adjacent step:
+    #: ``relative_distance(min(C), max(C)) <= threshold``.
     #:
-    #: Deliberately **tighter** than the official ±5% tolerance rather than
-    #: equal to it. Clustering is single-linkage, so a chain of values each
-    #: exactly at the threshold spans far more than the threshold: with 0.05 a
-    #: three-value chain can span ~10%, and the median could then sit outside
-    #: the evaluator's tolerance of its own cluster members. Half the tolerance
-    #: keeps a cluster comfortably inside it.
+    #: Clustering is *not* single-linkage. A pairwise threshold does not bound
+    #: the diameter at all - a chain of values each just under it drifts without
+    #: limit - so a diameter bound is what "one coherent numeric value" actually
+    #: means, and it makes the median provably within ``threshold`` of every
+    #: member (audit 0012 §30).
     #:
-    #: An architecture default, not a fitted value - see audit 0011 §35.
+    #: Kept conservatively inside the official ±5% tolerance rather than pinned
+    #: to it. An architecture default, not a fitted value.
     numeric_cluster_threshold: float = 0.025
     #: Emit integers only (capacity is a person count).
     numeric_integer_only: bool = False
