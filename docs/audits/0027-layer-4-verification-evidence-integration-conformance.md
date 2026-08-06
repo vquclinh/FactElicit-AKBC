@@ -23,7 +23,11 @@ reconciliation, configuration, the artefact, and the Phase-C seam.
 Out of scope and not implemented: M19, M20, M21, DoLa. No new module.
 
 **This integration decides nothing and measures nothing new.** It spends zero
-calls, mutates nothing upstream, and produces no score, no acceptance and no
+calls, mutates nothing upst
+
+
+
+ream, and produces no score, no acceptance and no
 stopping rule.
 
 ---

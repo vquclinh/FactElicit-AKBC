@@ -277,3 +277,32 @@ layer4_integration:
   enabled: false
   mode: shadow
   integration_version: layer4-v1
+
+# Layer 5 - Module 19 Coverage Gap and Missingness Estimator.
+#
+# Proposal §15's non-neural ensemble:
+#   R_t = w1*noveltyRate + w2*singletonRatio + w3*facetGap
+#       + w4*disagreement + w5*unresolvedMass
+#
+# R_t is a HEURISTIC residual search-need index in [0, 1]. It is NOT a
+# probability, not an estimate of unseen objects, not factual confidence and
+# not a stopping decision - Module 21 owns STOP.
+#
+# Zero neural calls. Module 6's RCSE is untouched and still owns production
+# q_res; M19 is the upgraded shadow estimator beside it.
+#
+# §15 names w1..w5 but supplies no values, and fitting them would need
+# TRAIN/VAL, which architecture construction may not read. The neutral uniform
+# vector is used and recorded as weight_source = uniform_unfitted. With uniform
+# weights R_t is exactly the mean of the AVAILABLE components - an unavailable
+# component is dropped and the rest renormalised, never read as zero.
+coverage_gap:
+  enabled: false
+  mode: shadow
+  estimator_version: m19-v1
+  weights:
+    novelty_rate: 1
+    singleton_ratio: 1
+    facet_gap: 1
+    disagreement: 1
+    unresolved_mass: 1

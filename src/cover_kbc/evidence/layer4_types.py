@@ -508,6 +508,11 @@ class NumericTargetOverlay:
     cluster_index: int
     representative: float
     canonical_unit: str
+    #: Module 12's own dispersion and independent-support figures, copied so a
+    #: downstream reader can judge cluster stability without reaching back past
+    #: this layer. Neither is recomputed here.
+    dispersion: float = 0.0
+    independent_support: int = 0
     competing_clusters: int = 0
     specialist_verifier: SpecialistVerifierEvidence = field(
         default_factory=SpecialistVerifierEvidence
@@ -519,6 +524,8 @@ class NumericTargetOverlay:
             "cluster_index": self.cluster_index,
             "representative": self.representative,
             "canonical_unit": self.canonical_unit,
+            "dispersion": self.dispersion,
+            "independent_support": self.independent_support,
             "competing_clusters": self.competing_clusters,
             "specialist_verifier": self.specialist_verifier.to_json(),
             "structural_checks": [c.to_json() for c in self.structural_checks],
@@ -530,6 +537,8 @@ class NumericTargetOverlay:
             cluster_index=int(payload["cluster_index"]),
             representative=float(payload["representative"]),
             canonical_unit=str(payload["canonical_unit"]),
+            dispersion=float(payload.get("dispersion", 0.0)),
+            independent_support=int(payload.get("independent_support", 0)),
             competing_clusters=int(payload.get("competing_clusters", 0)),
             specialist_verifier=SpecialistVerifierEvidence.from_json(
                 payload["specialist_verifier"]
@@ -745,6 +754,8 @@ def numeric_overlay(cluster: NumericClusterConsensus) -> NumericTargetOverlay:
         cluster_index=cluster.cluster_index,
         representative=cluster.representative,
         canonical_unit=cluster.canonical_unit,
+        dispersion=cluster.dispersion,
+        independent_support=cluster.independent_support,
         competing_clusters=cluster.competing_clusters,
     )
 

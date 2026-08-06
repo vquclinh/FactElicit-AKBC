@@ -50,6 +50,9 @@ from cover_kbc.elicitation.library import get_view, views_for
 from cover_kbc.evidence.consensus import AtomicConsensusEngine
 from cover_kbc.evidence.consensus_adapters import applicable_specialist
 from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusResult
+from cover_kbc.coverage_gap.facet_coverage import discovery_origins, facet_executions
+from cover_kbc.coverage_gap.gap_types import CoverageGapState
+from cover_kbc.coverage_gap.missingness import CoverageGapEstimator
 from cover_kbc.evidence.layer4 import Layer4EvidenceIntegrator, prior_family_map
 from cover_kbc.evidence.layer4_types import Layer4EvidenceState
 from cover_kbc.verification.bidirectional_types import QueryBidirectionalResult
@@ -306,6 +309,7 @@ class CoverPipeline:
         specialist_verifier: "SpecialistVerifier | None" = None,
         bidirectional_verifier: "BidirectionalVerifier | None" = None,
         layer4_integrator: "Layer4EvidenceIntegrator | None" = None,
+        coverage_gap_estimator: "CoverageGapEstimator | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -424,6 +428,16 @@ class CoverPipeline:
             )
         self.layer4_integrator = layer4_integrator
         self.layer4_results: list[Layer4EvidenceState] = []
+        # Module 19, shadow mode. Non-neural: it reads the Layer-4 state and
+        # the applicable specialist's execution metadata and spends nothing.
+        # Module 6's RCSE is untouched and still owns production q_res.
+        if coverage_gap_estimator is not None and layer4_integrator is None:
+            raise ValueError(
+                "a coverage-gap estimator (M19) was supplied without the Layer-4 "
+                "integration; M19 estimates from the Layer-4 evidence state"
+            )
+        self.coverage_gap_estimator = coverage_gap_estimator
+        self.coverage_gap_results: list[CoverageGapState] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -1518,6 +1532,57 @@ class CoverPipeline:
             self._catalogue_bidirectional_checks(result)
         if self.layer4_integrator is not None:
             self._integrate_layer4(result, graph)
+            if self.coverage_gap_estimator is not None:
+                self._estimate_coverage_gap(result, graph.contract)
+
+    def _estimate_coverage_gap(
+        self, consensus: QueryConsensusResult, contract: RelationContract
+    ) -> None:
+        """Estimate §15's residual search need. **Zero calls.**
+
+        The Layer-4 state supplies the evidence; the applicable specialist's own
+        record supplies the structural facet/execution metadata Layer 4 does not
+        carry. Module 6's RCSE is neither read nor written.
+        """
+        layer4 = self.layer4_results[-1]
+        specialist = self._specialist_result_or_none(consensus)
+        self.coverage_gap_results.append(
+            self.coverage_gap_estimator.estimate_coverage_gap(
+                layer4,
+                program_type=contract.program_type.value,
+                facet_executions=facet_executions(consensus.relation, specialist),
+                discovery_origins=discovery_origins(
+                    consensus.relation, specialist, layer4
+                ),
+            )
+        )
+
+    def _specialist_result_or_none(self, consensus: QueryConsensusResult):
+        """The applicable specialist result, or None when it never ran."""
+        try:
+            return self._specialist_result_for_consensus(consensus)
+        except ConsensusError:
+            return None
+
+    def _specialist_result_for_consensus(self, consensus: QueryConsensusResult):
+        module = applicable_specialist(consensus.relation)
+        results = {
+            "M12": self.numeric_results,
+            "M13": self.large_set_results,
+            "M14": self.null_temporal_results,
+            "M15": self.small_set_results,
+        }[module]
+        for result in results:
+            plan = result.plan
+            if (
+                plan.relation == consensus.relation
+                and plan.subject == consensus.subject
+                and plan.row_index == consensus.row_index
+            ):
+                return result
+        raise ConsensusError(
+            f"{consensus.subject}/{consensus.relation}: no {module} result"
+        )
 
     def _integrate_layer4(
         self, consensus: QueryConsensusResult, graph: EvidenceGraph

@@ -31,6 +31,7 @@ ensure_src_on_path()
 import yaml
 
 from cover_kbc.contracts.registry import CONTRACTS
+from cover_kbc.coverage_gap.gap_types import FacetCoverage
 from cover_kbc.contracts.router import check_router_consistency
 from cover_kbc.data.loader import load_dataset
 from cover_kbc.data.writer import write_predictions, write_trace
@@ -41,6 +42,7 @@ from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_con
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.coverage_gap.missingness import build_coverage_gap_estimator
 from cover_kbc.evidence.layer4 import build_layer4_integrator
 from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
 from cover_kbc.verification.specialist_verifier import build_specialist_verifier
@@ -103,6 +105,8 @@ SPECIALIST_VERIFICATION = "specialist_verification.jsonl"
 BIDIRECTIONAL_VERIFICATION = "bidirectional_verification.jsonl"
 #: Layer-4 boundary - one integrated evidence state per query.
 LAYER4_EVIDENCE = "layer4_evidence.jsonl"
+#: Module 19 - one coverage-gap state per query. Observability only.
+COVERAGE_GAP = "coverage_gap.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -566,6 +570,39 @@ def write_layer4_evidence(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_coverage_gap(run_dir: Path, results) -> Path | None:
+    """Persist Module 19's coverage-gap state, one record per query.
+
+    Non-neural: R_t is arithmetic over recorded evidence. It is a heuristic
+    residual search-need index, never a probability and never a stop signal.
+    """
+    if not results:
+        return None
+    path = run_dir / COVERAGE_GAP
+    weak = unexplored = exhausted = 0
+    measured = 0
+    total = 0.0
+    for result in results:
+        weak += len(result.facets_in(FacetCoverage.WEAK))
+        unexplored += len(result.facets_in(FacetCoverage.UNEXPLORED))
+        exhausted += len(result.facets_in(FacetCoverage.EXHAUSTED))
+        if result.residual.residual is not None:
+            measured += 1
+            total += result.residual.residual
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    mean = f"{total / measured:.3f}" if measured else "n/a"
+    print(
+        f"[M19] coverage gap: {path}  "
+        f"({len(results)} queries, {weak} weak / {unexplored} unexplored / "
+        f"{exhausted} exhausted facets, mean R_t={mean} over {measured} "
+        f"measured, 0 neural calls)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -675,6 +712,15 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         )
         if consensus_engine is not None else None
     )
+    coverage_gap_estimator = (
+        build_coverage_gap_estimator(
+            config.get("coverage_gap"),
+            layer4_enabled=bool(
+                (config.get("layer4_integration") or {}).get("enabled", False)
+            ),
+        )
+        if consensus_engine is not None else None
+    )
     layer4_integrator = (
         build_layer4_integrator(
             config.get("layer4_integration"),
@@ -728,6 +774,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         specialist_verifier=specialist_verifier,
         bidirectional_verifier=bidirectional_verifier,
         layer4_integrator=layer4_integrator,
+        coverage_gap_estimator=coverage_gap_estimator,
     )
 
 
@@ -935,6 +982,7 @@ def phase_decide(args, config: dict) -> Path:
     write_specialist_verification(run_dir, pipeline.specialist_verifications)
     write_bidirectional_verification(run_dir, pipeline.bidirectional_results)
     write_layer4_evidence(run_dir, pipeline.layer4_results)
+    write_coverage_gap(run_dir, pipeline.coverage_gap_results)
 
     # Completeness is checked against the *intended* query set, not against the
     # predictions themselves - comparing output to itself could never catch an
