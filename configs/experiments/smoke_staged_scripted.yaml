@@ -173,3 +173,23 @@ specialists:
     cross_family_recall: false
     candidate_explosion_threshold: 0
     mine_parametric_memory: true
+
+# Layer 3 - Module 16 Atomic Consensus Engine.
+#
+# Non-neural: it fuses evidence Modules 3/4 and the applicable Layer-2
+# specialist already produced, spends zero calls and changes no prediction.
+# Shadow-only and off by default until Modules 17 and 18 exist to consume it.
+#
+# Requires M9, M10, M11 and the specialist that OWNS each relation in the run -
+# not all four. There are deliberately no score weights here: M16 produces the
+# support vector phi(o) = (F, L, X, C, U, I, D, cost, risk), not a score.
+consensus:
+  enabled: false
+  mode: shadow
+  consensus_version: m16-v1
+  # Register M11's records as query-level origins, so a specialist observation
+  # mined from one is recognisable as a description of an output already paid
+  # for, rather than a second independent support.
+  include_parametric_origins: true
+  # Emit query-level events (gates, null classes, M11 records) in the artefact.
+  include_query_events: true

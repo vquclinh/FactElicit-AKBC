@@ -30,6 +30,7 @@ from cover_kbc.evaluation.harness import evaluate_predictions, write_report
 from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks
 from cover_kbc.paths import OUTPUTS_DIR
+from cover_kbc.evidence.consensus import build_consensus_engine
 from cover_kbc.pipeline import CoverPipeline, ExecutionMode, PipelineConfig
 from cover_kbc.query_intelligence import (
     build_parametric_retriever,
@@ -44,6 +45,11 @@ from cover_kbc.specialists import (
     build_small_set_specialist,
 )
 from cover_kbc.runtime.tracing import RunTracer
+
+
+def _enabled(config: dict, key: str) -> bool:
+    """Whether one Layer-2 specialist is enabled, by configuration alone."""
+    return bool(((config.get("specialists") or {}).get(key) or {}).get("enabled", False))
 
 
 def main() -> int:
@@ -165,6 +171,21 @@ def main() -> int:
                 compiler_enabled=prompt_compiler is not None,
                 retrieval_enabled=retriever is not None,
             ),
+            # Module 16, shadow mode and non-neural: it fuses what the modules
+            # above recorded and changes no prediction.
+            consensus_engine=build_consensus_engine(
+                config.get("consensus"),
+                profiler_enabled=profiler is not None,
+                compiler_enabled=prompt_compiler is not None,
+                retrieval_enabled=retriever is not None,
+                available_specialists={
+                    "M12": _enabled(config, "numeric"),
+                    "M13": _enabled(config, "large_open_set"),
+                    "M14": _enabled(config, "null_temporal"),
+                    "M15": _enabled(config, "small_set_closure"),
+                },
+                relations=sorted({q.relation for q in queries}),
+            ),
         )
         result = pipeline.run(queries, progress=True)
 
@@ -187,6 +208,7 @@ def main() -> int:
         ("M13", "large_open_set_specialist.jsonl", pipeline.large_set_results),
         ("M14", "null_temporal_specialist.jsonl", pipeline.null_temporal_results),
         ("M15", "small_set_specialist.jsonl", pipeline.small_set_results),
+        ("M16", "atomic_consensus.jsonl", pipeline.consensus_results),
     ):
         if not records:
             continue

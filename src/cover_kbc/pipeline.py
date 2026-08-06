@@ -47,6 +47,9 @@ from cover_kbc.controller import (
 from cover_kbc.coverage import GateState, RCSEState, trusted_keys
 from cover_kbc.elicitation.engine import ElicitationEngine
 from cover_kbc.elicitation.library import get_view, views_for
+from cover_kbc.evidence.consensus import AtomicConsensusEngine
+from cover_kbc.evidence.consensus_adapters import applicable_specialist
+from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusResult
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
 from cover_kbc.models.base import LMRuntime, LogitsUnavailable
 from cover_kbc.query_intelligence.parametric_retrieval import ParametricRetriever
@@ -293,6 +296,7 @@ class CoverPipeline:
         large_set_specialist: "LargeSetSpecialist | None" = None,
         null_temporal_specialist: "NullTemporalSpecialist | None" = None,
         small_set_specialist: "SmallSetSpecialist | None" = None,
+        consensus_engine: "AtomicConsensusEngine | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -365,6 +369,20 @@ class CoverPipeline:
             )
         self.small_set_specialist = small_set_specialist
         self.small_set_results: list[SmallSetSpecialistResult] = []
+        # Module 16, shadow mode. Non-neural: it fuses evidence the modules
+        # above already produced and spends nothing. It reads the graph and
+        # writes nowhere near it, so Module 8's prediction is unchanged.
+        #
+        # Deliberately *no* object-level dependency check here. M16 runs at the
+        # Phase-C seam, where no specialist and no retriever is resident and no
+        # model is loaded: what it consumes is recorded *results*, which a
+        # staged run reloads from Phase A's artefacts. The dependency is
+        # checked where it is real - against configuration in
+        # ``build_consensus_engine``, and against the actual results in
+        # ``_specialist_result_for``, which fails loudly rather than fusing
+        # half an evidence state.
+        self.consensus_engine = consensus_engine
+        self.consensus_results: list[QueryConsensusResult] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -1383,6 +1401,77 @@ class CoverPipeline:
 
     # ------------------------------------------------------------- phase C --
 
+    def _specialist_result_for(self, graph: EvidenceGraph):
+        """The applicable Layer-2 result for this query, matched by identity.
+
+        Matched on subject/relation/row rather than on position, so a filtered
+        or resumed run cannot silently pair a query with another query's
+        specialist output.
+        """
+        module = applicable_specialist(graph.query.relation)
+        results = {
+            "M12": self.numeric_results,
+            "M13": self.large_set_results,
+            "M14": self.null_temporal_results,
+            "M15": self.small_set_results,
+        }[module]
+        query = graph.query
+        for result in results:
+            plan = result.plan
+            if (
+                plan.relation == query.relation
+                and plan.subject == query.subject
+                and plan.row_index == query.row_index
+            ):
+                return result
+        raise ConsensusError(
+            f"{query.subject}/{query.relation} is routed to {module} but no "
+            f"{module} result is available for it; Module 16 fuses evidence and "
+            "cannot invent the specialist's half of it"
+        )
+
+    def _retrieval_result_for(self, graph: EvidenceGraph):
+        query = graph.query
+        for result in self.retrieval_results:
+            plan = result.plan
+            if (
+                plan.relation == query.relation
+                and plan.subject == query.subject
+                and plan.row_index == query.row_index
+            ):
+                return result
+        return None
+
+    def _profile_for(self, graph: EvidenceGraph):
+        query = graph.query
+        for profile in self.query_profiles:
+            if (
+                profile.relation == query.relation
+                and profile.subject == query.subject
+                and profile.row_index == query.row_index
+            ):
+                return profile
+        return None
+
+    def _run_consensus(self, graph: EvidenceGraph) -> None:
+        """Build Module 16's consensus for one finished query.
+
+        Runs at the Phase-C seam, after verification, so the verifier evidence
+        Module 4 produced is visible as ``L``. Spends nothing, mutates nothing:
+        the graph goes in and only a separate result object comes out.
+        """
+        profile = self._profile_for(graph)
+        result = self.consensus_engine.consense(
+            graph,
+            self._specialist_result_for(graph),
+            retrieval=self._retrieval_result_for(graph),
+            # Module 9's grades are carried, not recomputed and not combined
+            # into a scalar: they are query-level risk descriptors, and M16
+            # adds no judgement of its own to them.
+            query_risk=(profile.to_json().get("risk", {}) if profile else {}),
+        )
+        self.consensus_results.append(result)
+
     def decide_graph(self, graph: EvidenceGraph) -> Prediction:
         """Phase C: RCSE, scoring, relation-specific selection. No model calls.
 
@@ -1431,6 +1520,12 @@ class CoverPipeline:
         if log:
             last = log[-1]
             stopped = last.get("chosen", {}).get("reason") or stopped
+
+        # Module 16 observes the finished evidence state before Module 8 reads
+        # it. Deliberately before ``finalize`` so the two see the same graph,
+        # and deliberately incapable of changing what ``finalize`` returns.
+        if self.consensus_engine is not None:
+            self._run_consensus(graph)
 
         prediction = finalize(
             graph,

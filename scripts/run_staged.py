@@ -30,6 +30,7 @@ ensure_src_on_path()
 
 import yaml
 
+from cover_kbc.contracts.registry import CONTRACTS
 from cover_kbc.contracts.router import check_router_consistency
 from cover_kbc.data.loader import load_dataset
 from cover_kbc.data.writer import write_predictions, write_trace
@@ -39,13 +40,22 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_config
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
+from cover_kbc.evidence.consensus import build_consensus_engine
 from cover_kbc.query_intelligence import (
+    ParametricMemoryRecord,
+    QueryRiskProfile,
+    ParametricRetrievalPlan,
+    ParametricRetrievalResult,
     build_parametric_retriever,
     build_profiler,
     build_prompt_compiler,
 )
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.specialists import (
+    LargeSetSpecialistResult,
+    NullTemporalSpecialistResult,
+    NumericSpecialistResult,
+    SmallSetSpecialistResult,
     build_large_set_specialist,
     build_null_temporal_specialist,
     build_numeric_specialist,
@@ -53,7 +63,7 @@ from cover_kbc.specialists import (
 )
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
-from cover_kbc.types import ModelRole, Query
+from cover_kbc.types import ModelRole, ProgramType, Query
 
 ENUMERATED = "stage_a_enumerated.jsonl"
 VERIFIED = "stage_b_verified.jsonl"
@@ -82,6 +92,8 @@ LARGE_SET_SPECIALIST = "large_open_set_specialist.jsonl"
 NULL_TEMPORAL_SPECIALIST = "null_temporal_specialist.jsonl"
 #: Module 15 observability artefact: one record per SMALL_SET query.
 SMALL_SET_SPECIALIST = "small_set_specialist.jsonl"
+#: Module 16 - one atomic-consensus state per query. Observability only.
+ATOMIC_CONSENSUS = "atomic_consensus.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -370,6 +382,90 @@ def write_small_set_specialist(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_atomic_consensus(run_dir: Path, results) -> Path | None:
+    """Persist Module 16's consensus, one record per query. Non-neural.
+
+    The line count is the query count, and every candidate row carries its own
+    provenance - origin events, group supports, phi - so the state can be
+    audited without re-running anything. Nothing here is a prediction.
+    """
+    if not results:
+        return None
+    path = run_dir / ATOMIC_CONSENSUS
+    candidates = origins = disagreements = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            candidates += len(result.candidates)
+            origins += result.cost.unique_origin_events
+            disagreements += sum(
+                1 for c in result.candidates if c.disagreement_details
+            )
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[M16] atomic consensus: {path}  "
+        f"({len(results)} queries, {candidates} candidate states, {origins} "
+        f"unique origin events, {disagreements} with semantic disagreement, "
+        f"0 neural calls)",
+        flush=True,
+    )
+    return path
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def load_shadow_results(run_dir: Path, pipeline: CoverPipeline) -> None:
+    """Reload Phase-A shadow state so a later phase can fuse it.
+
+    Module 16 runs in Phase C, where no specialist object exists and no model
+    is loaded. It needs the *results*, not the modules, so they are read back
+    from the artefacts Phase A wrote. Reloading rather than recomputing is also
+    what makes the round trip checkable: consensus over persisted evidence must
+    equal consensus over the evidence in memory.
+    """
+    by_query: dict[tuple[str, str, int], list[dict]] = {}
+    for row in _read_jsonl(run_dir / PARAMETRIC_MEMORY):
+        key = (row["SubjectEntity"], row["Relation"], int(row["row_index"]))
+        by_query.setdefault(key, []).append(row)
+    for (subject, relation, row_index), rows in by_query.items():
+        first = rows[0]
+        pipeline.retrieval_results.append(ParametricRetrievalResult(
+            plan=ParametricRetrievalPlan(
+                retrieval_version=first["retrieval_version"],
+                compiler_version=first["compiler_version"],
+                profile_version=first["profile_version"],
+                program_sha256=first["program_sha256"],
+                subject=subject, relation=relation, row_index=row_index,
+                program_type=ProgramType(first["program_type"]),
+                # Not persisted by the Module 11 artefact, so it is left empty
+                # rather than guessed. Module 16 reads the versions and the
+                # query identity above and never reads this field; inventing a
+                # value would put provenance in the record that no run wrote.
+                specialist_hint="",
+            ),
+            records=tuple(ParametricMemoryRecord.from_json(row) for row in rows),
+        ))
+
+    for row in _read_jsonl(run_dir / QUERY_PROFILES):
+        pipeline.query_profiles.append(QueryRiskProfile.from_json(row))
+
+    for artefact, loader, target in (
+        (NUMERIC_SPECIALIST, NumericSpecialistResult, pipeline.numeric_results),
+        (LARGE_SET_SPECIALIST, LargeSetSpecialistResult, pipeline.large_set_results),
+        (NULL_TEMPORAL_SPECIALIST, NullTemporalSpecialistResult,
+         pipeline.null_temporal_results),
+        (SMALL_SET_SPECIALIST, SmallSetSpecialistResult, pipeline.small_set_results),
+    ):
+        for row in _read_jsonl(run_dir / artefact):
+            target.append(loader.from_json(row))
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -399,6 +495,12 @@ def resolve_run_dir(args, config: dict, split: str) -> Path:
         path = OUTPUTS_DIR / new_run_id(name, split)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _block_enabled(config: dict, section: str, key: str) -> bool:
+    """Whether a configured shadow module is enabled, by configuration alone."""
+    block = (config.get(section) or {}).get(key) or {}
+    return bool(block.get("enabled", False))
 
 
 def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> CoverPipeline:
@@ -438,6 +540,28 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         compiler_enabled=prompt_compiler is not None,
         retrieval_enabled=retriever is not None,
     )
+    # Module 16 runs in Phase C, where no specialist object is resident: it
+    # consumes recorded results, not modules. Its dependency check therefore
+    # reads the *configuration*, exactly as the cross-family rule reads the
+    # configured model ids rather than whichever runtime happens to be loaded.
+    consensus_engine = (
+        build_consensus_engine(
+            config.get("consensus"),
+            profiler_enabled=_block_enabled(config, "query_intelligence", "profiler"),
+            compiler_enabled=_block_enabled(config, "query_intelligence", "prompt_compiler"),
+            retrieval_enabled=_block_enabled(
+                config, "query_intelligence", "parametric_retrieval"
+            ),
+            available_specialists={
+                "M12": _block_enabled(config, "specialists", "numeric"),
+                "M13": _block_enabled(config, "specialists", "large_open_set"),
+                "M14": _block_enabled(config, "specialists", "null_temporal"),
+                "M15": _block_enabled(config, "specialists", "small_set_closure"),
+            },
+            relations=sorted(CONTRACTS),
+        )
+        if phase == "decide" else None
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -467,6 +591,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         large_set_specialist=large_set_specialist,
         null_temporal_specialist=null_temporal_specialist,
         small_set_specialist=small_set_specialist,
+        consensus_engine=consensus_engine,
     )
 
 
@@ -667,7 +792,10 @@ def phase_decide(args, config: dict) -> Path:
         f"queries={total if total else '?'}  (no model loaded)"
     )
     pipeline = build_pipeline(config, phase="decide", tracer=None)
+    if pipeline.consensus_engine is not None:
+        load_shadow_results(run_dir, pipeline)
     result = pipeline.decide(read_stage(source), on_result=_decide_reporter(total))
+    write_atomic_consensus(run_dir, pipeline.consensus_results)
 
     # Completeness is checked against the *intended* query set, not against the
     # predictions themselves - comparing output to itself could never catch an
