@@ -151,3 +151,18 @@ query_intelligence:
     enabled: true
     mode: shadow
     profile_version: m9-v1
+  # Module 10 - Prompt Program Compiler.
+  #
+  # Shadow mode: M10 consumes M9's risk profile at the same seam and compiles a
+  # typed prompt blueprint into prompt_programs.jsonl. Module 2's view
+  # templates and Module 4's verifier prompts are untouched, and no M0-M8
+  # decision reads a program. Module 11 will be its first consumer.
+  #
+  # Prompt language lives in query_intelligence/prompt_registry.py, versioned by
+  # compiler_version. Semantic cues are lexical steering placed inside prompts;
+  # they are never sent to any external system. Nothing here was selected from
+  # TRAIN, VAL or TEST performance.
+  prompt_compiler:
+    enabled: true
+    mode: shadow
+    compiler_version: m10-v1

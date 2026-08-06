@@ -50,6 +50,8 @@ from cover_kbc.elicitation.library import get_view, views_for
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
 from cover_kbc.models.base import LMRuntime, LogitsUnavailable
 from cover_kbc.query_intelligence.profiler import QueryProfiler
+from cover_kbc.query_intelligence.prompt_compiler import PromptProgramCompiler
+from cover_kbc.query_intelligence.prompt_types import PromptProgram
 from cover_kbc.query_intelligence.types import QueryRiskProfile
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.scoring import (
@@ -274,6 +276,7 @@ class CoverPipeline:
         tracer: RunTracer | None = None,
         verifier_runtime: LMRuntime | None = None,
         profiler: "QueryProfiler | None" = None,
+        prompt_compiler: "PromptProgramCompiler | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -285,6 +288,16 @@ class CoverPipeline:
         # any decision, so predictions and call counts are unaffected.
         self.profiler = profiler
         self.query_profiles: list[QueryRiskProfile] = []
+        # Module 10, shadow mode. It consumes M9's profile and produces a
+        # prompt blueprint; Module 2's templates and Module 4's verifier
+        # prompts are untouched, and nothing below reads either buffer.
+        if prompt_compiler is not None and profiler is None:
+            raise ValueError(
+                "a prompt compiler (M10) was supplied without a profiler (M9); "
+                "M10 consumes M9's QueryRiskProfile and cannot run without it"
+            )
+        self.prompt_compiler = prompt_compiler
+        self.prompt_programs: list[PromptProgram] = []
         # Falling back to the enumerator keeps the interface usable with one
         # model, but then no *cross-model* evidence is claimed anywhere.
         self.verifier_runtime = verifier_runtime or runtime
@@ -718,7 +731,12 @@ class CoverPipeline:
         # observability buffer, never to the graph: Module 10 will be its first
         # consumer, and until then nothing below may read it.
         if self.profiler is not None:
-            self.query_profiles.append(self.profiler.profile(query, contract))
+            profile = self.profiler.profile(query, contract)
+            self.query_profiles.append(profile)
+            if self.prompt_compiler is not None:
+                self.prompt_programs.append(
+                    self.prompt_compiler.compile(query, contract, profile)
+                )
         graph = build_graph(query, contract)
         budget = self.config.budget(contract)
         state = RCSEState()

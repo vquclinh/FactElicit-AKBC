@@ -581,8 +581,9 @@ def test_an_unsupported_mode_is_rejected():
 def test_unknown_config_keys_are_rejected():
     with pytest.raises(ValueError, match="unknown query_intelligence.profiler key"):
         ProfilerConfig.from_mapping({"enabled": True, "enabledd": True})
+    # `prompt_compiler` became valid when M10 landed; M11-M21 have not.
     with pytest.raises(ValueError, match="unknown query_intelligence key"):
-        build_profiler({"profiler": {"enabled": True}, "prompt_compiler": {}})
+        build_profiler({"profiler": {"enabled": True}, "parametric_retrieval": {}})
 
 
 def test_disabled_or_absent_config_builds_no_profiler():

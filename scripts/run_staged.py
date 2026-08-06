@@ -39,7 +39,7 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_config
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
-from cover_kbc.query_intelligence import build_profiler
+from cover_kbc.query_intelligence import build_profiler, build_prompt_compiler
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
@@ -57,6 +57,10 @@ QUERY_MANIFEST = "query_manifest.json"
 #: file: folding risk profiles into an existing stage would change artefacts
 #: that must stay comparable across the M9 rollout.
 QUERY_PROFILES = "query_profiles.jsonl"
+#: Module 10 observability artefact, written in Phase A alongside the profiles.
+#: Its own file for the same reason: existing artefacts must stay comparable
+#: across the M10 rollout.
+PROMPT_PROGRAMS = "prompt_programs.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -187,6 +191,13 @@ def _decide_reporter(total: int | None):
     return report
 
 
+def _write_jsonl(path: Path, records) -> Path:
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record.to_json(), ensure_ascii=False) + "\n")
+    return path
+
+
 def write_query_profiles(run_dir: Path, profiles) -> Path | None:
     """Persist the Module 9 profiles produced by this phase.
 
@@ -196,11 +207,22 @@ def write_query_profiles(run_dir: Path, profiles) -> Path | None:
     """
     if not profiles:
         return None
-    path = run_dir / QUERY_PROFILES
-    with path.open("w", encoding="utf-8") as handle:
-        for profile in profiles:
-            handle.write(json.dumps(profile.to_json(), ensure_ascii=False) + "\n")
+    path = _write_jsonl(run_dir / QUERY_PROFILES, profiles)
     print(f"[M9] query profiles: {path}  ({len(profiles)} queries)", flush=True)
+    return path
+
+
+def write_prompt_programs(run_dir: Path, programs) -> Path | None:
+    """Persist the Module 10 prompt programs produced by this phase.
+
+    Structured programs only. The rendered preview is deliberately not written:
+    it is a projection of these fields, so persisting it would duplicate every
+    record in prose without adding information.
+    """
+    if not programs:
+        return None
+    path = _write_jsonl(run_dir / PROMPT_PROGRAMS, programs)
+    print(f"[M10] prompt programs: {path}  ({len(programs)} queries)", flush=True)
     return path
 
 
@@ -239,10 +261,10 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
     """Construct a pipeline loading only the models the phase needs."""
     enumerator_cfg, verifier_cfg = model_blocks(config)
     pipeline_cfg = PipelineConfig.from_mapping(config.get("pipeline"))
-    # Module 9 profiles at the M1 seam, which only Phase A crosses.
-    profiler = (
-        build_profiler(config.get("query_intelligence")) if phase == "enumerate" else None
-    )
+    # Modules 9 and 10 run at the M1 seam, which only Phase A crosses.
+    intelligence = config.get("query_intelligence") if phase == "enumerate" else None
+    profiler = build_profiler(intelligence)
+    prompt_compiler = build_prompt_compiler(intelligence, profiler_enabled=profiler is not None)
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -266,7 +288,8 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
     pipeline_cfg.enumerator_model_id = enumerator_cfg.get("model_id", "")
     pipeline_cfg.verifier_model_id = verifier_cfg.get("model_id", "")
     return CoverPipeline(
-        runtime, pipeline_cfg, tracer=tracer, verifier_runtime=verifier, profiler=profiler
+        runtime, pipeline_cfg, tracer=tracer, verifier_runtime=verifier,
+        profiler=profiler, prompt_compiler=prompt_compiler,
     )
 
 
@@ -324,6 +347,7 @@ def phase_enumerate(args, config: dict) -> Path:
                 writer.write(graph)
 
     write_query_profiles(run_dir, pipeline.query_profiles)
+    write_prompt_programs(run_dir, pipeline.prompt_programs)
     manifest.finish()
     manifest.write(run_dir / "manifest_enumerate.json")
     print(json.dumps(stage_summary(run_dir / ENUMERATED), indent=2))

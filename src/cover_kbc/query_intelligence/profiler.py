@@ -238,11 +238,12 @@ def build_profiler(config: Mapping[str, Any] | None) -> QueryProfiler | None:
     byte-for-byte the pre-Module-9 code path.
     """
     block = dict(config or {})
-    unknown = sorted(set(block) - {"profiler"})
+    unknown = sorted(set(block) - {"profiler", "prompt_compiler"})
     if unknown:
         raise ValueError(
             f"unknown query_intelligence key(s) {unknown}; this milestone defines "
-            "'profiler' only (M10-M21 are not implemented)"
+            "'profiler' (M9) and 'prompt_compiler' (M10) only (M11-M21 are not "
+            "implemented)"
         )
     profiler_config = ProfilerConfig.from_mapping(block.get("profiler"))
     if not profiler_config.enabled:
