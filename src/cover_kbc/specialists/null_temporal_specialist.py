@@ -48,6 +48,10 @@ from cover_kbc.query_intelligence.retrieval_types import (
     ParseStatus,
     RecallOperationKind,
 )
+from cover_kbc.specialists.cross_family import (
+    CrossFamilyDecision,
+    decide_cross_family,
+)
 from cover_kbc.specialists.null_temporal_registry import (
     DEATH_LOCALITY_CUES,
     NO_KNOWN_LOCALITY_CUES,
@@ -680,8 +684,9 @@ class NullTemporalSpecialist:
         )
 
         cross_family: tuple[NullTemporalProbe, ...] = ()
-        rationale = self._cross_family_rationale(program, cross_family_available)
-        if self._cross_family_planned(program, cross_family_available):
+        decision = self._cross_family_decision(program, cross_family_available)
+        rationale = decision.rationale
+        if decision.eligible:
             direct = spec.stage_b[0]
             cross_family = (NullTemporalProbe(
                 operation_id="m14_x_cross_family#0",
@@ -710,41 +715,33 @@ class NullTemporalSpecialist:
             cross_family_rationale=rationale,
         )
 
-    def _cross_family_planned(
+    def _cross_family_decision(
         self, program: PromptProgram, cross_family_available: bool
-    ) -> bool:
+    ) -> CrossFamilyDecision:
         """Three conditions, all static. None is a dynamic planner decision.
 
         §10.2 makes the branch conditional on temporal risk. That condition is
         read from Module 10's compiled TEMPORAL directive, which fires exactly
         when Module 9 graded temporal sensitivity HIGH - an upstream static
         signal, not something M14 computes or adapts.
-        """
-        return (
-            self.config.cross_family_recall
-            and cross_family_available
-            and program.has_directive(DirectiveKind.TEMPORAL)
-        )
 
-    def _cross_family_rationale(
-        self, program: PromptProgram, cross_family_available: bool
-    ) -> str:
-        if not self.config.cross_family_recall:
-            return "disabled in configuration"
-        if not cross_family_available:
-            return (
-                "no genuinely distinct second model family is configured; a "
-                "cross-family branch through the same checkpoint would be a "
-                "resample, not a second family"
-            )
-        if not program.has_directive(DirectiveKind.TEMPORAL):
-            return (
+        The ordering and the two generic reasons come from the shared
+        cross-family primitive, which Module 15 reuses. The two
+        relation-specific reasons are supplied here and are unchanged from when
+        this logic lived inline.
+        """
+        return decide_cross_family(
+            enabled=self.config.cross_family_recall,
+            family_available=cross_family_available,
+            local_condition_met=program.has_directive(DirectiveKind.TEMPORAL),
+            local_condition_unmet_reason=(
                 "Module 9 did not grade this relation temporally sensitive, so "
                 "§10.2's condition is not met"
-            )
-        return (
-            "enabled, a distinct second family is configured, and Module 9 graded "
-            "this relation temporally sensitive"
+            ),
+            eligible_reason=(
+                "enabled, a distinct second family is configured, and Module 9 "
+                "graded this relation temporally sensitive"
+            ),
         )
 
     @staticmethod

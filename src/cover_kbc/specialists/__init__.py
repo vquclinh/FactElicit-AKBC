@@ -1,13 +1,92 @@
 """Layer 2 relation-family specialists.
 
 Implemented: **M12 Numeric Specialist** (``hasCapacity``, ``hasArea``) and
-**M13 Large-Open-Set Specialist** (``awardWonBy``) and **M14 Null/Temporal
-Specialist** (``personHasCityOfDeath``). They are **siblings over disjoint
-relations**: any may be enabled without the others, and none imports another.
-Nothing here is a placeholder for the unimplemented specialists - M15
-(small-set closure) gets its files when it gets its milestone, as do the
-consensus engine, the verifier suite and the control modules above them.
+**M13 Large-Open-Set Specialist** (``awardWonBy``), **M14 Null/Temporal
+Specialist** (``personHasCityOfDeath``) and **M15 Small-Set Closure
+Specialist** (``countryLandBordersCountry``, ``companyTradesAtStockExchange``).
+Layer 2 is complete.
+
+They are **siblings over disjoint relations**: any may be enabled without the
+others, and none imports another. Modules 14 and 15 both use
+:mod:`cover_kbc.specialists.cross_family`, a shared primitive that belongs to
+neither. Nothing here is a placeholder for the unimplemented modules - the
+consensus engine, the verifier suite and the control modules get their files
+when they get their milestones.
 """
+
+from cover_kbc.specialists.cross_family import (
+    CrossFamilyDecision,
+    decide_cross_family,
+    distinct_families,
+)
+from cover_kbc.specialists.small_set_registry import (
+    SMALL_SET_RELATIONS,
+    SMALL_SET_VERSION,
+    NON_MENTION_CONTRACT_RULES,
+    SmallSetRelationSpec,
+    UnsupportedSmallSetRelation,
+    check_small_set_registry_consistency,
+    handles as small_set_handles,
+    small_set_spec,
+)
+from cover_kbc.specialists.small_set_registry import (
+    mention_taxonomy as small_set_mention_taxonomy,
+)
+from cover_kbc.specialists.small_set_registry import (
+    probe_catalogue as small_set_probe_catalogue,
+)
+from cover_kbc.specialists.small_set_specialist import (
+    GATE_SYSTEM_PROMPT,
+    SMALL_SET_SYSTEM_PROMPT,
+    SmallSetSpecialist,
+    SmallSetSpecialistConfig,
+    SmallSetSpecialistError,
+    build_closure_signals,
+    build_pending_checks,
+    build_small_set_specialist,
+    classify_listing_type,
+    classify_temporal_status,
+    evaluate_cross_family_trigger,
+    extract_candidates,
+    jaccard,
+    parse_listing_status,
+    read_listing_gate,
+    split_candidates,
+)
+from cover_kbc.specialists.small_set_specialist import (
+    build_occurrences as build_small_set_occurrences,
+)
+from cover_kbc.specialists.small_set_specialist import (
+    classify_mention as classify_small_set_mention,
+)
+from cover_kbc.specialists.small_set_specialist import (
+    normalise_surface as normalise_small_set_surface,
+)
+from cover_kbc.specialists.small_set_types import (
+    BorderMentionKind,
+    ClosureSignals,
+    ClosureSnapshot,
+    CrossFamilyTrigger,
+    ListingExistenceStatus,
+    ListingGateReading,
+    ListingGateState,
+    ListingStatusObservation,
+    ListingTemporalStatus,
+    ListingType,
+    PendingCheck,
+    PendingCheckKind,
+    PendingCheckReason,
+    SmallSetCandidateObservation,
+    SmallSetCandidateOccurrence,
+    SmallSetObservationSource,
+    SmallSetParseStatus,
+    SmallSetProbe,
+    SmallSetProbeFamily,
+    SmallSetRelationKind,
+    SmallSetSpecialistPlan,
+    SmallSetSpecialistResult,
+    StockMentionKind,
+)
 
 from cover_kbc.specialists.null_temporal_registry import (
     DEATH_LOCALITY_CUES,
@@ -151,6 +230,61 @@ from cover_kbc.specialists.numeric_types import (
 
 __all__ = [
     "AWARD_MENTION_CUES",
+    "BorderMentionKind",
+    "ClosureSignals",
+    "ClosureSnapshot",
+    "CrossFamilyDecision",
+    "CrossFamilyTrigger",
+    "evaluate_cross_family_trigger",
+    "GATE_SYSTEM_PROMPT",
+    "ListingExistenceStatus",
+    "ListingGateReading",
+    "ListingGateState",
+    "ListingStatusObservation",
+    "ListingTemporalStatus",
+    "ListingType",
+    "NON_MENTION_CONTRACT_RULES",
+    "PendingCheck",
+    "PendingCheckKind",
+    "PendingCheckReason",
+    "SMALL_SET_RELATIONS",
+    "SMALL_SET_SYSTEM_PROMPT",
+    "SMALL_SET_VERSION",
+    "SmallSetCandidateObservation",
+    "SmallSetCandidateOccurrence",
+    "SmallSetObservationSource",
+    "SmallSetParseStatus",
+    "SmallSetProbe",
+    "SmallSetProbeFamily",
+    "SmallSetRelationKind",
+    "SmallSetRelationSpec",
+    "SmallSetSpecialist",
+    "SmallSetSpecialistConfig",
+    "SmallSetSpecialistError",
+    "SmallSetSpecialistPlan",
+    "SmallSetSpecialistResult",
+    "StockMentionKind",
+    "UnsupportedSmallSetRelation",
+    "build_closure_signals",
+    "build_pending_checks",
+    "build_small_set_occurrences",
+    "build_small_set_specialist",
+    "check_small_set_registry_consistency",
+    "classify_listing_type",
+    "classify_small_set_mention",
+    "classify_temporal_status",
+    "decide_cross_family",
+    "distinct_families",
+    "extract_candidates",
+    "jaccard",
+    "normalise_small_set_surface",
+    "parse_listing_status",
+    "read_listing_gate",
+    "small_set_handles",
+    "small_set_mention_taxonomy",
+    "small_set_probe_catalogue",
+    "small_set_spec",
+    "split_candidates",
     "DEATH_LOCALITY_CUES",
     "DeathStatus",
     "DeathStatusObservation",

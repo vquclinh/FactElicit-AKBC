@@ -814,14 +814,20 @@ def test_no_control_logic_anywhere_in_m12():
 
 
 def test_only_the_implemented_specialists_exist():
-    """M13 and M14 landed as siblings; M15-M21 still have no files."""
+    """Layer 2 is complete (M12-M15); M16-M21 still have no files.
+
+    ``cross_family.py`` is the primitive Modules 14 and 15 share; it belongs to
+    neither and implements no specialist of its own.
+    """
     root = Path("src/cover_kbc/specialists")
     assert sorted(p.name for p in root.glob("*.py")) == [
         "__init__.py",
+        "cross_family.py",
         "large_set_registry.py", "large_set_specialist.py", "large_set_types.py",
         "null_temporal_registry.py", "null_temporal_specialist.py",
         "null_temporal_types.py",
         "numeric_registry.py", "numeric_specialist.py", "numeric_types.py",
+        "small_set_registry.py", "small_set_specialist.py", "small_set_types.py",
     ]
 
 
@@ -842,7 +848,7 @@ def test_m12_does_not_depend_on_its_siblings():
             else:
                 continue
             for module in modules:
-                for sibling in ("large_set", "null_temporal"):
+                for sibling in ("large_set", "null_temporal", "small_set"):
                     assert sibling not in module, f"{name} imports {module}"
     # And M12 still builds with M13 absent from config entirely.
     assert isinstance(
@@ -1212,11 +1218,10 @@ def test_unsupported_mode_and_unknown_keys_are_rejected():
         NumericSpecialist(NumericSpecialistConfig(enabled=True, mode="production"))
     with pytest.raises(ValueError, match="unknown specialists.numeric key"):
         NumericSpecialistConfig.from_mapping({"enabled": True, "enabledd": True})
-    # `large_open_set` (M13) and `null_temporal` (M14) became valid as those
-    # modules landed; M15-M21 have not.
+    # Every Layer-2 sibling key is now valid; M16-M21 have no config surface.
     with pytest.raises(ValueError, match="unknown specialists key"):
         build_numeric_specialist(
-            {"numeric": {"enabled": True}, "small_set_closure": {}},
+            {"numeric": {"enabled": True}, "atomic_consensus": {}},
             profiler_enabled=True, compiler_enabled=True, retrieval_enabled=True,
         )
 

@@ -26,7 +26,13 @@ from enum import Enum
 from typing import Any, Mapping
 
 from cover_kbc.query_intelligence.retrieval_types import prompt_digest
+from cover_kbc.specialists.cross_family import RecallFamily
 from cover_kbc.types import ProgramType
+
+# ``RecallFamily`` moved to the shared cross-family primitive when Module 15
+# began reusing it (proposal §11.2: "M14's freshness branch may be invoked as a
+# subroutine"). Imported here so Module 14's public name, and every value it has
+# ever serialised, are unchanged.
 
 
 class DeathStatus(str, Enum):
@@ -129,19 +135,6 @@ class GateState(str, Enum):
     def permits_locality_acquisition(self) -> bool:
         """§10.1: "If deceased/non-empty is plausible, run [Stage B]"."""
         return self is GateState.DECEASED_PLAUSIBLE
-
-
-class RecallFamily(str, Enum):
-    """Which model family produced an observation.
-
-    §10.2 speaks of "cross-family fresh recall". This records the *architectural
-    role*, not a freshness claim: nothing in this repository establishes that
-    either frozen checkpoint has a later knowledge cutoff than the other, and
-    M14 asserts none.
-    """
-
-    PRIMARY_FAMILY = "PRIMARY_FAMILY"
-    CROSS_FAMILY = "CROSS_FAMILY"
 
 
 class NullTemporalParseStatus(str, Enum):

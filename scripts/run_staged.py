@@ -49,6 +49,7 @@ from cover_kbc.specialists import (
     build_large_set_specialist,
     build_null_temporal_specialist,
     build_numeric_specialist,
+    build_small_set_specialist,
 )
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
@@ -79,6 +80,8 @@ NUMERIC_SPECIALIST = "numeric_specialist.jsonl"
 LARGE_SET_SPECIALIST = "large_open_set_specialist.jsonl"
 #: Module 14 observability artefact: one record per NULL_SINGLE query.
 NULL_TEMPORAL_SPECIALIST = "null_temporal_specialist.jsonl"
+#: Module 15 observability artefact: one record per SMALL_SET query.
+SMALL_SET_SPECIALIST = "small_set_specialist.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -346,6 +349,27 @@ def write_null_temporal_specialist(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_small_set_specialist(run_dir: Path, results) -> Path | None:
+    """Persist Module 15's analyses, one record per SMALL_SET query."""
+    if not results:
+        return None
+    path = run_dir / SMALL_SET_SPECIALIST
+    calls = tokens = pending = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            calls += result.calls
+            tokens += result.generated_tokens
+            pending += len(result.pending_checks)
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[M15] small-set closure: {path}  "
+        f"({len(results)} queries, {pending} pending checks, {calls} shadow "
+        f"calls, {tokens} generated tokens)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -408,6 +432,12 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         compiler_enabled=prompt_compiler is not None,
         retrieval_enabled=retriever is not None,
     )
+    small_set_specialist = build_small_set_specialist(
+        config.get("specialists") if phase == "enumerate" else None,
+        profiler_enabled=profiler is not None,
+        compiler_enabled=prompt_compiler is not None,
+        retrieval_enabled=retriever is not None,
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -436,6 +466,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         numeric_specialist=numeric_specialist,
         large_set_specialist=large_set_specialist,
         null_temporal_specialist=null_temporal_specialist,
+        small_set_specialist=small_set_specialist,
     )
 
 
@@ -498,6 +529,7 @@ def phase_enumerate(args, config: dict) -> Path:
     write_numeric_specialist(run_dir, pipeline.numeric_results)
     write_large_set_specialist(run_dir, pipeline.large_set_results)
     write_null_temporal_specialist(run_dir, pipeline.null_temporal_results)
+    write_small_set_specialist(run_dir, pipeline.small_set_results)
     manifest.finish()
     manifest.write(run_dir / "manifest_enumerate.json")
     print(json.dumps(stage_summary(run_dir / ENUMERATED), indent=2))

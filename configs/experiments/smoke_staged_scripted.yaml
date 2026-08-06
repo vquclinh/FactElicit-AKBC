@@ -146,3 +146,30 @@ specialists:
     conflict_policy: unresolved
     cross_family_recall: false
     mine_parametric_memory: true
+
+  # Module 15 - Small-Set Closure Specialist (borders, stock exchanges).
+  #
+  # DISABLED BY DEFAULT: it spends real neural calls, and its output feeds no
+  # production decision until M16/M17/M18 exist. Requires M9, M10 and M11 - not
+  # M12, M13 or M14; the four Layer-2 specialists are siblings.
+  #
+  # §11.1 borders: minimal-change. Two calls - geographic decomposition plus the
+  # §11.3 missingness probe. The direct probe is declared but off, because
+  # Module 11 already asks the relation directly; enable_facets turns it on.
+  #
+  # §11.2 stock: a public-listing gate decides whether the listing facets spend
+  # calls. cross_family_recall is §11.2's "M14's freshness branch ... as a
+  # subroutine", using the shared primitive, and makes no freshness claim.
+  #
+  # M15 closes nothing: §11.3's rule needs an accepted set that M16/M17 will
+  # provide. There is no should_stop and no final verdict here.
+  small_set_closure:
+    enabled: false
+    mode: shadow
+    specialist_version: m15-v1
+    enable_facets: []
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    candidate_explosion_threshold: 0
+    mine_parametric_memory: true

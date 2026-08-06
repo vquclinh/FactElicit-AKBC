@@ -858,12 +858,15 @@ def build_numeric_specialist(
             all three and rebuilds none of them.
     """
     block = dict(config or {})
-    unknown = sorted(set(block) - {"numeric", "large_open_set", "null_temporal"})
+    unknown = sorted(
+        set(block)
+        - {"numeric", "large_open_set", "null_temporal", "small_set_closure"}
+    )
     if unknown:
         raise ValueError(
-            f"unknown specialists key(s) {unknown}; this milestone defines "
-            "'numeric' (M12), 'large_open_set' (M13) and 'null_temporal' (M14) "
-            "only (M15-M21 are not implemented)"
+            f"unknown specialists key(s) {unknown}; Layer 2 defines 'numeric' "
+            "(M12), 'large_open_set' (M13), 'null_temporal' (M14) and "
+            "'small_set_closure' (M15) (M16-M21 are not implemented)"
         )
     specialist_config = NumericSpecialistConfig.from_mapping(block.get("numeric"))
     if not specialist_config.enabled:

@@ -41,6 +41,7 @@ from cover_kbc.specialists import (
     build_large_set_specialist,
     build_null_temporal_specialist,
     build_numeric_specialist,
+    build_small_set_specialist,
 )
 from cover_kbc.runtime.tracing import RunTracer
 
@@ -158,6 +159,12 @@ def main() -> int:
                 compiler_enabled=prompt_compiler is not None,
                 retrieval_enabled=retriever is not None,
             ),
+            small_set_specialist=build_small_set_specialist(
+                config.get("specialists"),
+                profiler_enabled=profiler is not None,
+                compiler_enabled=prompt_compiler is not None,
+                retrieval_enabled=retriever is not None,
+            ),
         )
         result = pipeline.run(queries, progress=True)
 
@@ -179,6 +186,7 @@ def main() -> int:
         ("M12", "numeric_specialist.jsonl", pipeline.numeric_results),
         ("M13", "large_open_set_specialist.jsonl", pipeline.large_set_results),
         ("M14", "null_temporal_specialist.jsonl", pipeline.null_temporal_results),
+        ("M15", "small_set_specialist.jsonl", pipeline.small_set_results),
     ):
         if not records:
             continue
