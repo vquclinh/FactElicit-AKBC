@@ -225,20 +225,38 @@ def primitive_score_labels(runtime: Any, spec: dict) -> dict:
     result = runtime.score_labels(request)
     if result.error:
         raise SmokeFailure(f"verifier score_labels failed: {result.error}")
-    logits = list(result.logits)
-    if len(logits) != len(labels):
-        raise SmokeFailure(
-            f"score_labels returned {len(logits)} logits for {len(labels)} labels")
+
     import math
 
-    if not all(math.isfinite(v) for v in logits):
-        raise SmokeFailure(f"score_labels returned non-finite logits: {logits}")
-    top = max(logits)
-    exps = [math.exp(v - top) for v in logits]
-    total = sum(exps)
-    probabilities = [v / total for v in exps]
-    if abs(sum(probabilities) - 1.0) > 1e-6:
-        raise SmokeFailure("label probabilities do not normalise")
+    # `LabelScoreResult.logits` is a **mapping** from label *name* to its
+    # uncalibrated logit - `{"VALID": .., "INVALID": .., "UNKNOWN": ..}` - not a
+    # sequence. Iterating it yields the names, which is how the first real Qwen
+    # read-out produced `must be real number, not str`. Every numeric check
+    # below therefore reads `.values()`, and every report keeps the names.
+    logits = dict(result.logits)
+    if set(logits) != set(labels):
+        raise SmokeFailure(
+            f"score_labels returned logits for {sorted(logits)} but the request "
+            f"asked for {sorted(labels)}")
+    bad = {name: value for name, value in logits.items()
+           if not isinstance(value, (int, float)) or not math.isfinite(value)}
+    if bad:
+        raise SmokeFailure(f"score_labels returned non-finite logits: {bad}")
+
+    # The canonical softmax is the result's own, so the smoke cannot become a
+    # second, numerically different verifier implementation.
+    probabilities = result.probabilities()
+    if set(probabilities) != set(logits):
+        raise SmokeFailure(
+            f"probability labels {sorted(probabilities)} do not match logit "
+            f"labels {sorted(logits)}")
+    bad = {name: value for name, value in probabilities.items()
+           if not math.isfinite(value)}
+    if bad:
+        raise SmokeFailure(f"non-finite label probabilities: {bad}")
+    total = sum(probabilities.values())
+    if abs(total - 1.0) > 1e-6:
+        raise SmokeFailure(f"label probabilities sum to {total}, not 1.0")
     # How the *real* tokenizer encoded the labels, and therefore which scoring
     # path ran. Never assumed to be single-token: the runtime inspects it and
     # falls back to sequence log-likelihood when it is not.
@@ -257,8 +275,13 @@ def primitive_score_labels(runtime: Any, spec: dict) -> dict:
         "label_token_ids": (
             {name: list(ids) for name, ids in encoding.token_ids.items()}
             if encoding is not None else None),
+        # Per-label evidence, keyed by name, so the real read-out is
+        # inspectable rather than an anonymous numeric list.
+        "logits": logits,
+        "probabilities": probabilities,
         "logits_finite": True,
         "probabilities_normalise": True,
+        "probability_sum": total,
         "generated_tokens": 0,          # scoring generates nothing (Audit 0010)
         "prompt_tokens": result.prompt_tokens,
     }

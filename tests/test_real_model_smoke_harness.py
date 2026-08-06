@@ -584,3 +584,152 @@ def test_the_production_runtime_and_verifier_are_unchanged():
     # `dict(request.labels)` still fails closed on a malformed sequence.
     source = Path("src/cover_kbc/models/huggingface.py").read_text()
     assert "self.inspect_labels(dict(request.labels))" in source
+
+
+# ==========================================================================
+# LabelScoreResult postconditions
+#
+# The first real Qwen read-out returned successfully and the harness then broke
+# validating it: `LabelScoreResult.logits` is a mapping keyed by label name, so
+# iterating it yields "VALID"/"INVALID"/"UNKNOWN", not numbers.
+# ==========================================================================
+
+
+class _FakeScoringRuntime:
+    """Returns a canonical `LabelScoreResult`. No weights, no generation."""
+
+    label_encoding = None
+
+    def __init__(self, logits):
+        self.logits = dict(logits)
+        self.generate_calls = 0
+
+    def score_labels(self, request):
+        from cover_kbc.models.base import LabelScoreResult
+
+        return LabelScoreResult(
+            logits=dict(self.logits), model_id="Qwen/Qwen3.5-4B", prompt_tokens=11)
+
+    def generate(self, request):                      # pragma: no cover
+        self.generate_calls += 1
+        raise AssertionError("score_labels must never fall back to generation")
+
+
+_VERIFIER_SPEC = {
+    "model_id": "Qwen/Qwen3.5-4B", "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+    "tokenizer_backend": "huggingface",
+}
+_CANONICAL_LOGITS = {"VALID": 1.25, "INVALID": -0.5, "UNKNOWN": 0.1}
+
+
+def test_finiteness_checks_read_mapping_values_not_keys(harness):
+    source = HARNESS.read_text()
+    # The exact shape that broke: iterating the mapping itself.
+    for forbidden in ("for v in logits)", "list(result.logits)",
+                      "max(logits)", "sum(logits)", "len(logits) !="):
+        assert forbidden not in source, forbidden
+    assert "logits.items()" in source
+    assert "probabilities.values()" in source
+
+
+def test_a_canonical_logit_mapping_validates(harness):
+    result = harness.primitive_score_labels(
+        _FakeScoringRuntime(_CANONICAL_LOGITS), _VERIFIER_SPEC)
+    assert result["ok"] is True
+    assert result["logits"] == _CANONICAL_LOGITS
+    assert result["logits_finite"] is True
+    assert result["probabilities_normalise"] is True
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_value_fails(harness, bad):
+    logits = {**_CANONICAL_LOGITS, "VALID": bad}
+    with pytest.raises(harness.SmokeFailure, match="non-finite logits"):
+        harness.primitive_score_labels(
+            _FakeScoringRuntime(logits), _VERIFIER_SPEC)
+
+
+def test_label_keys_are_preserved_end_to_end(harness):
+    result = harness.primitive_score_labels(
+        _FakeScoringRuntime(_CANONICAL_LOGITS), _VERIFIER_SPEC)
+    assert set(result["logits"]) == {"VALID", "INVALID", "UNKNOWN"}
+    assert set(result["probabilities"]) == {"VALID", "INVALID", "UNKNOWN"}
+    # The request mapping keeps name -> continuation, so A/B/C stay traceable.
+    assert result["labels"] == {"VALID": "A", "INVALID": "B", "UNKNOWN": "C"}
+    # Never collapsed into an anonymous numeric list.
+    assert isinstance(result["logits"], dict)
+    assert isinstance(result["probabilities"], dict)
+
+
+def test_a_mismatched_label_set_fails(harness):
+    with pytest.raises(harness.SmokeFailure, match="asked for"):
+        harness.primitive_score_labels(
+            _FakeScoringRuntime({"VALID": 1.0, "NOPE": 0.0, "UNKNOWN": 0.1}),
+            _VERIFIER_SPEC)
+
+
+def test_probabilities_come_from_the_results_own_softmax(harness):
+    """No second, numerically different verifier implementation."""
+    source = HARNESS.read_text()
+    assert "probabilities = result.probabilities()" in source
+    for forbidden in ("math.exp(", "def softmax", "exps = ", "/ total for"):
+        assert forbidden not in source, forbidden
+
+    from cover_kbc.models.base import LabelScoreResult
+
+    canonical = LabelScoreResult(
+        logits=dict(_CANONICAL_LOGITS), model_id="Qwen/Qwen3.5-4B").probabilities()
+    observed = harness.primitive_score_labels(
+        _FakeScoringRuntime(_CANONICAL_LOGITS), _VERIFIER_SPEC)["probabilities"]
+    assert observed == canonical
+
+
+def test_the_probability_sum_check_is_real(harness):
+    result = harness.primitive_score_labels(
+        _FakeScoringRuntime(_CANONICAL_LOGITS), _VERIFIER_SPEC)
+    assert abs(result["probability_sum"] - 1.0) <= 1e-6
+    source = HARNESS.read_text()
+    assert "sum(probabilities.values())" in source
+    assert "abs(total - 1.0) > 1e-6" in source
+
+
+def test_scoring_never_falls_back_to_generation(harness):
+    runtime = _FakeScoringRuntime(_CANONICAL_LOGITS)
+    result = harness.primitive_score_labels(runtime, _VERIFIER_SPEC)
+    assert runtime.generate_calls == 0
+    assert result["generated_tokens"] == 0
+    source = HARNESS.read_text()
+    # The primitive verifier smoke calls score_labels and nothing else.
+    verifier_fn = source[source.index("def primitive_score_labels"):
+                         source.index("# ---", source.index("def primitive_score_labels"))]
+    assert "runtime.score_labels(" in verifier_fn
+    assert "runtime.generate(" not in verifier_fn
+
+
+def test_the_logits_contract_is_a_mapping_and_the_old_check_would_break():
+    import dataclasses
+
+    from cover_kbc.models.base import LabelScoreResult
+
+    field = next(
+        f for f in dataclasses.fields(LabelScoreResult) if f.name == "logits")
+    assert "dict[str, float]" in str(field.type)
+
+    # The exact failure the real run hit, reproduced from the old check.
+    import math
+
+    with pytest.raises(TypeError, match="must be real number, not str"):
+        all(math.isfinite(v) for v in dict(_CANONICAL_LOGITS))
+
+
+def test_the_production_runtime_and_label_mapping_stay_unchanged():
+    assert subprocess.run(
+        ["git", "status", "--porcelain",
+         "src/cover_kbc/models/huggingface.py",
+         "src/cover_kbc/models/base.py",
+         "src/cover_kbc/verification/blind.py"],
+        capture_output=True, text=True, check=True).stdout == ""
+    from cover_kbc.verification.blind import LABEL_TOKENS
+
+    assert LABEL_TOKENS == {"VALID": "A", "INVALID": "B", "UNKNOWN": "C"}
+    assert "labels = dict(LABEL_TOKENS)" in HARNESS.read_text()
