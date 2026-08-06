@@ -42,6 +42,7 @@ from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_con
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.control.relation_budget import build_relation_budget_scheduler
 from cover_kbc.coverage_gap.missingness import build_coverage_gap_estimator
 from cover_kbc.evidence.layer4 import build_layer4_integrator
 from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
@@ -107,6 +108,9 @@ BIDIRECTIONAL_VERIFICATION = "bidirectional_verification.jsonl"
 LAYER4_EVIDENCE = "layer4_evidence.jsonl"
 #: Module 19 - one coverage-gap state per query. Observability only.
 COVERAGE_GAP = "coverage_gap.jsonl"
+#: Module 20 - one budget plan per query. Observability only; the
+#: production Module 7 budget is neither read from nor written to.
+RELATION_BUDGET = "relation_budget.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -603,6 +607,28 @@ def write_coverage_gap(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_relation_budget(run_dir: Path, results) -> Path | None:
+    """Persist Module 20's budget plans, one record per query.
+
+    Non-neural: the scheduler reasons about calls and makes none. A plan is a
+    compute envelope, never an action, a ranking or a stop.
+    """
+    if not results:
+        return None
+    path = run_dir / RELATION_BUDGET
+    numeric = sum(1 for r in results if r.plan.is_numeric)
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[M20] relation budget: {path}  "
+        f"({len(results)} queries, {numeric} numerically calibrated, "
+        f"{len(results) - numeric} qualitative-only, 0 neural calls)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -712,6 +738,11 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         )
         if consensus_engine is not None else None
     )
+    # M20 stays None with the shipped configs: it is disabled and no TRAIN
+    # calibration exists, and enabling it without one fails loudly.
+    relation_budget_scheduler = build_relation_budget_scheduler(
+        config.get("relation_budget_scheduler")
+    )
     coverage_gap_estimator = (
         build_coverage_gap_estimator(
             config.get("coverage_gap"),
@@ -775,6 +806,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         bidirectional_verifier=bidirectional_verifier,
         layer4_integrator=layer4_integrator,
         coverage_gap_estimator=coverage_gap_estimator,
+        relation_budget_scheduler=relation_budget_scheduler,
     )
 
 
@@ -983,6 +1015,7 @@ def phase_decide(args, config: dict) -> Path:
     write_bidirectional_verification(run_dir, pipeline.bidirectional_results)
     write_layer4_evidence(run_dir, pipeline.layer4_results)
     write_coverage_gap(run_dir, pipeline.coverage_gap_results)
+    write_relation_budget(run_dir, pipeline.relation_budget_results)
 
     # Completeness is checked against the *intended* query set, not against the
     # predictions themselves - comparing output to itself could never catch an

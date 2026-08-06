@@ -52,6 +52,8 @@ from cover_kbc.evidence.consensus_adapters import applicable_specialist
 from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusResult
 from cover_kbc.coverage_gap.facet_coverage import discovery_origins, facet_executions
 from cover_kbc.coverage_gap.gap_types import CoverageGapState
+from cover_kbc.control.budget_types import RelationBudgetResult
+from cover_kbc.control.relation_budget import RelationBudgetScheduler
 from cover_kbc.coverage_gap.missingness import CoverageGapEstimator
 from cover_kbc.evidence.layer4 import Layer4EvidenceIntegrator, prior_family_map
 from cover_kbc.evidence.layer4_types import Layer4EvidenceState
@@ -310,6 +312,7 @@ class CoverPipeline:
         bidirectional_verifier: "BidirectionalVerifier | None" = None,
         layer4_integrator: "Layer4EvidenceIntegrator | None" = None,
         coverage_gap_estimator: "CoverageGapEstimator | None" = None,
+        relation_budget_scheduler: "RelationBudgetScheduler | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -438,6 +441,16 @@ class CoverPipeline:
             )
         self.coverage_gap_estimator = coverage_gap_estimator
         self.coverage_gap_results: list[CoverageGapState] = []
+        # Module 20, shadow. Plans compute envelopes and spends nothing: it
+        # never decrements the production budget below and never blocks an
+        # action. Module 7 remains the production budget authority.
+        if relation_budget_scheduler is not None and profiler is None:
+            raise ValueError(
+                "the relation budget scheduler (M20) needs Module 9's risk "
+                "profiler; its proposal I/O is relation + risk + remaining budget"
+            )
+        self.relation_budget_scheduler = relation_budget_scheduler
+        self.relation_budget_results: list[RelationBudgetResult] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -967,6 +980,8 @@ class CoverPipeline:
         if self.profiler is not None:
             profile = self.profiler.profile(query, contract)
             self.query_profiles.append(profile)
+            if self.relation_budget_scheduler is not None:
+                self._schedule_relation_budget(query, contract, profile)
             if self.prompt_compiler is not None:
                 program = self.prompt_compiler.compile(query, contract, profile)
                 self.prompt_programs.append(program)
@@ -1496,6 +1511,28 @@ class CoverPipeline:
             ):
                 return result
         return None
+
+    def _schedule_relation_budget(self, query: Query, contract, profile) -> None:
+        """Plan Module 20's compute envelopes. **Zero calls.**
+
+        Reads the query's relation, Module 9's risk profile and an *immutable
+        snapshot* of the production budget. The production ``Budget`` object
+        itself is never passed in, never charged and never reset - Module 7
+        stays the production authority, and Module 20 only describes what the
+        envelopes would be.
+        """
+        # The real per-query production ceiling, already tightened by the
+        # relation contract. A fresh object, so the snapshot cannot alias or
+        # mutate the budget an execution would use.
+        budget = self.config.budget(contract)
+        self.relation_budget_results.append(
+            self.relation_budget_scheduler.schedule(
+                subject=query.subject, relation=query.relation,
+                row_index=query.row_index,
+                program_type=contract.program_type.value,
+                profile=profile, budget=budget,
+            )
+        )
 
     def _profile_for(self, graph: EvidenceGraph):
         query = graph.query

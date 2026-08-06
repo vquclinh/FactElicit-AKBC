@@ -31,6 +31,7 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.control.relation_budget import build_relation_budget_scheduler
 from cover_kbc.coverage_gap.missingness import build_coverage_gap_estimator
 from cover_kbc.evidence.layer4 import build_layer4_integrator
 from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
@@ -221,6 +222,10 @@ def main() -> int:
                     (config.get("layer4_integration") or {}).get("enabled", False)
                 ),
             ) if (config.get("consensus") or {}).get("enabled", False) else None,
+            # Module 20, shadow and non-neural.
+            relation_budget_scheduler=build_relation_budget_scheduler(
+                config.get("relation_budget_scheduler")
+            ),
         )
         result = pipeline.run(queries, progress=True)
 
@@ -248,6 +253,7 @@ def main() -> int:
         ("M18", "bidirectional_verification.jsonl", pipeline.bidirectional_results),
         ("L4", "layer4_evidence.jsonl", pipeline.layer4_results),
         ("M19", "coverage_gap.jsonl", pipeline.coverage_gap_results),
+        ("M20", "relation_budget.jsonl", pipeline.relation_budget_results),
     ):
         if not records:
             continue

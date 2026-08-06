@@ -397,3 +397,25 @@ coverage_gap:
     facet_gap: 1
     disagreement: 1
     unresolved_mass: 1
+
+# Layer 6 - Module 20 Relation Budget Scheduler.
+#
+# Proposal §16: M20 allocates budget by relation and reserves budget by action
+# class. Accounting is cache-aware, precharges before every neural call, and
+# no action may exceed the hard cap. §9.3 gives the decomposition:
+#   B_r = B_seed + B_facet + B_verify + B_reverse + B_reserve
+# where B_verify is a hard reservation that discovery cannot spend.
+#
+# Zero neural calls: M20 reasons about calls, it does not make them. Module 7
+# remains the production budget authority and is neither replaced nor charged.
+#
+# DISABLED, AND DELIBERATELY UNCALIBRATED. §16 states that concrete values are
+# "calibrated on TRAIN", and that calibration has not been performed. No call
+# counts, reserve sizes or class caps appear here, because an invented number
+# would be indistinguishable from a measured one. Enabling the scheduler
+# without a calibration file fails loudly rather than defaulting to a guess.
+relation_budget_scheduler:
+  enabled: false
+  mode: shadow
+  scheduler_version: m20-v1
+  calibration_file: null

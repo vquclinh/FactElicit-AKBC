@@ -1222,10 +1222,15 @@ def test_no_dola_and_no_new_model_dependency():
 
         config = yaml.safe_load(
             Path(f"configs/experiments/{config_name}.yaml").read_text())
+        # Layer 5's own block carries no Layer-6 vocabulary. Module 20 has its
+        # own config block once implemented, so the scan is scoped to the
+        # coverage-gap block rather than the whole file.
         assert set(config["coverage_gap"]) == {
             "enabled", "mode", "estimator_version", "weights"}
         assert config["coverage_gap"]["enabled"] is False
-        assert "m20" not in json.dumps(config).casefold()
+        layer5 = json.dumps(config["coverage_gap"]).casefold()
+        for forbidden in ("m20", "m21", "budget", "reserve", "utility"):
+            assert forbidden not in layer5, forbidden
         assert "m21" not in json.dumps(config).casefold()
         models = json.dumps(config.get("models", {})).casefold()
         assert "dola" not in models
