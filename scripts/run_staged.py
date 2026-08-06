@@ -45,6 +45,7 @@ from cover_kbc.query_intelligence import (
     build_prompt_compiler,
 )
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
+from cover_kbc.specialists import build_numeric_specialist
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
 from cover_kbc.types import ModelRole, Query
@@ -68,6 +69,8 @@ PROMPT_PROGRAMS = "prompt_programs.jsonl"
 #: Module 11 observability artefact: one record per executed probe. Its own
 #: file, so the production artefacts stay byte-comparable across the rollout.
 PARAMETRIC_MEMORY = "parametric_memory.jsonl"
+#: Module 12 observability artefact: one record per NUMERIC query analysed.
+NUMERIC_SPECIALIST = "numeric_specialist.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -275,6 +278,25 @@ def write_parametric_memory(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_numeric_specialist(run_dir: Path, results) -> Path | None:
+    """Persist Module 12's numeric analyses, one record per NUMERIC query."""
+    if not results:
+        return None
+    path = run_dir / NUMERIC_SPECIALIST
+    calls = tokens = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            calls += result.calls
+            tokens += result.generated_tokens
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[M12] numeric specialist: {path}  "
+        f"({len(results)} queries, {calls} shadow calls, {tokens} generated tokens)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -319,6 +341,12 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         profiler_enabled=profiler is not None,
         compiler_enabled=prompt_compiler is not None,
     )
+    numeric_specialist = build_numeric_specialist(
+        config.get("specialists") if phase == "enumerate" else None,
+        profiler_enabled=profiler is not None,
+        compiler_enabled=prompt_compiler is not None,
+        retrieval_enabled=retriever is not None,
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -344,6 +372,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
     return CoverPipeline(
         runtime, pipeline_cfg, tracer=tracer, verifier_runtime=verifier,
         profiler=profiler, prompt_compiler=prompt_compiler, retriever=retriever,
+        numeric_specialist=numeric_specialist,
     )
 
 
@@ -403,6 +432,7 @@ def phase_enumerate(args, config: dict) -> Path:
     write_query_profiles(run_dir, pipeline.query_profiles)
     write_prompt_programs(run_dir, pipeline.prompt_programs)
     write_parametric_memory(run_dir, pipeline.retrieval_results)
+    write_numeric_specialist(run_dir, pipeline.numeric_results)
     manifest.finish()
     manifest.write(run_dir / "manifest_enumerate.json")
     print(json.dumps(stage_summary(run_dir / ENUMERATED), indent=2))

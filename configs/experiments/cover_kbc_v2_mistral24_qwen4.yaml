@@ -186,3 +186,21 @@ query_intelligence:
       - self_ask
       - query_rewrite
     samples_per_operation: 1
+
+# Layer 2 relation-family specialists.
+#
+# Module 12 - Numeric Specialist (hasCapacity, hasArea).
+#
+# DISABLED BY DEFAULT: like M11 it spends real neural calls, and its output
+# feeds no production decision until M16 (consensus) and M17 (specialist
+# verification) exist to decide how. Requires M9, M10 and M11 enabled.
+#
+# It parses numbers, converts units mathematically, classifies which quantity
+# the model named, and clusters target values with the contract's own tolerance.
+# It decides nothing: there is no ACCEPT rule and no acceptance flag here.
+specialists:
+  numeric:
+    enabled: false
+    mode: shadow
+    specialist_version: m12-v1
+    mine_parametric_memory: true

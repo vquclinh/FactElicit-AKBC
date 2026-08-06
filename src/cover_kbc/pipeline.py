@@ -52,6 +52,8 @@ from cover_kbc.models.base import LMRuntime, LogitsUnavailable
 from cover_kbc.query_intelligence.parametric_retrieval import ParametricRetriever
 from cover_kbc.query_intelligence.retrieval_types import ParametricRetrievalResult
 from cover_kbc.query_intelligence.profiler import QueryProfiler
+from cover_kbc.specialists.numeric_specialist import NumericSpecialist
+from cover_kbc.specialists.numeric_types import NumericSpecialistResult
 from cover_kbc.query_intelligence.prompt_compiler import PromptProgramCompiler
 from cover_kbc.query_intelligence.prompt_types import PromptProgram
 from cover_kbc.query_intelligence.types import QueryRiskProfile
@@ -280,6 +282,7 @@ class CoverPipeline:
         profiler: "QueryProfiler | None" = None,
         prompt_compiler: "PromptProgramCompiler | None" = None,
         retriever: "ParametricRetriever | None" = None,
+        numeric_specialist: "NumericSpecialist | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -313,6 +316,17 @@ class CoverPipeline:
             )
         self.retriever = retriever
         self.retrieval_results: list[ParametricRetrievalResult] = []
+        # Module 12, shadow mode. It consumes M9/M10/M11, spends its own
+        # specialist calls, and feeds nothing back: no candidate, no evidence
+        # edge, no controller budget. Its spend joins the same shadow counters
+        # M11 established, so a physical call is counted exactly once.
+        if numeric_specialist is not None and retriever is None:
+            raise ValueError(
+                "a numeric specialist (M12) was supplied without a parametric "
+                "retriever (M11); M12 consumes M11's parametric memory"
+            )
+        self.numeric_specialist = numeric_specialist
+        self.numeric_results: list[NumericSpecialistResult] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -741,7 +755,9 @@ class CoverPipeline:
             return ""
         return get_view(contract.relation, action.view_id).facet_id
 
-    def _run_shadow_retrieval(self, query: Query, program: PromptProgram) -> None:
+    def _run_shadow_retrieval(
+        self, query: Query, program: PromptProgram
+    ) -> ParametricRetrievalResult:
         """Execute Module 11's probes and record their cost separately.
 
         Deliberately outside the query budget: these calls are shadow
@@ -753,6 +769,23 @@ class CoverPipeline:
         self.retrieval_results.append(result)
         self.shadow_calls += result.total_calls
         self.shadow_generated_tokens += result.total_generated_tokens
+        return result
+
+    def _run_numeric_specialist(self, query, program, contract, retrieval) -> None:
+        """Run Module 12 for a NUMERIC query, outside the production budget.
+
+        Skipped silently for every other programme: the specialist declares
+        which relations it handles, and asking it about an award list is not an
+        error to report, it is simply not its query.
+        """
+        if not self.numeric_specialist.applies_to(program):
+            return
+        result = self.numeric_specialist.analyse(
+            query, program, contract, self.runtime, retrieval
+        )
+        self.numeric_results.append(result)
+        self.shadow_calls += result.calls
+        self.shadow_generated_tokens += result.generated_tokens
 
     def enumerate_query(self, query: Query) -> EvidenceGraph:
         """Phase A: gate + candidate discovery. Enumerator model only."""
@@ -767,7 +800,9 @@ class CoverPipeline:
                 program = self.prompt_compiler.compile(query, contract, profile)
                 self.prompt_programs.append(program)
                 if self.retriever is not None:
-                    self._run_shadow_retrieval(query, program)
+                    retrieval = self._run_shadow_retrieval(query, program)
+                    if self.numeric_specialist is not None:
+                        self._run_numeric_specialist(query, program, contract, retrieval)
         graph = build_graph(query, contract)
         budget = self.config.budget(contract)
         state = RCSEState()
