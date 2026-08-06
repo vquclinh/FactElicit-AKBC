@@ -841,16 +841,59 @@ def test_no_fuzzy_matching_or_equivalence_judge_exists():
         assert forbidden not in blob, forbidden
 
 
-def test_an_abstention_never_becomes_a_candidate():
-    """Module 3 refuses "NONE"; consensus must not mint what the graph declined."""
-    retrieval = _retrieval(DEATH)          # scripted default answers are abstentions
+def test_a_corrected_m14_result_yields_no_phantom_abstention_candidate():
+    """Audit 0024: the upstream artefact is now clean at source.
+
+    The scripted default answer is the abstention sentinel, so every Module 11
+    record mined here is one. Nothing reaches M16 that could become a candidate,
+    and nothing does.
+    """
+    retrieval = _retrieval(DEATH)
     specialist = _mined_specialist(DEATH, retrieval)
-    assert any(
-        o.normalized_surface for o in specialist.locality_observations
-    ), "fixture should exercise the mining path"
+    mined = [
+        o for o in specialist.locality_observations
+        if o.source.value == "PARAMETRIC_MEMORY"
+    ]
+    assert mined, "fixture should exercise the mining path"
+    assert all(not o.normalized_surface for o in mined)
+    assert all(not o.usable for o in mined)
+
     graph, _ = _graph(DEATH)
     result = AtomicConsensusEngine().consense(graph, specialist, retrieval=retrieval)
     assert [c.candidate_key for c in result.candidates] == []
+
+
+def test_the_abstention_guard_still_protects_against_malformed_upstream():
+    """Defence in depth: M14 is fixed, and the guard stays anyway.
+
+    Constructed by hand, bypassing M14's parser, exactly as a future upstream
+    regression would arrive. M16 must still refuse to mint the candidate.
+    """
+    from cover_kbc.specialists import (
+        LocalityMentionKind, NullTemporalParseStatus, ObservationSource,
+    )
+    from cover_kbc.specialists.null_temporal_types import LocalityObservation
+
+    specialist, query, _ = _specialist_result(DEATH)
+    malformed = LocalityObservation(
+        relation=DEATH, subject=SUBJECTS[DEATH], row_index=0,
+        surface="NONE", normalized_surface="NONE",
+        mention_kind=LocalityMentionKind.TARGET_CITY,
+        parse_status=NullTemporalParseStatus.OK, raw_text="NONE",
+        mention_context="NONE", source=ObservationSource.PARAMETRIC_MEMORY,
+        operation_id="pseudo_memory#0", family="pseudo_memory",
+        independence_group="PSEUDO_MEMORY_SKETCH", sample_index=0,
+        prompt_sha256="hash", model_id="offline/enumerator",
+    )
+    assert malformed.usable, "the malformed record claims to be a usable city"
+
+    injected = replace(
+        specialist,
+        locality_observations=(*specialist.locality_observations, malformed),
+    )
+    graph, _ = _graph(DEATH)
+    result = AtomicConsensusEngine().consense(graph, injected)
+    assert "none" not in {c.candidate_key for c in result.candidates}
 
 
 # --------------------------------------------------------------------------

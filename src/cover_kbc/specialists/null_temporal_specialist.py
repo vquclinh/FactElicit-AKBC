@@ -950,7 +950,7 @@ class NullTemporalSpecialist:
             result = runtime.generate(self._request(probe, query))
         except Exception as exc:  # noqa: BLE001
             barren = self._locality_records(
-                "", spec, query, probe, model_id,
+                "", spec, query, **self._probe_provenance(probe, model_id),
                 parse_status=NullTemporalParseStatus.RUNTIME_ERROR,
                 error=f"{type(exc).__name__}: {exc}",
             )
@@ -962,7 +962,8 @@ class NullTemporalSpecialist:
 
         text = (result.text or "").strip()
         found = self._locality_records(
-            text, spec, query, probe, result.model_id or model_id
+            text, spec, query,
+            **self._probe_provenance(probe, result.model_id or model_id),
         )
         # M14's own Stage-B grammar offers UNKNOWN for "if you do not know of
         # one" and never defines NONE, so only an explicit relation-level
@@ -982,35 +983,51 @@ class NullTemporalSpecialist:
         )
 
     @staticmethod
+    def _probe_provenance(probe: NullTemporalProbe, model_id: str) -> dict[str, Any]:
+        """One probe's provenance, in the shape the shared parser takes."""
+        return dict(
+            source=ObservationSource.SPECIALIST_PROBE,
+            operation_id=probe.operation_id, family=probe.family,
+            independence_group=probe.independence_group,
+            sample_index=probe.sample_index, prompt_sha256=probe.prompt_sha256,
+            model_id=model_id, recall_family=probe.recall_family,
+        )
+
+    @staticmethod
     def _locality_records(
         text: str,
         spec: NullTemporalRelationSpec,
         query: Query,
-        probe: NullTemporalProbe,
-        model_id: str,
         *,
-        source: ObservationSource = ObservationSource.SPECIALIST_PROBE,
-        operation_id: str | None = None,
-        independence_group: str | None = None,
-        sample_index: int | None = None,
-        prompt_sha256: str | None = None,
+        source: ObservationSource,
+        operation_id: str,
+        family: str,
+        independence_group: str,
+        sample_index: int,
+        prompt_sha256: str,
+        model_id: str,
+        recall_family: RecallFamily = RecallFamily.PRIMARY_FAMILY,
         parse_status: NullTemporalParseStatus | None = None,
         error: str | None = None,
     ) -> list[LocalityObservation]:
         """Turn one output into zero or more locality observations.
 
-        Always returns at least one record: a probe that returned nothing must
-        stay visible, because §10.3 needs to tell "recall failed" apart from
-        "the model said nothing is known".
+        **The single locality-parsing path.** Every producer goes through it -
+        a Stage-B probe, the cross-family branch, and Module 11 recall alike -
+        so one abstention decision governs them all. Provenance is passed in
+        rather than read off a probe, because a mined record has no probe;
+        everything else is identical, which is the point.
+
+        Always returns at least one record: a producer that returned nothing
+        must stay visible, because §10.3 needs to tell "recall failed" apart
+        from "the model said nothing is known".
         """
         common = dict(
             relation=query.relation, subject=query.subject, row_index=query.row_index,
-            source=source, operation_id=operation_id or probe.operation_id,
-            family=probe.family,
-            independence_group=independence_group or probe.independence_group,
-            sample_index=sample_index if sample_index is not None else probe.sample_index,
-            prompt_sha256=prompt_sha256 or probe.prompt_sha256, model_id=model_id,
-            recall_family=probe.recall_family, raw_text=text,
+            source=source, operation_id=operation_id, family=family,
+            independence_group=independence_group, sample_index=sample_index,
+            prompt_sha256=prompt_sha256, model_id=model_id,
+            recall_family=recall_family, raw_text=text,
         )
 
         def _barren(status: NullTemporalParseStatus) -> list[LocalityObservation]:
@@ -1094,22 +1111,18 @@ class NullTemporalSpecialist:
                     prompt_sha256=record.prompt_sha256, model_id=record.model_id,
                 ))
 
-            for surface, context, kind in extract_localities(text, spec):
-                normalized, flags = normalise_locality(surface)
-                if not normalized:
-                    continue
-                localities.append(LocalityObservation(
-                    relation=query.relation, subject=query.subject,
-                    row_index=query.row_index, surface=surface,
-                    normalized_surface=normalized, mention_kind=kind,
-                    parse_status=NullTemporalParseStatus.OK, raw_text=text,
-                    mention_context=context,
-                    source=ObservationSource.PARAMETRIC_MEMORY,
-                    operation_id=record.operation_id, family=record.kind.value,
-                    independence_group=group, sample_index=record.sample_index,
-                    prompt_sha256=record.prompt_sha256, model_id=record.model_id,
-                    ambiguity_flags=flags,
-                ))
+            # The *same* parser Stage B uses, with Module 11's provenance
+            # substituted for the probe's. Extracting localities here directly
+            # is what let a bare "NONE" become a target city on this path while
+            # Stage B correctly read it as an abstention (Audit 0023 §52): one
+            # decision boundary, reached two ways, is one too many.
+            localities.extend(self._locality_records(
+                text, spec, query,
+                source=ObservationSource.PARAMETRIC_MEMORY,
+                operation_id=record.operation_id, family=record.kind.value,
+                independence_group=group, sample_index=record.sample_index,
+                prompt_sha256=record.prompt_sha256, model_id=record.model_id,
+            ))
 
             # Only Module 11's query-rewrite probe carries Module 10's output
             # contract, and that contract is what defines NONE as the empty

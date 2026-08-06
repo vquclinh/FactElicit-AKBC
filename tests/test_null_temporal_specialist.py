@@ -1479,3 +1479,259 @@ def test_m14_introduces_no_new_parameters(tmp_path):
         [sys.executable, str(script)], capture_output=True, text=True, env=env, check=True
     )
     assert result.stdout.strip() == ""
+
+
+# --------------------------------------------------------------------------
+# Audit 0024 - the Module 11 mining path shares Stage B's abstention boundary
+#
+# Audit 0023 §52 found the one path §15A's correction had missed: Stage B read
+# a bare "NONE" as an abstention, while mining read the same text as a target
+# city called "NONE". Both paths now run through one parser, so one decision
+# governs both, and the artefact itself is clean at source.
+# --------------------------------------------------------------------------
+
+
+#: Module 11's three probes. Every fixture below scripts all of them, because
+#: the scripted runtime's own default answer is the sentinel under test - an
+#: unscripted probe would silently become part of the fixture.
+M11_OPERATIONS = ("pseudo_memory#0", "self_ask#0", "query_rewrite#0")
+
+
+def _mined(m11: dict[str, str], *, stage_a: dict[str, str] | None = None):
+    """Run M14 over scripted Module 11 recall, with no Stage-B probe of its own.
+
+    Unscripted Module 11 probes answer ``UNKNOWN``: an epistemic abstention is
+    failed recall under every grammar, so it cannot leak into the substantive
+    class and confuse what a case is actually asserting. Stage A answers
+    ``UNKNOWN`` too. Stage B may still run when a mined record itself reads as
+    DECEASED - that is M14 working as designed - so each case asserts over the
+    mined observations rather than assuming Stage B stayed out of the way.
+    """
+    query, contract, program = _inputs()
+    outputs = {op: "UNKNOWN" for op in M11_OPERATIONS}
+    outputs.update(m11)
+    retrieval = ParametricRetriever().retrieve(query, program, _scripted(outputs))
+    runtime = _scripted(stage_a or {op: "UNKNOWN" for op in STAGE_A_IDS})
+    result = NullTemporalSpecialist().analyse(
+        query, program, contract, runtime, retrieval
+    )
+    mined = [
+        o for o in result.locality_observations
+        if o.source is ObservationSource.PARAMETRIC_MEMORY
+    ]
+    return result, mined
+
+
+@pytest.mark.parametrize("operation", ["query_rewrite#0", "pseudo_memory#0", "self_ask#0"])
+@pytest.mark.parametrize("text", ["NONE", "none.", "UNKNOWN", "I don't know", ""])
+def test_a_mined_abstention_is_never_a_locality_candidate(operation, text):
+    """The candidate-suppression invariant, over every producer and sentinel."""
+    _, mined = _mined({operation: text})
+    for observation in mined:
+        assert observation.normalized_surface == ""
+        assert observation.usable is False
+        assert observation.parse_status in (
+            NullTemporalParseStatus.ABSTAINED,
+            NullTemporalParseStatus.EMPTY,
+            NullTemporalParseStatus.NO_LOCALITY,
+        )
+
+
+def test_the_literal_sentinel_never_reaches_a_candidate_key():
+    """Requirement 13, asserted over the result *and* the persisted payload."""
+    result, _ = _mined({op: "NONE" for op in M11_OPERATIONS})
+    surfaces = {o.normalized_surface for o in result.locality_observations}
+    assert "NONE" not in surfaces
+    assert CONTRACTS[DEATH].strict_key("NONE") not in {
+        o.normalized_surface.casefold() for o in result.locality_observations
+    }
+    assert result.occurrences == ()
+
+    payload = json.dumps(result.to_json())
+    for row in json.loads(payload)["locality_observations"]:
+        assert row["normalized_surface"] == ""
+    for row in json.loads(payload)["occurrences"]:
+        assert row["normalized_surface"] not in ("NONE", "none", "UNKNOWN")
+
+
+def test_query_rewrite_none_is_substantive_because_its_grammar_defines_it():
+    """Module 11's query-rewrite probe carries Module 10's output contract."""
+    result, mined = _mined({"query_rewrite#0": "NONE"})
+    assert all(not o.normalized_surface for o in mined)
+
+    null = result.null_evidence
+    assert "QUERY_REWRITE" in null.no_known_locality_groups
+    assert null.no_known_locality_support >= 1
+    assert null.has_substantive_null_evidence
+    # And the same operation is not also billed as failed recall.
+    assert "query_rewrite#0" not in null.failed_recall_operation_ids
+
+
+@pytest.mark.parametrize("operation,group", [
+    ("pseudo_memory#0", "PSEUDO_MEMORY_SKETCH"),
+    ("self_ask#0", "SELF_ASK_DECOMPOSITION"),
+])
+def test_none_from_an_unanchored_producer_is_failed_recall(operation, group):
+    """Neither grammar defines NONE, so it asserts nothing about the world."""
+    result, mined = _mined({operation: "NONE"})
+    assert all(not o.normalized_surface for o in mined)
+
+    null = result.null_evidence
+    assert group not in null.no_known_locality_groups
+    assert operation in null.failed_recall_operation_ids
+    assert null.has_substantive_null_evidence is False
+    assert null.failed_recall_only is True
+
+
+@pytest.mark.parametrize("text", ["UNKNOWN", "I don't know", ""])
+def test_mined_epistemic_abstention_is_always_failed_recall(text):
+    result, _ = _mined({op: text for op in M11_OPERATIONS})
+    null = result.null_evidence
+    assert null.no_known_locality_support == 0
+    assert null.has_substantive_null_evidence is False
+    assert null.failed_recall_only is True
+    assert null.failed_recall_operations >= 3
+
+
+def test_mixed_provenance_keeps_the_two_classes_apart():
+    """Requirement 10: one substantive origin, one failed-recall origin, no city."""
+    result, mined = _mined({
+        "query_rewrite#0": "NONE",
+        "pseudo_memory#0": "UNKNOWN",
+    })
+    null = result.null_evidence
+
+    assert all(not o.normalized_surface for o in mined)
+    assert null.no_known_locality_groups == ("QUERY_REWRITE",)
+    assert "pseudo_memory#0" in null.failed_recall_operation_ids
+    assert "query_rewrite#0" not in null.failed_recall_operation_ids
+    assert result.occurrences == ()
+
+
+def test_repeating_an_unanchored_none_cannot_scale_into_substantive_null():
+    """Independent ignorance is still ignorance, however many groups say it."""
+    one, _ = _mined({"pseudo_memory#0": "NONE"})
+    many, _ = _mined({"pseudo_memory#0": "NONE", "self_ask#0": "NONE"})
+
+    assert one.null_evidence.has_substantive_null_evidence is False
+    assert many.null_evidence.has_substantive_null_evidence is False
+    assert many.null_evidence.no_known_locality_support == 0
+    assert (
+        many.null_evidence.failed_recall_operations
+        >= one.null_evidence.failed_recall_operations
+    )
+
+
+def test_a_real_locality_still_mines_normally():
+    """The fix suppresses sentinels, not evidence."""
+    result, mined = _mined({"pseudo_memory#0": "Person Alpha died in City Alpha."})
+    surfaces = [o.normalized_surface for o in mined if o.normalized_surface]
+    assert "City Alpha" in surfaces
+    assert any(o.usable for o in mined)
+
+
+def test_a_mined_explicit_statement_is_substantive_without_a_candidate():
+    """Requirement 15: an explicit relation-level claim, from any producer."""
+    result, mined = _mined({"pseudo_memory#0": "No known city of death."})
+    assert all(not o.normalized_surface for o in mined)
+    null = result.null_evidence
+    assert "PSEUDO_MEMORY_SKETCH" in null.no_known_locality_groups
+    assert null.has_substantive_null_evidence
+
+
+def test_a_mined_first_person_hedge_is_not_substantive():
+    """Requirement 16: "I don't know" is about the model, not about the world."""
+    result, _ = _mined({"pseudo_memory#0": "I don't know the city of death."})
+    null = result.null_evidence
+    assert null.no_known_locality_support == 0
+    assert null.has_substantive_null_evidence is False
+
+
+def test_mining_preserves_provenance_and_mints_no_new_origin():
+    """One Module 11 record is one physical origin, annotated - never two."""
+    from cover_kbc.evidence.consensus_types import derive_origin_event_id
+
+    query, contract, program = _inputs()
+    retrieval = ParametricRetriever().retrieve(
+        query, program, _scripted({"pseudo_memory#0": "NONE"})
+    )
+    result = NullTemporalSpecialist().analyse(
+        query, program, contract, _scripted({}), retrieval
+    )
+    record = next(r for r in retrieval.records if r.operation_id == "pseudo_memory#0")
+    mined = [
+        o for o in result.locality_observations
+        if o.source is ObservationSource.PARAMETRIC_MEMORY
+        and o.operation_id == "pseudo_memory#0"
+    ]
+    assert mined
+    observation = mined[0]
+    assert observation.operation_id == record.operation_id
+    assert observation.independence_group == record.independence_group.value
+    assert observation.prompt_sha256 == record.prompt_sha256
+    assert observation.sample_index == record.sample_index
+    assert observation.model_id == record.model_id
+    assert observation.family == record.kind.value
+    # The Module 16 origin formula therefore lands on one origin, not two.
+    assert derive_origin_event_id(
+        model_id=observation.model_id, operation_id=observation.operation_id,
+        prompt_sha256=observation.prompt_sha256, sample_index=observation.sample_index,
+    ) == derive_origin_event_id(
+        model_id=record.model_id, operation_id=record.operation_id,
+        prompt_sha256=record.prompt_sha256, sample_index=record.sample_index,
+    )
+
+
+def test_both_paths_share_one_locality_parser():
+    """The structural fix: no second extraction site to drift from the first."""
+    source = (
+        Path("src/cover_kbc/specialists") / "null_temporal_specialist.py"
+    ).read_text()
+    tree = ast.parse(source)
+    callers = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "_locality_records" in callers
+    # ``extract_localities`` must be reached only through that one parser.
+    inside_parser = 0
+    elsewhere = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = sum(
+            1 for inner in ast.walk(node)
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+            and inner.func.id == "extract_localities"
+        )
+        if node.name == "_locality_records":
+            inside_parser += calls
+        else:
+            elsewhere += calls
+    assert inside_parser == 1
+    assert elsewhere == 0, "a second locality-extraction site would drift again"
+
+
+def test_stage_b_own_probe_abstentions_are_unchanged():
+    """Requirements 1-2: the path that was already correct stays correct."""
+    query, contract, program = _inputs()
+    for text, expected in (
+        ("NONE", NullTemporalParseStatus.ABSTAINED),
+        ("UNKNOWN", NullTemporalParseStatus.ABSTAINED),
+    ):
+        runtime = _scripted({**_deceased(), **{op: text for op in STAGE_B_IDS}})
+        result = NullTemporalSpecialist().analyse(query, program, contract, runtime)
+        stage_b = [
+            o for o in result.locality_observations
+            if o.source is ObservationSource.SPECIALIST_PROBE
+        ]
+        assert stage_b
+        assert all(o.parse_status is expected for o in stage_b), text
+        assert all(not o.normalized_surface for o in stage_b), text
+
+    # UNKNOWN throughout remains failed recall only - Audit 0021 §15A.
+    runtime = _scripted({**_deceased(), **{op: "UNKNOWN" for op in STAGE_B_IDS}})
+    result = NullTemporalSpecialist().analyse(query, program, contract, runtime)
+    assert result.null_evidence.failed_recall_only
+    assert result.null_evidence.no_known_locality_support == 0
