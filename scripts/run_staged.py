@@ -39,7 +39,11 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_config
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
-from cover_kbc.query_intelligence import build_profiler, build_prompt_compiler
+from cover_kbc.query_intelligence import (
+    build_parametric_retriever,
+    build_profiler,
+    build_prompt_compiler,
+)
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
@@ -61,6 +65,9 @@ QUERY_PROFILES = "query_profiles.jsonl"
 #: Its own file for the same reason: existing artefacts must stay comparable
 #: across the M10 rollout.
 PROMPT_PROGRAMS = "prompt_programs.jsonl"
+#: Module 11 observability artefact: one record per executed probe. Its own
+#: file, so the production artefacts stay byte-comparable across the rollout.
+PARAMETRIC_MEMORY = "parametric_memory.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -114,7 +121,11 @@ def _runtime_calls(pipeline) -> int:
             continue
         seen.add(id(runtime))
         total += int(getattr(runtime, "calls", 0))
-    return total
+    # Module 11's shadow probes are physically real calls on the same runtime,
+    # but they are not production spend. Subtracting them keeps this figure
+    # comparable with a pre-M11 run; the honest total is reported per-record in
+    # parametric_memory.jsonl and summarised at the end of Phase A.
+    return total - int(getattr(pipeline, "shadow_calls", 0))
 
 
 def _emit(tag: str, index: int, total: int | None, body: str, calls: int, elapsed: float) -> None:
@@ -226,6 +237,44 @@ def write_prompt_programs(run_dir: Path, programs) -> Path | None:
     return path
 
 
+def write_parametric_memory(run_dir: Path, results) -> Path | None:
+    """Persist Module 11's recall records, one line per executed probe.
+
+    Every line carries its own provenance - operation, independence group,
+    prompt hash, model identity, parse status and cost - so a record can be
+    audited without re-running anything, and can never be mistaken for verified
+    evidence.
+    """
+    if not results:
+        return None
+    path = run_dir / PARAMETRIC_MEMORY
+    calls = tokens = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            plan = result.plan
+            calls += result.total_calls
+            tokens += result.total_generated_tokens
+            for record in result.records:
+                payload = {
+                    "retrieval_version": plan.retrieval_version,
+                    "compiler_version": plan.compiler_version,
+                    "profile_version": plan.profile_version,
+                    "program_sha256": plan.program_sha256,
+                    "SubjectEntity": plan.subject,
+                    "Relation": plan.relation,
+                    "row_index": plan.row_index,
+                    "program_type": plan.program_type.value,
+                    **record.to_json(),
+                }
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    print(
+        f"[M11] parametric memory: {path}  "
+        f"({len(results)} queries, {calls} shadow calls, {tokens} generated tokens)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -265,6 +314,11 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
     intelligence = config.get("query_intelligence") if phase == "enumerate" else None
     profiler = build_profiler(intelligence)
     prompt_compiler = build_prompt_compiler(intelligence, profiler_enabled=profiler is not None)
+    retriever = build_parametric_retriever(
+        intelligence,
+        profiler_enabled=profiler is not None,
+        compiler_enabled=prompt_compiler is not None,
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -289,7 +343,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
     pipeline_cfg.verifier_model_id = verifier_cfg.get("model_id", "")
     return CoverPipeline(
         runtime, pipeline_cfg, tracer=tracer, verifier_runtime=verifier,
-        profiler=profiler, prompt_compiler=prompt_compiler,
+        profiler=profiler, prompt_compiler=prompt_compiler, retriever=retriever,
     )
 
 
@@ -348,6 +402,7 @@ def phase_enumerate(args, config: dict) -> Path:
 
     write_query_profiles(run_dir, pipeline.query_profiles)
     write_prompt_programs(run_dir, pipeline.prompt_programs)
+    write_parametric_memory(run_dir, pipeline.retrieval_results)
     manifest.finish()
     manifest.write(run_dir / "manifest_enumerate.json")
     print(json.dumps(stage_summary(run_dir / ENUMERATED), indent=2))

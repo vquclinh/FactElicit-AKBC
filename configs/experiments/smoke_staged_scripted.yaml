@@ -68,3 +68,23 @@ query_intelligence:
     enabled: true
     mode: shadow
     compiler_version: m10-v1
+  # Module 11 - Closed-Book Parametric Retrieval.
+  #
+  # DISABLED BY DEFAULT, and deliberately so: unlike M9 and M10 this module
+  # spends real neural calls. Enabling it adds shadow probes whose cost is
+  # counted separately from the production path and never draws on Module 7's
+  # per-query budget.
+  #
+  # Not RAG. There is no retriever, corpus, index or cache - the only factual
+  # source is the frozen model's own weights, and every record is marked
+  # unverified parametric memory. Probe families follow the proposal's three
+  # (pseudo-memory sketch, self-ask decomposition, query rewrite).
+  parametric_retrieval:
+    enabled: false
+    mode: shadow
+    retrieval_version: m11-v1
+    operations:
+      - pseudo_memory
+      - self_ask
+      - query_rewrite
+    samples_per_operation: 1

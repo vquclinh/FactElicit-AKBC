@@ -49,6 +49,8 @@ from cover_kbc.elicitation.engine import ElicitationEngine
 from cover_kbc.elicitation.library import get_view, views_for
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
 from cover_kbc.models.base import LMRuntime, LogitsUnavailable
+from cover_kbc.query_intelligence.parametric_retrieval import ParametricRetriever
+from cover_kbc.query_intelligence.retrieval_types import ParametricRetrievalResult
 from cover_kbc.query_intelligence.profiler import QueryProfiler
 from cover_kbc.query_intelligence.prompt_compiler import PromptProgramCompiler
 from cover_kbc.query_intelligence.prompt_types import PromptProgram
@@ -277,6 +279,7 @@ class CoverPipeline:
         verifier_runtime: LMRuntime | None = None,
         profiler: "QueryProfiler | None" = None,
         prompt_compiler: "PromptProgramCompiler | None" = None,
+        retriever: "ParametricRetriever | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -298,6 +301,20 @@ class CoverPipeline:
             )
         self.prompt_compiler = prompt_compiler
         self.prompt_programs: list[PromptProgram] = []
+        # Module 11, shadow mode. Unlike M9/M10 this one *spends neural calls*,
+        # so its cost is tracked separately: it never enters Module 7's per-query
+        # budget, and the counters below let production accounting stay
+        # comparable while total physical spend stays honest.
+        if retriever is not None and prompt_compiler is None:
+            raise ValueError(
+                "a parametric retriever (M11) was supplied without a prompt "
+                "compiler (M10); M11 consumes M10's PromptProgram and cannot "
+                "rebuild one"
+            )
+        self.retriever = retriever
+        self.retrieval_results: list[ParametricRetrievalResult] = []
+        self.shadow_calls = 0
+        self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
         # model, but then no *cross-model* evidence is claimed anywhere.
         self.verifier_runtime = verifier_runtime or runtime
@@ -724,6 +741,19 @@ class CoverPipeline:
             return ""
         return get_view(contract.relation, action.view_id).facet_id
 
+    def _run_shadow_retrieval(self, query: Query, program: PromptProgram) -> None:
+        """Execute Module 11's probes and record their cost separately.
+
+        Deliberately outside the query budget: these calls are shadow
+        acquisition, they produce no candidate and no evidence edge, and letting
+        them draw on Module 7's allowance would change what the controller can
+        afford. The spend is still counted - honestly, and attributably.
+        """
+        result = self.retriever.retrieve(query, program, self.runtime)
+        self.retrieval_results.append(result)
+        self.shadow_calls += result.total_calls
+        self.shadow_generated_tokens += result.total_generated_tokens
+
     def enumerate_query(self, query: Query) -> EvidenceGraph:
         """Phase A: gate + candidate discovery. Enumerator model only."""
         query, contract = compile_query(query.subject, query.relation, query.row_index)
@@ -734,9 +764,10 @@ class CoverPipeline:
             profile = self.profiler.profile(query, contract)
             self.query_profiles.append(profile)
             if self.prompt_compiler is not None:
-                self.prompt_programs.append(
-                    self.prompt_compiler.compile(query, contract, profile)
-                )
+                program = self.prompt_compiler.compile(query, contract, profile)
+                self.prompt_programs.append(program)
+                if self.retriever is not None:
+                    self._run_shadow_retrieval(query, program)
         graph = build_graph(query, contract)
         budget = self.config.budget(contract)
         state = RCSEState()

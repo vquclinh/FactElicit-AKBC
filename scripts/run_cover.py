@@ -31,7 +31,11 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, ExecutionMode, PipelineConfig
-from cover_kbc.query_intelligence import build_profiler, build_prompt_compiler
+from cover_kbc.query_intelligence import (
+    build_parametric_retriever,
+    build_profiler,
+    build_prompt_compiler,
+)
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.runtime.tracing import RunTracer
 
@@ -116,13 +120,19 @@ def main() -> int:
         pipeline_config.enumerator_model_id = enumerator_cfg.get("model_id", "")
         pipeline_config.verifier_model_id = verifier_cfg.get("model_id", "")
         profiler = build_profiler(config.get("query_intelligence"))
+        prompt_compiler = build_prompt_compiler(
+            config.get("query_intelligence"), profiler_enabled=profiler is not None
+        )
         pipeline = CoverPipeline(
             runtime, pipeline_config, tracer=tracer, verifier_runtime=verifier_runtime,
             # Modules 9 and 10, shadow mode: they profile and compile at the M1
             # seam and feed nothing back into the run.
             profiler=profiler,
-            prompt_compiler=build_prompt_compiler(
-                config.get("query_intelligence"), profiler_enabled=profiler is not None
+            prompt_compiler=prompt_compiler,
+            retriever=build_parametric_retriever(
+                config.get("query_intelligence"),
+                profiler_enabled=profiler is not None,
+                compiler_enabled=prompt_compiler is not None,
             ),
         )
         result = pipeline.run(queries, progress=True)
@@ -141,6 +151,7 @@ def main() -> int:
     for tag, name, records in (
         ("M9", "query_profiles.jsonl", pipeline.query_profiles),
         ("M10", "prompt_programs.jsonl", pipeline.prompt_programs),
+        ("M11", "parametric_memory.jsonl", pipeline.retrieval_results),
     ):
         if not records:
             continue

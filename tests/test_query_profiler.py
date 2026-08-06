@@ -112,7 +112,10 @@ def test_profiling_loads_no_model_backend_at_all(tmp_path):
     script = tmp_path / "probe.py"
     script.write_text(
         "import sys\n"
-        "from cover_kbc.query_intelligence import QueryProfiler\n"
+        # Import M9's own module, not the package: since M11 landed, the
+        # package aggregate legitimately reaches the runtime abstraction, and
+        # the guarantee being tested is about *this* module.
+        "from cover_kbc.query_intelligence.profiler import QueryProfiler\n"
         "from cover_kbc.types import Query\n"
         "QueryProfiler().profile_all([\n"
         + "".join(f"    Query('S', {r!r}, 0),\n" for r in ALL_RELATIONS)
@@ -142,13 +145,19 @@ def test_profiling_spends_no_calls_or_tokens():
     assert (runtime.calls, runtime.generated_tokens) == before == (0, 0)
 
 
-def test_the_query_intelligence_package_imports_no_model_backend():
+#: The files that make up Module 9. Scoped deliberately: Module 11 lives in the
+#: same package and *does* use the runtime abstraction, by design, so a
+#: package-wide scan would no longer be testing anything true.
+M9_MODULES = ("types.py", "priors.py", "profiler.py")
+
+
+def test_the_m9_modules_import_no_model_backend():
     """Structural guarantee, not just a behavioural one."""
     root = Path("src/cover_kbc/query_intelligence")
-    for path in sorted(root.glob("*.py")):
-        source = path.read_text(encoding="utf-8")
+    for name in M9_MODULES:
+        source = (root / name).read_text(encoding="utf-8")
         for forbidden in ("models.registry", "models.huggingface", "LMRuntime", "requests", "urllib"):
-            assert forbidden not in source, f"{path.name} references {forbidden}"
+            assert forbidden not in source, f"{name} references {forbidden}"
 
 
 # --------------------------------------------------------------------------
@@ -581,9 +590,10 @@ def test_an_unsupported_mode_is_rejected():
 def test_unknown_config_keys_are_rejected():
     with pytest.raises(ValueError, match="unknown query_intelligence.profiler key"):
         ProfilerConfig.from_mapping({"enabled": True, "enabledd": True})
-    # `prompt_compiler` became valid when M10 landed; M11-M21 have not.
+    # `prompt_compiler` (M10) and `parametric_retrieval` (M11) became valid as
+    # those modules landed; M12-M21 have not.
     with pytest.raises(ValueError, match="unknown query_intelligence key"):
-        build_profiler({"profiler": {"enabled": True}, "parametric_retrieval": {}})
+        build_profiler({"profiler": {"enabled": True}, "numeric_specialist": {}})
 
 
 def test_disabled_or_absent_config_builds_no_profiler():

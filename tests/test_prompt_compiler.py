@@ -136,7 +136,11 @@ def test_compiling_loads_no_model_backend_at_all(tmp_path):
     script = tmp_path / "probe.py"
     script.write_text(
         "import sys\n"
-        "from cover_kbc.query_intelligence import QueryProfiler, PromptProgramCompiler\n"
+        # Module-level imports, not the package: Module 11 shares this package
+        # and reaches the runtime by design, so importing the aggregate would
+        # no longer test M10's own guarantee.
+        "from cover_kbc.query_intelligence.profiler import QueryProfiler\n"
+        "from cover_kbc.query_intelligence.prompt_compiler import PromptProgramCompiler\n"
         "from cover_kbc.contracts.router import compile_query\n"
         "profiler, compiler = QueryProfiler(), PromptProgramCompiler()\n"
         + "".join(
