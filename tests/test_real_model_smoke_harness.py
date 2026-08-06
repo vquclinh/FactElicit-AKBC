@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -120,9 +121,7 @@ def test_module_20_and_21_stay_disabled(harness):
 def test_the_harness_fails_loudly_rather_than_masking(harness):
     assert issubclass(harness.SmokeFailure, RuntimeError)
     source = HARNESS.read_text()
-    # The only broad except records the failure and marks the run FAIL.
-    assert source.count("except Exception") == 2      # driver + repo_sha fallback
-    assert '"result"] = "FAIL"' in source or 'summary["result"] = "FAIL"' in source
+    assert 'summary["result"] = "FAIL"' in source
     assert "pass  # ignore" not in source
 
 
@@ -150,17 +149,341 @@ def test_the_summary_schema_carries_the_required_fields(harness):
         assert field in source, field
 
 
-def test_the_notebook_is_valid_and_declares_no_split_switch():
+def test_the_notebook_is_minimal_and_declares_no_split_switch():
+    """Two code cells: setup, then run. No diagnostic sprawl."""
     notebook = json.loads(NOTEBOOK.read_text())
     assert notebook["nbformat"] == 4
     code = [c for c in notebook["cells"] if c["cell_type"] == "code"]
-    assert len(code) == 2                       # compact, per the brief
+    assert len(code) == 2
     source = "\n".join("".join(c["source"]) for c in notebook["cells"])
     for required in ("REPO_SHA", "REPO_ROOT", "CACHE_ROOT", "OUTPUT_ROOT",
-                     "audit_model_budget.py", "real_model_smoke.py",
-                     # HEAD is verified against the requested SHA, as a list-form
-                     # subprocess call rather than a shell string.
-                     '"rev-parse"', "benchmark integrity"):
+                     "real_model_smoke.py"):
         assert required in source, required
-    for forbidden in ("SPLIT =", '"val"', '"test"', "run_staged.py"):
+    # No split switch, and none of the preflight sprawl the brief cut.
+    for forbidden in ("SPLIT =", '"val"', '"test"', "run_staged.py",
+                      "nvidia-smi", "disk_usage", "audit_model_budget"):
         assert forbidden not in source, forbidden
+
+
+# ==========================================================================
+# Corrective pass: model resolution must go through `model_blocks`
+#
+# The first real-weight run failed before any model loaded, because the harness
+# handed the whole experiment YAML to `build_runtime`. The registry's
+# fail-closed check caught it; these tests stop it coming back.
+# ==========================================================================
+
+
+def test_the_harness_imports_the_canonical_resolver():
+    source = HARNESS.read_text()
+    assert "from cover_kbc.models.registry import build_runtime, model_blocks" in source
+
+
+def test_build_runtime_is_never_handed_the_whole_experiment_config():
+    """Every runtime construction receives one resolved model block."""
+    tree = ast.parse(HARNESS.read_text())
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "build_runtime"
+    ]
+    assert calls, "the harness builds no runtime"
+    for call in calls:
+        assert len(call.args) == 1, ast.dump(call)
+        argument = call.args[0]
+        # A bare name is fine only if it is a resolved block, never `config`.
+        if isinstance(argument, ast.Name):
+            # `spec` is the resolved block chosen inside StagedRuntimes.load.
+            assert argument.id in {
+                "enumerator_spec", "verifier_spec", "spec"}, argument.id
+        else:
+            # No dict literal rebuilding a profile, and no config subscript.
+            assert not isinstance(argument, ast.Dict), ast.dump(argument)
+            assert not isinstance(argument, ast.Subscript), ast.dump(argument)
+
+    source = HARNESS.read_text()
+    for forbidden in ("build_runtime(config)", 'build_runtime(config["model_profile"])',
+                      "build_runtime({**config"):
+        assert forbidden not in source, forbidden
+
+
+def test_each_role_is_built_from_its_own_resolved_block():
+    """The lifecycle owns both blocks and picks by role."""
+    source = HARNESS.read_text()
+    assert "enumerator_spec, verifier_spec = model_blocks(config)" in source
+    assert "StagedRuntimes(enumerator_spec, verifier_spec)" in source
+    assert ("spec = (self.enumerator_spec if role == self.ENUMERATOR\n"
+            "                    else self.verifier_spec)") in source
+    assert "self.runtime = build_runtime(spec)" in source
+
+
+def test_the_two_roles_keep_distinct_identities_and_pinned_revisions():
+    import yaml
+
+    from cover_kbc.models.registry import model_blocks
+
+    config = yaml.safe_load(
+        Path("configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml").read_text())
+    enumerator, verifier = model_blocks(config)
+
+    assert enumerator["model_id"] == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    assert verifier["model_id"] == "Qwen/Qwen3.5-4B"
+    assert enumerator["model_id"] != verifier["model_id"]
+    assert enumerator["revision"] == "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+    assert verifier["revision"] == "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    assert enumerator["tokenizer_backend"] == "mistral_common"
+    assert verifier["tokenizer_backend"] == "huggingface"
+    assert enumerator["quantization"] == verifier["quantization"] == "nf4"
+    # Both blocks carry the backend `build_runtime` requires.
+    assert enumerator["backend"] == verifier["backend"] == "huggingface"
+
+
+def test_a_shared_profile_is_not_loaded_twice():
+    """One model named for both roles loads once, via `shared_profile`."""
+    source = HARNESS.read_text()
+    assert "def shared_profile" in source
+    assert "return self.enumerator_spec == self.verifier_spec" in source
+
+
+def test_the_harness_declares_no_second_model_resolver():
+    source = HARNESS.read_text()
+    for forbidden in ("def model_blocks", "def build_runtime",
+                      "def _resolve_model", "def load_model",
+                      '["model_profile"]["enumerator"]',
+                      '["model_profile"]["verifier"]'):
+        assert forbidden not in source, forbidden
+
+
+def test_the_registry_still_fails_closed_on_an_unresolved_profile():
+    """The check that caught this defect must not be weakened."""
+    import yaml
+
+    from cover_kbc.models.registry import build_runtime
+
+    config = yaml.safe_load(
+        Path("configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml").read_text())
+    with pytest.raises(ValueError, match="has no 'backend'"):
+        build_runtime(config)
+    with pytest.raises(ValueError, match="has no 'backend'"):
+        build_runtime(config["model_profile"])
+    # And no top-level `backend:` was added to the YAML to work around it.
+    assert "backend" not in config
+    assert subprocess.run(
+        ["git", "status", "--porcelain",
+         "src/cover_kbc/models/registry.py",
+         "configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml"],
+        capture_output=True, text=True, check=True).stdout == ""
+
+
+def test_a_role_mismatch_would_be_caught_at_run_time(harness):
+    """One resident runtime may not be reused for the other role."""
+    enumerator, verifier = _stub_specs()
+    staged = harness.StagedRuntimes(enumerator, verifier)
+    staged.load(staged.ENUMERATOR)
+    with pytest.raises(harness.SmokeFailure, match="must never be\n *resident|still resident"):
+        staged.load(staged.VERIFIER)
+    staged.release()
+
+
+# ==========================================================================
+# Memory-safe staged residency
+#
+# Mistral-Small-24B and Qwen3.5-4B must never sit on the device together: the
+# smoke needs both roles, but the repository's own enumerate/verify/decide
+# contract needs only one at a time.
+# ==========================================================================
+
+
+def _driver_source() -> str:
+    """`main()` only — phase ordering is a property of the driver."""
+    tree = ast.parse(HARNESS.read_text())
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "main")
+    return ast.get_source_segment(HARNESS.read_text(), function)
+
+
+def _code_only() -> str:
+    """Harness source with docstrings and comments removed."""
+    import io
+    import tokenize
+
+    source = HARNESS.read_text()
+    tree = ast.parse(source)
+    prose = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc:
+                prose.add(doc)
+    kept = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            continue
+        if token.type == tokenize.STRING:
+            try:
+                if ast.literal_eval(token.string) in prose:
+                    continue
+            except (ValueError, SyntaxError):
+                pass
+        kept.append(token.string)
+    return " ".join(kept)
+
+
+def _stub_specs():
+    return ({"backend": "scripted", "model_id": "offline/enumerator"},
+            {"backend": "scripted", "model_id": "offline/verifier"})
+
+
+def test_two_distinct_checkpoints_are_never_resident_together(harness):
+    enumerator, verifier = _stub_specs()
+    staged = harness.StagedRuntimes(enumerator, verifier)
+
+    staged.load(staged.ENUMERATOR)
+    with pytest.raises(harness.SmokeFailure, match="still resident"):
+        staged.load(staged.VERIFIER)
+
+    staged.release()
+    assert staged.runtime is None and staged.role is None
+    staged.load(staged.VERIFIER)
+    assert staged.model_id == "offline/verifier"
+    staged.release()
+    assert staged.history == ["enumerator", "verifier"]
+
+
+def test_the_enumerator_is_released_before_the_verifier_is_built(harness):
+    """Read off the phase order in the source, not just the helper."""
+    driver = _driver_source()
+    e1 = driver.index("staged.load(StagedRuntimes.ENUMERATOR)")
+    release = driver.index("staged.release()", e1)
+    v = driver.index("staged.load(StagedRuntimes.VERIFIER)", e1)
+    assert e1 < release < v, "the enumerator is not released before the verifier"
+
+
+def test_each_staged_pass_releases_between_every_role(harness):
+    tree = ast.parse(HARNESS.read_text())
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "staged_pass")
+    body = ast.dump(function)
+    # load ENUMERATOR ... release ... load VERIFIER ... release
+    assert body.count("'release'") == 2
+    assert "ENUMERATOR" in body and "VERIFIER" in body
+    order = [
+        m for m in ("ENUMERATOR", "release", "VERIFIER")
+        for _ in [0]
+    ]
+    source = ast.get_source_segment(HARNESS.read_text(), function)
+    i_enum = source.index("StagedRuntimes.ENUMERATOR")
+    i_rel = source.index("staged.release(pipeline)")
+    i_ver = source.index("StagedRuntimes.VERIFIER")
+    assert i_enum < i_rel < i_ver, order
+
+
+def test_qwen_stays_resident_across_the_m17_cold_warm_experiment(harness):
+    """Unloading between cold and warm would reset the control cache."""
+    driver = _driver_source()
+    verifier_load = driver.index("staged.load(StagedRuntimes.VERIFIER)")
+    m17 = driver.index('summary["m17_call_plan"] = m17_plan_regression')
+    release = driver.index("staged.release()", verifier_load)
+    assert verifier_load < m17 < release, (
+        "Module 17's cold/warm regression must run while the verifier is still "
+        "resident")
+    # Both readings happen inside one regression call, so the cache persists.
+    assert HARNESS.read_text().count("verifier.verify(request_for(") == 2
+
+
+def test_state_crosses_phases_through_existing_typed_serialisation(harness):
+    source = HARNESS.read_text()
+    assert "from cover_kbc.staging import read_stage, write_stage" in source
+    # The shadow half round-trips through each module's own to_json/from_json.
+    assert "_SHADOW_ARTEFACTS" in source
+    for module in ("QueryRiskProfile", "NumericSpecialistResult",
+                   "LargeSetSpecialistResult", "NullTemporalSpecialistResult",
+                   "SmallSetSpecialistResult"):
+        assert module in source, module
+    assert "from_json(row)" in source and "item.to_json()" in source
+    # No parallel identity system.
+    for forbidden in ("uuid", "def _new_id", "candidate_key =", "origin_id ="):
+        assert forbidden not in source, forbidden
+
+
+def test_no_smaller_model_or_quantization_fallback_exists(harness):
+    """Scanned on executable code: the comment *forbids* these words."""
+    code = _code_only()
+    for forbidden in ("load_in_8bit", "int8", 'device_map="cpu"',
+                      "torch_dtype=torch.float16", "fallback_model",
+                      "def retry", "smaller_model"):
+        assert forbidden not in code, forbidden
+    # No checkpoint is named in code; both come from the resolved blocks.
+    assert "Mistral" not in code and "Qwen" not in code
+
+
+def test_oom_is_reported_with_its_phase_and_never_hidden(harness):
+    source = HARNESS.read_text()
+    assert 'error_type" ' not in source           # the key is `type`
+    assert '"CUDA_OOM"' in source
+    for field in ('"phase": phase', '"active_role"', '"active_model_id"',
+                  '"traceback"'):
+        assert field in source, field
+    assert 'summary["result"] = "FAIL"' in source
+    # The only broad handler that swallows anything is the release helper's
+    # best-effort attribute clear; the driver's records and re-raises as FAIL.
+    tree = ast.parse(source)
+    broad = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ExceptHandler)
+        and getattr(node.type, "id", "") == "Exception"
+    ]
+    assert len(broad) == 3        # driver + repo_sha fallback + release clear
+    swallowing = [n for n in broad if all(isinstance(b, ast.Pass) for b in n.body)]
+    assert len(swallowing) == 1   # only the release clear
+
+
+def test_staged_is_the_default_memory_mode(harness):
+    source = HARNESS.read_text()
+    assert '"--memory-mode", choices=("staged",), default="staged"' in source
+    # The documented default command carries no memory flag.
+    assert "--memory-mode" not in HARNESS.read_text().split('"""')[1]
+
+
+def test_a_shared_profile_still_loads_once(harness):
+    enumerator, _ = _stub_specs()
+    staged = harness.StagedRuntimes(enumerator, enumerator)
+    assert staged.shared_profile is True
+    first = staged.load(staged.ENUMERATOR)
+    assert staged.load(staged.ENUMERATOR) is first
+    assert staged.history == ["enumerator"]
+    staged.release()
+
+
+def test_the_staged_pass_runs_end_to_end_without_weights(harness, tmp_path):
+    """The wiring itself, exercised on stub backends."""
+    import yaml
+
+    config = yaml.safe_load(
+        Path("configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml").read_text())
+    for role in ("enumerator", "verifier"):
+        config["model_profile"][role] = {
+            **config["model_profile"][role], "backend": "scripted"}
+    enumerator, verifier = harness.model_blocks(config)
+    staged = harness.StagedRuntimes(enumerator, verifier)
+
+    core = harness.staged_pass(
+        config, staged, tmp_path, upgraded=False, tag="core")
+    assert staged.runtime is None            # released after every pass
+    upgraded = harness.staged_pass(
+        config, staged, tmp_path, upgraded=True, tag="upgraded")
+    assert staged.runtime is None
+
+    comparison = harness.compare_passes(core, upgraded)
+    assert comparison["production_output_unchanged"] is True
+    assert comparison["m7_budget_unchanged"] is True
+    assert comparison["shadow_only_calls"] > 0
+    assert comparison["m9_refined"] is True
+    # Every relation reached Module 16, Layer 4 and Module 19.
+    assert upgraded["upgraded_state"]["consensus"] == len(harness.SMOKE_MANIFEST)
+    assert upgraded["upgraded_state"]["layer4"] == len(harness.SMOKE_MANIFEST)
+    assert upgraded["upgraded_state"]["coverage_gap"] == len(harness.SMOKE_MANIFEST)
+    # Roles alternated and nothing is left resident.
+    assert staged.history == ["enumerator", "verifier"] * 2

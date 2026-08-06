@@ -70,6 +70,91 @@ class SmokeFailure(RuntimeError):
     """A runtime contract failed. Never masked, never continued past."""
 
 
+class StagedRuntimes:
+    """Holds **at most one** real checkpoint on the device at a time.
+
+    The composed smoke needs both roles, but not simultaneously: Module 2's
+    acquisition is enumerator-only, Module 4/17/18's verification is
+    verifier-only, and Module 8's finalisation needs no model at all. That is
+    the repository's own staged contract (`enumerate` / `verify` / `decide`),
+    so the smoke follows it rather than holding 24B and 4B resident together.
+
+    Releasing is not `del runtime`. A runtime is reachable from the pipeline,
+    from the specialists and verifiers that were handed it, and from any closure
+    that captured it, so every owner has to be dropped before the allocator can
+    reclaim anything — which is why callers pass their pipeline in.
+
+    Staged residency is the **default on every GPU**. One implementation, no
+    per-device branch.
+    """
+
+    ENUMERATOR = "enumerator"
+    VERIFIER = "verifier"
+
+    def __init__(self, enumerator_spec: dict, verifier_spec: dict) -> None:
+        self.enumerator_spec = enumerator_spec
+        self.verifier_spec = verifier_spec
+        self.runtime: Any = None
+        self.role: str | None = None
+        self.model_id: str | None = None
+        #: Roles loaded, in order, for the summary.
+        self.history: list[str] = []
+
+    @property
+    def shared_profile(self) -> bool:
+        """One checkpoint named for both roles may legitimately load once."""
+        return self.enumerator_spec == self.verifier_spec
+
+    def load(self, role: str) -> Any:
+        if role not in (self.ENUMERATOR, self.VERIFIER):
+            raise SmokeFailure(f"unknown model role {role!r}")
+        if self.runtime is not None and self.role != role:
+            raise SmokeFailure(
+                f"role {self.role!r} is still resident; release it before "
+                f"loading {role!r} — two distinct checkpoints must never be "
+                "resident together"
+            )
+        if self.runtime is None:
+            spec = (self.enumerator_spec if role == self.ENUMERATOR
+                    else self.verifier_spec)
+            self.runtime = build_runtime(spec)
+            self.model_id = spec["model_id"]
+            self.history.append(role)
+        self.role = role
+        return self.runtime
+
+    def release(self, *owners: Any) -> None:
+        """Drop the runtime and every owner that can still reach it."""
+        for owner in owners:
+            for attribute in (
+                "runtime", "verifier_runtime", "numeric_specialist",
+                "large_set_specialist", "null_temporal_specialist",
+                "small_set_specialist", "retriever", "specialist_verifier",
+                "bidirectional_verifier", "consensus_engine",
+            ):
+                if hasattr(owner, attribute):
+                    try:
+                        setattr(owner, attribute, None)
+                    except Exception:                  # pragma: no cover
+                        pass
+        self.runtime = None
+        self.role = None
+        self.model_id = None
+
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+        except ImportError:                            # pragma: no cover
+            pass
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
@@ -271,8 +356,13 @@ def m20_consistency(m17: dict) -> dict:
 # --------------------------------------------------------------------------
 
 
-def build_pipeline(config: dict, runtime: Any, verifier_runtime: Any, *,
-                   upgraded: bool):
+def build_pipeline(config: dict, runtime: Any, *, upgraded: bool):
+    """One pipeline bound to whichever single role is currently resident.
+
+    ``verifier_runtime`` is deliberately not passed: in staged mode the verifier
+    is a *later* phase with its own pipeline, so handing this one a second
+    runtime would defeat the whole point.
+    """
     from cover_kbc.coverage_gap.missingness import CoverageGapEstimator
     from cover_kbc.evidence.consensus import AtomicConsensusEngine
     from cover_kbc.evidence.layer4 import Layer4EvidenceIntegrator
@@ -288,13 +378,12 @@ def build_pipeline(config: dict, runtime: Any, verifier_runtime: Any, *,
 
     pipeline_config = PipelineConfig()
     if not upgraded:
-        return CoverPipeline(runtime, pipeline_config,
-                             verifier_runtime=verifier_runtime)
+        return CoverPipeline(runtime, pipeline_config)
 
     verifier_block = dict(config.get("specialist_verifier") or {})
     verifier_block["enabled"] = True
     return CoverPipeline(
-        runtime, pipeline_config, verifier_runtime=verifier_runtime,
+        runtime, pipeline_config,
         profiler=QueryProfiler(), prompt_compiler=PromptProgramCompiler(),
         retriever=ParametricRetriever(), numeric_specialist=NumericSpecialist(),
         large_set_specialist=LargeSetSpecialist(),
@@ -306,90 +395,159 @@ def build_pipeline(config: dict, runtime: Any, verifier_runtime: Any, *,
         bidirectional_verifier=BidirectionalVerifier(),
         layer4_integrator=Layer4EvidenceIntegrator(),
         coverage_gap_estimator=CoverageGapEstimator(),
-        # Module 20, Module 21 and Layer 6 stay OFF: they have no TRAIN
-        # calibration and a synthetic package would not prove production
-        # readiness.
+        # Module 20, Module 21 and Layer 6 stay OFF: no TRAIN calibration
+        # exists, and a synthetic package would not prove production readiness.
     )
 
 
-def composed_smoke(config: dict, runtime: Any, verifier_runtime: Any) -> dict:
-    """Run the manifest in production-core and upgraded-shadow mode."""
-    results: dict[str, Any] = {"queries": []}
+#: The Phase-A shadow artefacts, and the typed loader each one round-trips
+#: through. Exactly the set `run_staged.py` restores between phases.
+_SHADOW_ARTEFACTS = (
+    ("query_profiles", "cover_kbc.query_intelligence.types", "QueryRiskProfile"),
+    ("numeric_results", "cover_kbc.specialists.numeric_types",
+     "NumericSpecialistResult"),
+    ("large_set_results", "cover_kbc.specialists.large_set_types",
+     "LargeSetSpecialistResult"),
+    ("null_temporal_results", "cover_kbc.specialists.null_temporal_types",
+     "NullTemporalSpecialistResult"),
+    ("small_set_results", "cover_kbc.specialists.small_set_types",
+     "SmallSetSpecialistResult"),
+)
 
-    core_before = runtime.calls + verifier_runtime.calls
-    core = build_pipeline(config, runtime, verifier_runtime, upgraded=False)
-    core_predictions = [
-        core.decide_graph(core.enumerate_query(Query(subject, relation, index)))
+
+def _write_shadow_state(pipeline: Any, path: Path) -> None:
+    """Persist the Phase-A shadow half through its own typed serialisation."""
+    payload = {
+        attribute: [item.to_json() for item in getattr(pipeline, attribute, [])]
+        for attribute, _, _ in _SHADOW_ARTEFACTS
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _restore_shadow_state(pipeline: Any, path: Path) -> None:
+    """Reload it into the next phase's pipeline. No new identity system."""
+    import importlib
+
+    if not path.exists():
+        return
+    payload = json.loads(path.read_text())
+    for attribute, module_name, class_name in _SHADOW_ARTEFACTS:
+        target = getattr(pipeline, attribute, None)
+        if target is None:
+            continue
+        loader = getattr(importlib.import_module(module_name), class_name)
+        for row in payload.get(attribute, []):
+            target.append(loader.from_json(row))
+
+
+def staged_pass(config: dict, staged: StagedRuntimes, work_dir: Path, *,
+                upgraded: bool, tag: str) -> dict:
+    """One full ENUMERATOR -> release -> VERIFIER -> release -> decide pass.
+
+    State crosses each role boundary through the repository's own typed staging
+    contract (`write_stage` / `read_stage`, i.e. `graph_to_json`), so query,
+    candidate, origin, independence-group, call and operation identities are
+    carried by the same serialisation the staged CLI uses. No parallel
+    representation is invented for the smoke.
+    """
+    from cover_kbc.staging import read_stage, write_stage
+
+    stage_path = work_dir / f"{tag}_stage_a.jsonl"
+    shadow_path = work_dir / f"{tag}_shadow_state.json"
+
+    # -- PHASE E1: enumerator only ------------------------------------------
+    runtime = staged.load(StagedRuntimes.ENUMERATOR)
+    pipeline = build_pipeline(config, runtime, upgraded=upgraded)
+    graphs = [
+        pipeline.enumerate_query(Query(subject, relation, index))
         for index, (relation, subject) in enumerate(SMOKE_MANIFEST)
     ]
-    core_calls = runtime.calls + verifier_runtime.calls - core_before
-
-    upgraded_before = runtime.calls + verifier_runtime.calls
-    upgraded = build_pipeline(config, runtime, verifier_runtime, upgraded=True)
-    upgraded_predictions = [
-        upgraded.decide_graph(
-            upgraded.enumerate_query(Query(subject, relation, index)))
-        for index, (relation, subject) in enumerate(SMOKE_MANIFEST)
+    write_stage(graphs, stage_path, keep_prompts=False)
+    # The Phase-A shadow half - Module 9's profiles and the Module 12-15
+    # specialist results - does not live on the graph, so it crosses the role
+    # boundary through the same typed `to_json` contract `run_staged.py` uses
+    # when it restores these artefacts between phases.
+    _write_shadow_state(pipeline, shadow_path)
+    enumerate_calls = runtime.calls
+    profiles = [
+        {
+            "Relation": p.relation, "SubjectEntity": p.subject,
+            "novelty_risk": p.novelty_risk.value if p.novelty_risk else None,
+            "novelty_basis": p.novelty_basis,
+            "secondary_hints": [h.value for h in p.secondary_hints],
+            "refined": p.novelty_basis != "no early graph has been observed",
+        }
+        for p in pipeline.query_profiles
     ]
-    upgraded_calls = runtime.calls + verifier_runtime.calls - upgraded_before
+    staged.release(pipeline)
+    del graphs, pipeline
 
-    for index, (relation, subject) in enumerate(SMOKE_MANIFEST):
-        profile = next(
-            (p for p in upgraded.query_profiles
-             if p.relation == relation and p.subject == subject), None)
-        results["queries"].append({
-            "Relation": relation,
-            "SubjectEntity": subject,
-            "specialist_family": SPECIALIST_FAMILY[relation],
-            "program_type": CONTRACTS[relation].program_type.value,
-            # Audit 0033 §10A: the persisted profile must be the refined one.
-            "m9_refined": bool(profile and profile.novelty_basis
-                               != "no early graph has been observed"),
-            "m9_novelty_risk": (
-                profile.novelty_risk.value
-                if profile and profile.novelty_risk else None),
-            "m9_secondary_hints": (
-                [h.value for h in profile.secondary_hints] if profile else []),
-            "m16_consensus": any(
-                c.relation == relation for c in upgraded.consensus_results),
-            "layer4": any(
-                s.relation == relation for s in upgraded.layer4_results),
-            "m19_residual": next(
-                (g.residual.residual for g in upgraded.coverage_gap_results
-                 if g.relation == relation), None),
-            "object_count": len(upgraded_predictions[index].object_entities),
-        })
+    # -- PHASE V: verifier only ---------------------------------------------
+    runtime = staged.load(StagedRuntimes.VERIFIER)
+    pipeline = build_pipeline(config, runtime, upgraded=upgraded)
+    _restore_shadow_state(pipeline, shadow_path)
+    verified = [pipeline.verify_graph(graph) for graph in read_stage(stage_path)]
+    verify_calls = runtime.calls
 
-    core_objects = [tuple(p.object_entities) for p in core_predictions]
-    upgraded_objects = [tuple(p.object_entities) for p in upgraded_predictions]
-    results["production_core_calls"] = core_calls
-    results["upgraded_shadow_calls"] = upgraded_calls
-    results["shadow_only_calls"] = upgraded_calls - core_calls
-    results["production_output_unchanged"] = core_objects == upgraded_objects
-    results["m7_budget_unchanged"] = all(
-        left.calls_used == right.calls_used
-        and left.generated_tokens_used == right.generated_tokens_used
-        for left, right in zip(core_predictions, upgraded_predictions))
-    results["production_stop_reasons_unchanged"] = all(
-        left.stopped_reason == right.stopped_reason
-        for left, right in zip(core_predictions, upgraded_predictions))
-    results["m18_mechanisms_executed"] = sorted({
-        check.check_kind
-        for state in upgraded.layer4_results
-        for overlay in state.candidates
-        for check in overlay.structural_checks
-    })
-    results["m21_executed"] = False
-    results["specialist_families"] = sorted(
-        {SPECIALIST_FAMILY[relation] for relation, _ in SMOKE_MANIFEST})
+    # -- PHASE DECIDE: no model at all --------------------------------------
+    # Module 16, Layer 4 and Module 19 run at the Phase-C seam inside
+    # `decide_graph`, so their state is read *after* this loop, not before it.
+    predictions = [pipeline.decide_graph(graph) for graph in verified]
+    upgraded_state = {
+        "consensus": len(pipeline.consensus_results),
+        "layer4": len(pipeline.layer4_results),
+        "coverage_gap": len(pipeline.coverage_gap_results),
+        "m18_mechanisms": sorted({
+            check.check_kind
+            for state in pipeline.layer4_results
+            for overlay in state.candidates
+            for check in overlay.structural_checks
+        }),
+    } if upgraded else {}
+    staged.release(pipeline)
+    del verified, pipeline
 
-    if not results["production_output_unchanged"]:
+    return {
+        "tag": tag,
+        "upgraded": upgraded,
+        "enumerate_calls": enumerate_calls,
+        "verify_calls": verify_calls,
+        "total_calls": enumerate_calls + verify_calls,
+        "profiles": profiles,
+        "upgraded_state": upgraded_state,
+        "objects": [list(p.object_entities) for p in predictions],
+        "stop_reasons": [p.stopped_reason for p in predictions],
+        "calls_used": [p.calls_used for p in predictions],
+        "generated_tokens_used": [p.generated_tokens_used for p in predictions],
+    }
+
+
+def compare_passes(core: dict, upgraded: dict) -> dict:
+    """Shadow isolation, compared **after** both sequential passes finished."""
+    unchanged = core["objects"] == upgraded["objects"]
+    budget_unchanged = (
+        core["calls_used"] == upgraded["calls_used"]
+        and core["generated_tokens_used"] == upgraded["generated_tokens_used"])
+    stops_unchanged = core["stop_reasons"] == upgraded["stop_reasons"]
+    result = {
+        "production_core_calls": core["total_calls"],
+        "upgraded_shadow_calls": upgraded["total_calls"],
+        "shadow_only_calls": upgraded["total_calls"] - core["total_calls"],
+        "production_output_unchanged": unchanged,
+        "m7_budget_unchanged": budget_unchanged,
+        "production_stop_reasons_unchanged": stops_unchanged,
+        "specialist_families": sorted(SPECIALIST_FAMILY.values()),
+        "m18_mechanisms_executed": upgraded["upgraded_state"].get(
+            "m18_mechanisms", []),
+        "m9_refined": all(p["refined"] for p in upgraded["profiles"]),
+        "m21_executed": False,
+    }
+    if not unchanged:
         raise SmokeFailure(
-            "the upgraded shadow run changed a production prediction; shadow "
-            "calls must not perturb production output")
-    if not results["m7_budget_unchanged"]:
-        raise SmokeFailure("the upgraded run changed Module 7's production budget")
-    return results
+            "the upgraded shadow pass changed a production prediction")
+    if not budget_unchanged:
+        raise SmokeFailure("the upgraded pass changed Module 7's production budget")
+    return result
 
 
 def uncalibrated_activation_fails() -> dict:
@@ -427,13 +585,23 @@ def main() -> int:
     parser.add_argument(
         "--out", type=Path,
         default=Path("real_model_architecture_smoke_summary.json"))
+    parser.add_argument(
+        "--memory-mode", choices=("staged",), default="staged",
+        help="staged is the only mode: one checkpoint resident at a time, on "
+             "every GPU size")
+    parser.add_argument(
+        "--work-dir", type=Path, default=None,
+        help="where staged intermediate state is written")
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text())
     enumerator_spec, verifier_spec = model_blocks(config)
+    work_dir = args.work_dir or args.out.parent / "real_model_smoke_stage"
+    work_dir.mkdir(parents=True, exist_ok=True)
 
     summary: dict[str, Any] = {
         "smoke": "real-model-architecture-smoke-v1",
+        "memory_mode": args.memory_mode,
         "repo_sha": repo_sha(),
         "config_path": str(args.config),
         "config_sha256": _sha(args.config),
@@ -456,40 +624,70 @@ def main() -> int:
         "errors": [],
     }
 
+    staged = StagedRuntimes(enumerator_spec, verifier_spec)
+    phase, active_role = "startup", None
     try:
-        print("[1/6] loading enumerator runtime ...", flush=True)
-        runtime = build_runtime(config)
-        print("[1/6] primitive generate ...", flush=True)
+        # -- PHASE E1 primitive ---------------------------------------------
+        phase, active_role = "E1_enumerator_primitive", StagedRuntimes.ENUMERATOR
+        print("[E1] loading enumerator ...", flush=True)
+        runtime = staged.load(StagedRuntimes.ENUMERATOR)
+        print("[E1] primitive generate ...", flush=True)
         summary["primitive_generate"] = primitive_generate(runtime, enumerator_spec)
+        staged.release()
 
-        print("[2/6] loading verifier runtime ...", flush=True)
-        verifier_runtime = build_runtime(
-            {**config, "model_profile": {
-                **config["model_profile"],
-                "enumerator": config["model_profile"]["verifier"]}})
-        print("[2/6] primitive score_labels ...", flush=True)
+        # -- PHASE V primitive + M17 ----------------------------------------
+        phase, active_role = "V_verifier_primitive", StagedRuntimes.VERIFIER
+        print("[V] loading verifier ...", flush=True)
+        runtime = staged.load(StagedRuntimes.VERIFIER)
+        print("[V] primitive score_labels ...", flush=True)
         summary["primitive_score_labels"] = primitive_score_labels(
-            verifier_runtime, verifier_spec)
+            runtime, verifier_spec)
 
-        print("[3/6] Module 17 live call-plan regression ...", flush=True)
-        summary["m17_call_plan"] = m17_plan_regression(config, verifier_runtime)
-
-        print("[4/6] Module 20 safe-cost consistency (non-executing) ...", flush=True)
+        # Qwen stays resident across cold AND warm: unloading between them
+        # would reset the contextual-control cache and destroy the experiment.
+        phase = "V_m17_cold_warm"
+        print("[V] Module 17 cold/warm regression ...", flush=True)
+        summary["m17_call_plan"] = m17_plan_regression(config, runtime)
         summary["m20_consistency"] = m20_consistency(summary["m17_call_plan"])
+        staged.release()
 
-        print("[5/6] composed shadow smoke ...", flush=True)
-        summary["composed"] = composed_smoke(config, runtime, verifier_runtime)
+        # -- Sequential passes, never simultaneous --------------------------
+        phase, active_role = "core_pass", None
+        print("[pass 1/2] production core, staged ...", flush=True)
+        core = staged_pass(config, staged, work_dir, upgraded=False, tag="core")
 
-        print("[6/6] uncalibrated activation must fail ...", flush=True)
+        phase = "upgraded_pass"
+        print("[pass 2/2] upgraded shadow, staged ...", flush=True)
+        upgraded = staged_pass(
+            config, staged, work_dir, upgraded=True, tag="upgraded")
+
+        phase = "compare"
+        summary["composed"] = compare_passes(core, upgraded)
+        summary["staged_roles_observed"] = staged.history
+        summary["shared_profile"] = staged.shared_profile
+
+        phase = "activation_guard"
+        print("[guard] uncalibrated activation must fail ...", flush=True)
         summary["uncalibrated_activation"] = uncalibrated_activation_fails()
 
         summary["result"] = "PASS"
     except Exception as error:                          # noqa: BLE001
+        # Caught only here, at the outermost boundary. Nothing is retried with a
+        # smaller model, a different quantization, CPU offload or another
+        # architecture: the profile is frozen and the user switches GPU.
+        name = type(error).__name__
+        message = str(error)
+        oom = "OutOfMemoryError" in name or "CUDA out of memory" in message
         summary["result"] = "FAIL"
-        summary["errors"].append(
-            {"type": type(error).__name__, "message": str(error),
-             "traceback": traceback.format_exc()})
-        print(f"\nSMOKE FAILED: {type(error).__name__}: {error}", flush=True)
+        summary["errors"].append({
+            "type": "CUDA_OOM" if oom else name,
+            "message": message,
+            "phase": phase,
+            "active_role": active_role or staged.role,
+            "active_model_id": staged.model_id,
+            "traceback": traceback.format_exc(),
+        })
+        print(f"\nSMOKE FAILED in {phase}: {name}: {message}", flush=True)
 
     args.out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"\nresult: {summary['result']}")
