@@ -436,14 +436,24 @@ def discovery_origins(relation: str, result: Any, layer4: Any) -> tuple[
     owner = FACET_OWNER.get(relation)
     if result is not None:
         if owner == "M12":
-            from cover_kbc.normalization.numeric import format_numeric
-
-            for obs in result.observations:
-                key = (
-                    format_numeric(obs.canonical_value)
-                    if obs.usable and obs.canonical_value is not None else ""
+            # Identity is Module 12's, not this module's. A numeric target is
+            # "the same value we already have" exactly when M12's own tolerance
+            # clustering says so, and M12 publishes that mapping as
+            # ``member_indices``. Formatting the raw float here instead would
+            # impose an implicit exact-equality rule, so two readings M12 calls
+            # one target would register as two discoveries and inflate novelty.
+            # Nothing is re-clustered: this only reads the assignment M12 made.
+            cluster_of = {
+                index: position
+                for position, cluster in enumerate(result.clusters)
+                for index in cluster.member_indices
+            }
+            for index, obs in enumerate(result.observations):
+                position = cluster_of.get(index)
+                _add(
+                    obs.operation_id,
+                    f"m12_cluster#{position}" if position is not None else "",
                 )
-                _add(obs.operation_id, key)
         elif owner in ("M13", "M14", "M15"):
             observations = (
                 result.observations if owner == "M13"
