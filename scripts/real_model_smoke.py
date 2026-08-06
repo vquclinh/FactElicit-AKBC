@@ -657,15 +657,42 @@ def isolated_m18_smoke(config: dict, staged: StagedRuntimes) -> dict:
         raise SmokeFailure(
             "the isolated Module 18 check made no physical call; this is not "
             "real-weight evidence")
+
+    # Mechanism identity belongs to the **request**, not the record: an
+    # `EligibleCheck` owns `check_kind`, `BidirectionalCheckRequest` exposes it
+    # as a property, and `BidirectionalCheckRecord` adds only execution
+    # evidence on top of the request it carries. Read from the exact request
+    # instance that was executed, so the reported mechanism cannot drift from
+    # the one that actually ran.
+    executed = record.request
+    if executed is not request:
+        raise SmokeFailure(
+            "the record does not carry the request that was executed")
     return {
         "ok": True,
         "mode": "ISOLATED_CONTRACT_SMOKE",
         "relation": relation,
         "eligible_catalogue": [c.check_kind.value for c in catalogue if c.eligible],
-        "mechanism_executed": record.check_kind.value,
+        "mechanism_executed": request.check_kind.value,
         "model_role": request.model_role,
+        "template_id": request.template_id,
+        "check_version": request.check_version,
+        "operation_id": request.operation_id,
+        # Execution evidence, from the record's own declared fields.
         "physical_calls": calls,
+        "record_calls": record.calls,
+        "origin_event_id": record.origin_event_id,
+        "prompt_sha256": record.prompt_sha256,
+        "model_id": record.model_id,
+        "model_revision": record.model_revision,
+        "independence_group": record.independence_group,
         "parse_status": record.parse_status.value,
+        "candidate_shown": record.candidate_shown,
+        "independent_recall": record.independent_recall,
+        "cross_model_eligible": record.cross_model_eligible,
+        "generated_tokens": record.generated_tokens,
+        "recalled_candidates": len(record.recalled_candidates),
+        "error": record.error,
         "entered_production_graph": False,
         "entered_shadow_graph": False,
     }

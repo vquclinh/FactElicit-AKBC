@@ -864,7 +864,8 @@ def test_no_hard_coded_mechanism_list_can_fake_coverage(harness):
     """Coverage is derived from what actually executed."""
     source = HARNESS.read_text()
     assert 'isolated["mechanism_executed"]' in source
-    assert 'record.check_kind.value' in source
+    # Derived from the executed request, which owns mechanism identity.
+    assert 'request.check_kind.value' in source
     for forbidden in ('= ["REVERSE"]', '= ["COUNTERFACTUAL"]',
                       '= ["CANDIDATE_FREE_RECALL"]', '= ["KEY_CONDITION"]',
                       'm18_real_weight_coverage"] = True'):
@@ -891,3 +892,152 @@ def test_the_isolated_smoke_reads_no_benchmark_data(harness):
         assert forbidden not in code.casefold(), forbidden
     # The subject is a literal declared right here.
     assert 'subject = "countryLandBordersCountry", "Portugal"' in code
+
+
+# ==========================================================================
+# Module 18 result-reporting contract
+#
+# The real run reached `execute(...)` and got a BidirectionalCheckRecord back,
+# then crashed building the summary: mechanism identity lives on the *request*,
+# not the record.
+# ==========================================================================
+
+
+def _m18_members(cls):
+    import dataclasses
+
+    return {f.name for f in dataclasses.fields(cls)} | {
+        name for name, value in vars(cls).items() if isinstance(value, property)}
+
+
+def test_mechanism_identity_is_owned_by_the_request_not_the_record():
+    from cover_kbc.verification.bidirectional_types import (
+        BidirectionalCheckRecord, BidirectionalCheckRequest, EligibleCheck)
+
+    # EligibleCheck owns it; the request re-exposes it; the record does not.
+    assert "check_kind" in _m18_members(EligibleCheck)
+    assert "check_kind" in _m18_members(BidirectionalCheckRequest)
+    assert "check_kind" not in _m18_members(BidirectionalCheckRecord)
+    # The record carries the request that produced it.
+    assert "request" in _m18_members(BidirectionalCheckRecord)
+    # And the canonical name is `check_kind`, not `kind`.
+    assert "kind" not in _m18_members(BidirectionalCheckRequest)
+
+
+def test_the_harness_reads_the_mechanism_from_the_executed_request():
+    code = _isolated_code()
+    assert '"mechanism_executed": request.check_kind.value' in code
+    # The exact request that was executed, asserted at run time.
+    assert "executed = record.request" in code
+    assert "if executed is not request:" in code
+
+
+def test_no_reference_to_record_check_kind_remains():
+    source = HARNESS.read_text()
+    assert "record.check_kind" not in source
+    assert "request.kind" not in source
+    for forbidden in ('getattr(record, "check_kind"', "catalogue[0].check_kind.value",
+                      '"mechanism_executed": "CANDIDATE_FREE_RECALL"'):
+        assert forbidden not in source, forbidden
+
+
+def test_every_m18_attribute_the_harness_reads_exists_in_production():
+    """The whole class of bug, checked once against the real dataclasses."""
+    import re
+
+    from cover_kbc.verification.bidirectional_types import (
+        BidirectionalCheckRecord, BidirectionalCheckRequest, EligibleCheck)
+
+    code = _isolated_code()
+    for name, cls in (("record", BidirectionalCheckRecord),
+                      ("request", BidirectionalCheckRequest)):
+        used = set(re.findall(rf"\b{name}\.([a-z_0-9]+)", code))
+        assert used, f"the harness reads nothing from {name}"
+        missing = used - _m18_members(cls)
+        assert not missing, f"{cls.__name__} has no {sorted(missing)}"
+    catalogue_reads = set(re.findall(r"\bc\.([a-z_0-9]+)", code))
+    assert not (catalogue_reads - _m18_members(EligibleCheck))
+
+
+def test_the_production_m18_types_are_unmodified():
+    assert subprocess.run(
+        ["git", "status", "--porcelain",
+         "src/cover_kbc/verification/bidirectional_types.py",
+         "src/cover_kbc/verification/bidirectional_verifier.py"],
+        capture_output=True, text=True, check=True).stdout == ""
+
+
+def _fake_m18_record(kind_value="CANDIDATE_FREE_RECALL", calls=1):
+    """A record built from the **real** production types. No stubs."""
+    from cover_kbc.verification.bidirectional_types import (
+        BidirectionalCheckKind, BidirectionalCheckRecord,
+        BidirectionalCheckRequest, CheckParseStatus, CheckTarget, EligibleCheck,
+        CheckTargetKind,
+    )
+
+    check = EligibleCheck(
+        check_kind=BidirectionalCheckKind(kind_value),
+        target=CheckTarget(
+            relation="countryLandBordersCountry", subject="Portugal", row_index=0,
+            kind=CheckTargetKind.ENTITY_CANDIDATE, target_id="spain",
+            display="Spain"),
+    )
+    request = BidirectionalCheckRequest(
+        check=check, template_id="t1", model_role="enumerator", sample_index=0,
+        decode_identity="default", check_version="m18-v1")
+    record = BidirectionalCheckRecord(
+        request=request, origin_event_id="origin0001", prompt_sha256="deadbeef",
+        model_id="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        model_revision="95a6d26c", model_family="mistral",
+        independence_group="M18_CANDIDATE_FREE_RECALL", raw_output="Spain",
+        parse_status=CheckParseStatus.OK, calls=calls, prompt_tokens=10,
+        generated_tokens=4)
+    return request, record
+
+
+def test_a_real_contract_record_produces_the_expected_summary(harness):
+    """Exercise the reporting path against genuine production objects."""
+    request, record = _fake_m18_record()
+    assert request.check_kind.value == "CANDIDATE_FREE_RECALL"
+    assert record.request is request
+    # The fields the harness reports all resolve.
+    assert record.origin_event_id == "origin0001"
+    assert record.parse_status.value == "OK"
+    assert request.operation_id
+
+
+def test_physical_call_evidence_is_still_required():
+    source = HARNESS.read_text()
+    assert "calls = runtime.calls - before" in source
+    assert "if calls <= 0:" in source
+    assert "real-weight evidence" in source
+    # Catalogue/build_request succeeding is never enough on its own.
+    code = _isolated_code()
+    assert code.index("verifier.execute(") < code.index("if calls <= 0:")
+
+
+def test_the_summary_records_canonical_execution_evidence():
+    code = _isolated_code()
+    for field in ('"mechanism_executed"', '"model_role"', '"physical_calls"',
+                  '"parse_status"', '"origin_event_id"', '"operation_id"',
+                  '"record_calls"'):
+        assert field in code, field
+
+
+def test_natural_and_isolated_lists_stay_separate_after_the_fix():
+    source = HARNESS.read_text()
+    assert '"m18_natural_mechanisms_executed"' in source
+    assert '"m18_isolated_contract_mechanisms_executed"' in source
+    assert 'summary["m18_real_weight_coverage"] = bool(' in source
+    # Isolated coverage is still derived from what executed.
+    assert 'isolated["mechanism_executed"]' in source
+
+
+def test_production_shadow_invariance_is_untouched_by_this_repair():
+    source = HARNESS.read_text()
+    assert "def compare_passes(" in source
+    assert '"production_output_unchanged"' in source
+    assert '"m7_budget_unchanged"' in source
+    # The isolated smoke still runs after the comparison.
+    driver = _driver_source()
+    assert driver.index("compare_passes(") < driver.index("isolated_m18_smoke(")
