@@ -49,6 +49,8 @@ from cover_kbc.elicitation.engine import ElicitationEngine
 from cover_kbc.elicitation.library import get_view, views_for
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
 from cover_kbc.models.base import LMRuntime, LogitsUnavailable
+from cover_kbc.query_intelligence.profiler import QueryProfiler
+from cover_kbc.query_intelligence.types import QueryRiskProfile
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.scoring import (
     DEFAULT_SCORING,
@@ -271,11 +273,18 @@ class CoverPipeline:
         *,
         tracer: RunTracer | None = None,
         verifier_runtime: LMRuntime | None = None,
+        profiler: "QueryProfiler | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
         self.engine = ElicitationEngine(runtime, seed=self.config.seed)
         self.tracer = tracer
+        # Module 9, shadow mode. ``None`` - the default - is the pre-M9 code
+        # path exactly. When present it observes each query at the M1 seam and
+        # appends to the buffer below; it never touches the graph, the budget or
+        # any decision, so predictions and call counts are unaffected.
+        self.profiler = profiler
+        self.query_profiles: list[QueryRiskProfile] = []
         # Falling back to the enumerator keeps the interface usable with one
         # model, but then no *cross-model* evidence is claimed anywhere.
         self.verifier_runtime = verifier_runtime or runtime
@@ -705,6 +714,11 @@ class CoverPipeline:
     def enumerate_query(self, query: Query) -> EvidenceGraph:
         """Phase A: gate + candidate discovery. Enumerator model only."""
         query, contract = compile_query(query.subject, query.relation, query.row_index)
+        # M0 -> M1 -> M9 -> acquisition. The profile is written to an
+        # observability buffer, never to the graph: Module 10 will be its first
+        # consumer, and until then nothing below may read it.
+        if self.profiler is not None:
+            self.query_profiles.append(self.profiler.profile(query, contract))
         graph = build_graph(query, contract)
         budget = self.config.budget(contract)
         state = RCSEState()

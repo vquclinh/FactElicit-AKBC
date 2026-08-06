@@ -31,6 +31,7 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, ExecutionMode, PipelineConfig
+from cover_kbc.query_intelligence import build_profiler
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.runtime.tracing import RunTracer
 
@@ -116,6 +117,9 @@ def main() -> int:
         pipeline_config.verifier_model_id = verifier_cfg.get("model_id", "")
         pipeline = CoverPipeline(
             runtime, pipeline_config, tracer=tracer, verifier_runtime=verifier_runtime,
+            # Module 9, shadow mode: profiles each query at the M1 seam and
+            # feeds nothing back into the run.
+            profiler=build_profiler(config.get("query_intelligence")),
         )
         result = pipeline.run(queries, progress=True)
 
@@ -129,6 +133,13 @@ def main() -> int:
     )
     write_trace(result.predictions, out_dir / "trace.jsonl")
     print(f"\npredictions : {predictions_path}")
+
+    if pipeline.query_profiles:
+        profiles_path = out_dir / "query_profiles.jsonl"
+        with profiles_path.open("w", encoding="utf-8") as handle:
+            for profile in pipeline.query_profiles:
+                handle.write(json.dumps(profile.to_json(), ensure_ascii=False) + "\n")
+        print(f"[M9] query profiles: {profiles_path}  ({len(pipeline.query_profiles)} queries)")
 
     if result.errors:
         (out_dir / "errors.json").write_text(json.dumps(result.errors, indent=2))

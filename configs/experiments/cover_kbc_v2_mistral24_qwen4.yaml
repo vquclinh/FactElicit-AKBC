@@ -134,3 +134,20 @@ pipeline:
       w_disagreement: 0.6
       w_instability: 0.8
       stop_threshold: 0.25
+
+# Module 9 - Risk & Difficulty Profiler (Query Intelligence layer).
+#
+# Shadow mode: M9 profiles every query at the M0 -> M1 -> M9 seam and writes
+# query_profiles.jsonl, but no M2-M8 decision reads the result. Module 10 will
+# be its first consumer. Enabling or disabling this cannot change predictions,
+# neural calls, candidate graphs or any core decision - that invariance is
+# asserted in tests/test_query_profiler.py.
+#
+# Priors live in src/cover_kbc/query_intelligence/priors.py, versioned by
+# profile_version. No value here was selected from TRAIN, VAL or TEST
+# performance; none is learned.
+query_intelligence:
+  profiler:
+    enabled: true
+    mode: shadow
+    profile_version: m9-v1

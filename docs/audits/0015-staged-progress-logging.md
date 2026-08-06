@@ -28,6 +28,8 @@ model load, persistence format, query ordering or evaluation was touched.
 
 No other file changed. `benchmark/` untouched. No Claude-specific files.
 
+
+
 ### How it works
 
 Phases A, B and the resume cycles already consumed a pipeline generator, so

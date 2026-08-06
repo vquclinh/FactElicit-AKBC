@@ -39,6 +39,7 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_config
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
+from cover_kbc.query_intelligence import build_profiler
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
@@ -52,6 +53,10 @@ RESUMED = "stage_r{cycle}_{role}.jsonl"
 #: compared against at output time, because phases may run separately and
 #: predictions must never be validated against themselves.
 QUERY_MANIFEST = "query_manifest.json"
+#: Module 9 observability artefact, written in Phase A. Deliberately its own
+#: file: folding risk profiles into an existing stage would change artefacts
+#: that must stay comparable across the M9 rollout.
+QUERY_PROFILES = "query_profiles.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -182,6 +187,23 @@ def _decide_reporter(total: int | None):
     return report
 
 
+def write_query_profiles(run_dir: Path, profiles) -> Path | None:
+    """Persist the Module 9 profiles produced by this phase.
+
+    Nothing downstream reads this file in this milestone - it exists so the
+    profiler can be inspected without touching any artefact that predates it.
+    Skipped entirely when profiling is off, so a disabled run leaves no trace.
+    """
+    if not profiles:
+        return None
+    path = run_dir / QUERY_PROFILES
+    with path.open("w", encoding="utf-8") as handle:
+        for profile in profiles:
+            handle.write(json.dumps(profile.to_json(), ensure_ascii=False) + "\n")
+    print(f"[M9] query profiles: {path}  ({len(profiles)} queries)", flush=True)
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -217,6 +239,10 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
     """Construct a pipeline loading only the models the phase needs."""
     enumerator_cfg, verifier_cfg = model_blocks(config)
     pipeline_cfg = PipelineConfig.from_mapping(config.get("pipeline"))
+    # Module 9 profiles at the M1 seam, which only Phase A crosses.
+    profiler = (
+        build_profiler(config.get("query_intelligence")) if phase == "enumerate" else None
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -239,7 +265,9 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
     # which runtime objects happen to be resident in this phase.
     pipeline_cfg.enumerator_model_id = enumerator_cfg.get("model_id", "")
     pipeline_cfg.verifier_model_id = verifier_cfg.get("model_id", "")
-    return CoverPipeline(runtime, pipeline_cfg, tracer=tracer, verifier_runtime=verifier)
+    return CoverPipeline(
+        runtime, pipeline_cfg, tracer=tracer, verifier_runtime=verifier, profiler=profiler
+    )
 
 
 def phase_enumerate(args, config: dict) -> Path:
@@ -295,6 +323,7 @@ def phase_enumerate(args, config: dict) -> Path:
             for graph in stream:
                 writer.write(graph)
 
+    write_query_profiles(run_dir, pipeline.query_profiles)
     manifest.finish()
     manifest.write(run_dir / "manifest_enumerate.json")
     print(json.dumps(stage_summary(run_dir / ENUMERATED), indent=2))
