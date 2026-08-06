@@ -294,6 +294,23 @@ def test_a_role_mismatch_would_be_caught_at_run_time(harness):
 # ==========================================================================
 
 
+def _isolated_code() -> str:
+    """`isolated_m18_smoke` with its docstring removed.
+
+    The docstring explains what the function must not touch, so a raw substring
+    scan would fire on the very prose that records the prohibition.
+    """
+    tree = ast.parse(HARNESS.read_text())
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "isolated_m18_smoke")
+    body = [n for n in function.body
+            if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+                    and isinstance(n.value.value, str))]
+    return "\n".join(
+        ast.get_source_segment(HARNESS.read_text(), n) or "" for n in body)
+
+
 def _driver_source() -> str:
     """`main()` only — phase ordering is a property of the driver."""
     tree = ast.parse(HARNESS.read_text())
@@ -733,3 +750,144 @@ def test_the_production_runtime_and_label_mapping_stay_unchanged():
 
     assert LABEL_TOKENS == {"VALID": "A", "INVALID": "B", "UNKNOWN": "C"}
     assert "labels = dict(LABEL_TOKENS)" in HARNESS.read_text()
+
+
+# ==========================================================================
+# Module 18 real-weight coverage
+#
+# The composed passes catalogue M18 and execute nothing, which is correct:
+# scheduling belongs to Module 20/21 and both are disabled. So an *isolated*
+# contract smoke supplies the real-weight evidence, and must never be able to
+# masquerade as a natural firing.
+# ==========================================================================
+
+
+def test_natural_m18_coverage_is_reported_separately_and_untouched(harness):
+    source = HARNESS.read_text()
+    assert '"m18_natural_mechanisms_executed"' in source
+    assert '"m18_isolated_contract_mechanisms_executed"' in source
+    assert '"m18_real_weight_coverage"' in source
+    # Natural coverage is read from the composed passes, never assigned a value.
+    assert 'natural = summary["composed"]["m18_mechanisms_executed"]' in source
+    assert 'summary["m18_natural_mechanisms_executed"] = natural' in source
+
+
+def test_the_isolated_smoke_runs_only_when_natural_coverage_is_empty(harness):
+    driver = _driver_source()
+    assert "if natural:" in driver
+    branch = driver[driver.index("if natural:"):]
+    # The true branch records an empty isolated list; the else branch runs it.
+    assert '"m18_isolated_contract_mechanisms_executed"] = []' in branch
+    assert "isolated_m18_smoke(config, staged)" in branch
+    assert branch.index("= []") < branch.index("isolated_m18_smoke(")
+
+
+def test_the_isolated_smoke_uses_the_real_production_seam(harness):
+    """`catalogue` -> `build_request` -> `execute` on the real verifier."""
+    source = HARNESS.read_text()
+    assert ("from cover_kbc.verification.bidirectional_verifier import "
+            "BidirectionalVerifier") in source
+    for call in ("verifier.catalogue(consensus)", "verifier.build_request(check)",
+                 "verifier.execute("):
+        assert call in source, call
+    # No local duplicate of M18, and no bypass of its eligibility guard.
+    for forbidden in ("def _reverse_prompt", "def _counterfactual", "monkeypatch",
+                      "eligible = True", "check.eligible = "):
+        assert forbidden not in source, forbidden
+    # It reads the real eligibility flag rather than assuming it.
+    assert "if check.eligible" in source
+
+
+def test_the_isolated_state_is_hand_declared_and_contract_derived():
+    """Synthetic consensus, but every derived field comes from production."""
+    from cover_kbc.contracts.router import compile_query
+    from cover_kbc.evidence.consensus_adapters import (
+        applicable_specialist, candidate_kind)
+    from cover_kbc.evidence.consensus_types import (
+        CandidateConsensusState, QueryConsensusResult)
+    from cover_kbc.verification.bidirectional_verifier import BidirectionalVerifier
+
+    relation, subject = "countryLandBordersCountry", "Portugal"
+    _, contract = compile_query(subject, relation, 0)
+    consensus = QueryConsensusResult(
+        consensus_version="m16-v1", relation=relation, subject=subject,
+        row_index=0, applicable_specialist=applicable_specialist(relation),
+        candidates=(CandidateConsensusState(
+            relation=relation, subject=subject, row_index=0,
+            candidate_key="spain", display="Spain",
+            candidate_kind=candidate_kind(contract)),))
+
+    catalogue = BidirectionalVerifier().catalogue(consensus)
+    eligible = [c for c in catalogue if c.eligible]
+    assert eligible, "the isolated state must be genuinely eligible"
+    # A real mechanism, from the contract's own declarations.
+    assert {c.check_kind.value for c in eligible} <= {
+        "REVERSE", "KEY_CONDITION", "COUNTERFACTUAL", "CANDIDATE_FREE_RECALL"}
+
+
+def test_isolated_evidence_cannot_enter_a_production_or_shadow_graph(harness):
+    source = HARNESS.read_text()
+    code = _isolated_code()
+    # It builds its own consensus and touches no pipeline.
+    assert "QueryConsensusResult(" in code
+    for forbidden in ("pipeline", "staged_pass", "bidirectional_results",
+                      "layer4_results", "decide_graph", "enumerate_query"):
+        assert forbidden not in code, forbidden
+    source = HARNESS.read_text()
+    assert '"entered_production_graph": False' in source
+    assert '"entered_shadow_graph": False' in source
+
+
+def test_isolated_execution_cannot_move_production_accounting(harness):
+    """It runs after `compare_passes`, so the invariance verdict precedes it."""
+    driver = _driver_source()
+    compare = driver.index('summary["composed"] = compare_passes(')
+    isolated = driver.index("isolated_m18_smoke(config, staged)")
+    assert compare < isolated
+    function = HARNESS.read_text()
+    section = function[function.index("def isolated_m18_smoke"):
+                       function.index("def uncalibrated_activation_fails")]
+    # No prediction, no budget, no stop reason is produced or touched.
+    for forbidden in ("object_entities", "calls_used", "generated_tokens_used",
+                      "stopped_reason", "Budget"):
+        assert forbidden not in section, forbidden
+
+
+def test_the_isolated_smoke_requires_a_real_physical_call(harness):
+    source = HARNESS.read_text()
+    assert "calls = runtime.calls - before" in source
+    assert "if calls <= 0:" in source
+    assert "real-weight evidence" in source
+
+
+def test_no_hard_coded_mechanism_list_can_fake_coverage(harness):
+    """Coverage is derived from what actually executed."""
+    source = HARNESS.read_text()
+    assert 'isolated["mechanism_executed"]' in source
+    assert 'record.check_kind.value' in source
+    for forbidden in ('= ["REVERSE"]', '= ["COUNTERFACTUAL"]',
+                      '= ["CANDIDATE_FREE_RECALL"]', '= ["KEY_CONDITION"]',
+                      'm18_real_weight_coverage"] = True'):
+        assert forbidden not in source, forbidden
+    # Coverage is a boolean over the two observed lists.
+    assert 'summary["m18_real_weight_coverage"] = bool(' in source
+
+
+def test_the_isolated_smoke_preserves_staged_single_residency(harness):
+    source = HARNESS.read_text()
+    function = source[source.index("def isolated_m18_smoke"):
+                      source.index("def uncalibrated_activation_fails")]
+    assert "staged.load(StagedRuntimes.ENUMERATOR)" in function
+    assert "staged.release()" in function
+    assert function.index("staged.load(") < function.index("staged.release()")
+    # Only the role the mechanism genuinely needs.
+    assert "StagedRuntimes.VERIFIER" not in function
+
+
+def test_the_isolated_smoke_reads_no_benchmark_data(harness):
+    code = _isolated_code()
+    for forbidden in ("load_dataset", "benchmark", "gold", "split",
+                      "objectentities"):
+        assert forbidden not in code.casefold(), forbidden
+    # The subject is a literal declared right here.
+    assert 'subject = "countryLandBordersCountry", "Portugal"' in code

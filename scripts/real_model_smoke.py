@@ -589,6 +589,88 @@ def compare_passes(core: dict, upgraded: dict) -> dict:
     return result
 
 
+def isolated_m18_smoke(config: dict, staged: StagedRuntimes) -> dict:
+    """One real-weight Module 18 mechanism, run in isolation. **Test evidence.**
+
+    The composed passes catalogue Module 18's eligible checks and execute none,
+    which is correct: `pipeline._catalogue_bidirectional_checks` spends nothing,
+    and choosing which check is worth a call is Module 20/21's job. Both are
+    disabled, so `m18_natural_mechanisms_executed` is legitimately empty.
+
+    This runs the production seam - `catalogue` -> `build_request` -> `execute`
+    on the real `BidirectionalVerifier` - over a hand-declared synthetic
+    consensus, so the mechanism is genuinely exercised against real weights.
+
+    It is **isolated by construction**: it builds its own consensus object,
+    never touches a production or shadow graph, and returns without writing to
+    any pipeline. Nothing here can move `ObjectEntities`, Module 7's budget or a
+    production stop reason.
+    """
+    from cover_kbc.contracts.router import compile_query
+    from cover_kbc.evidence.consensus_adapters import (
+        applicable_specialist, candidate_kind,
+    )
+    from cover_kbc.evidence.consensus_types import (
+        CandidateConsensusState, QueryConsensusResult,
+    )
+    from cover_kbc.verification.bidirectional_verifier import BidirectionalVerifier
+
+    # A hand-declared synthetic state. No benchmark row, no gold. Every derived
+    # field comes from the production helpers, so the state Module 18 sees obeys
+    # the same contract a real consensus would.
+    relation, subject = "countryLandBordersCountry", "Portugal"
+    _, contract = compile_query(subject, relation, 0)
+    consensus = QueryConsensusResult(
+        consensus_version="m16-v1", relation=relation, subject=subject,
+        row_index=0, applicable_specialist=applicable_specialist(relation),
+        candidates=(CandidateConsensusState(
+            relation=relation, subject=subject, row_index=0,
+            candidate_key="spain", display="Spain",
+            candidate_kind=candidate_kind(contract),
+        ),),
+    )
+
+    verifier = BidirectionalVerifier()
+    catalogue = verifier.catalogue(consensus)
+    eligible = [check for check in catalogue if check.eligible]
+    if not eligible:
+        raise SmokeFailure(
+            "the isolated Module 18 state produced no eligible check; the "
+            "mechanism cannot be exercised faithfully without weakening its "
+            "eligibility guard"
+        )
+
+    # One mechanism, chosen deterministically from what the contract declares.
+    check = eligible[0]
+    request = verifier.build_request(check)
+
+    runtime = staged.load(StagedRuntimes.ENUMERATOR)
+    before = runtime.calls
+    record = verifier.execute(
+        request, contract, runtime,
+        primary_model_family=getattr(runtime.spec, "family", ""),
+    )
+    calls = runtime.calls - before
+    staged.release()
+
+    if calls <= 0:
+        raise SmokeFailure(
+            "the isolated Module 18 check made no physical call; this is not "
+            "real-weight evidence")
+    return {
+        "ok": True,
+        "mode": "ISOLATED_CONTRACT_SMOKE",
+        "relation": relation,
+        "eligible_catalogue": [c.check_kind.value for c in catalogue if c.eligible],
+        "mechanism_executed": record.check_kind.value,
+        "model_role": request.model_role,
+        "physical_calls": calls,
+        "parse_status": record.parse_status.value,
+        "entered_production_graph": False,
+        "entered_shadow_graph": False,
+    }
+
+
 def uncalibrated_activation_fails() -> dict:
     """Module 20/21 must still refuse to activate without TRAIN packages."""
     from cover_kbc.control.micro_planner import MicroPlannerConfig
@@ -702,6 +784,25 @@ def main() -> int:
 
         phase = "compare"
         summary["composed"] = compare_passes(core, upgraded)
+
+        # Natural coverage first; the isolated contract smoke only runs when
+        # the composed passes genuinely executed no mechanism.
+        natural = summary["composed"]["m18_mechanisms_executed"]
+        summary["m18_natural_mechanisms_executed"] = natural
+        if natural:
+            summary["m18_isolated_contract_mechanisms_executed"] = []
+            summary["m18_isolated"] = None
+        else:
+            phase, active_role = "m18_isolated", StagedRuntimes.ENUMERATOR
+            print("[M18] no natural mechanism fired; isolated contract smoke ...",
+                  flush=True)
+            isolated = isolated_m18_smoke(config, staged)
+            summary["m18_isolated"] = isolated
+            summary["m18_isolated_contract_mechanisms_executed"] = [
+                isolated["mechanism_executed"]]
+        summary["m18_real_weight_coverage"] = bool(
+            summary["m18_natural_mechanisms_executed"]
+            or summary["m18_isolated_contract_mechanisms_executed"])
         summary["staged_roles_observed"] = staged.history
         summary["shared_profile"] = staged.shared_profile
 
