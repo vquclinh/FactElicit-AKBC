@@ -328,3 +328,30 @@ relation_budget_scheduler:
   mode: shadow
   scheduler_version: m20-v1
   calibration_file: null
+
+# Layer 6 - Module 21 Expected-Value Micro-Planner.
+#
+# Proposal §17:
+#   U_t(a) = alpha*G_verified(a) + beta*dR(a) + gamma*dH(a)
+#          - delta*Cost(a) - eta*Redundancy(a) - kappa*FP(a)
+#   a* = argmax U_t(a) if U_t(a*) > tau_continue, otherwise STOP.
+#
+# "1-2 step micro-lookahead over a small action space." No MCTS, no beam
+# search, no third step. Zero neural calls: M21 reasons over recorded state
+# and deterministic historical statistics, and executes nothing.
+#
+# DISABLED, AND DELIBERATELY UNCALIBRATED. §17 states the estimates come from
+# relation-specific historical bins on TRAIN, and supplies no value for any of
+# alpha, beta, gamma, delta, eta, kappa or tau_continue. No TRAIN bins have
+# been built. Shipping invented coefficients would produce confident-looking
+# decisions with nothing behind them, so enabling the planner without both a
+# history package and a calibration fails loudly.
+#
+# M7 remains the production controller and M8 the finaliser; M21 selects
+# nothing in production and its decision is observability only.
+micro_planner:
+  enabled: false
+  mode: shadow
+  planner_version: m21-v1
+  historical_bins: null
+  planner_calibration: null

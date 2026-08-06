@@ -1190,10 +1190,22 @@ def test_no_module_21_logic_exists():
                       "next_action", "should_stop", "tau_continue",
                       "continue_threshold", "micro_planner", "choose_next"):
         assert forbidden not in blob, forbidden
-    assert not Path("src/cover_kbc/control/micro_planner.py").exists()
-    assert not any(
-        "m21" in p.name.casefold()
-        for p in Path("src/cover_kbc/control").iterdir())
+    # Module 21 now shares the Layer-6 package, which is correct. What must
+    # stay true is that *Module 20's own modules* contain none of its logic -
+    # the scan above covers exactly those - and that Module 20 never imports
+    # it, so budget accounting cannot come to depend on action value.
+    for name in M20_MODULES:
+        tree = ast.parse((Path("src/cover_kbc/control") / name).read_text())
+        for node in ast.walk(tree):
+            imported = (
+                [a.name for a in node.names] if isinstance(node, ast.Import)
+                else [node.module or ""] if isinstance(node, ast.ImportFrom)
+                else []
+            )
+            for module in imported:
+                for forbidden in ("micro_planner", "planner_types",
+                                  "historical_bins"):
+                    assert forbidden not in module, (name, module)
 
 
 def test_module_20_selects_no_action():

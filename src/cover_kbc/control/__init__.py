@@ -1,4 +1,4 @@
-"""Layer 6 control plane - Module 20's relation budget scheduler.
+"""Layer 6 control plane - Module 20's budget scheduler and Module 21's planner.
 
 Named ``control`` rather than ``controller`` because core Module 7 already owns
 ``cover_kbc.controller`` and remains the production authority. Module 20 is a
@@ -6,7 +6,9 @@ Named ``control`` rather than ``controller`` because core Module 7 already owns
 envelopes and holds precharges, and it makes no call, chooses no action and
 decrements no production budget.
 
-Module 21 is not implemented and has no placeholder here.
+Module 21 sits beside it, also shadow: it ranks *actions* by expected value and
+returns one or STOP, and executes nothing. Module 7 remains the production
+controller and Module 8 the finaliser.
 """
 
 from cover_kbc.control.budget_accounting import (
@@ -18,6 +20,44 @@ from cover_kbc.control.budget_accounting import (
     specialist_verification_plan,
     structural_check_plan,
     total_calls,
+)
+from cover_kbc.control.historical_bins import (
+    ESTIMATE_UNITS,
+    HISTORY_SCHEMA_VERSION,
+    REQUIRED_ESTIMATES,
+    HistoricalActionBin,
+    HistoricalBinPackage,
+    StateBinningSpec,
+    SuccessorStat,
+    load_history,
+    state_bin_key,
+    validate_bins,
+)
+from cover_kbc.control.micro_planner import (
+    MicroPlanner,
+    MicroPlannerConfig,
+    build_micro_planner,
+    core_action_family,
+    load_planner_calibration,
+    state_signature,
+    utility,
+)
+from cover_kbc.control.planner_types import (
+    PLANNER_DISCLAIMER,
+    PLANNER_VERSION,
+    ActionExecutionStatus,
+    ActionFamily,
+    ActionUtilityBreakdown,
+    DecisionKind,
+    DeniedAction,
+    EstimateSource,
+    MicroPlannerDecision,
+    PlannerActionCandidate,
+    PlannerCalibration,
+    PlannerError,
+    PlannerStateSnapshot,
+    StopReason,
+    SuccessorDiagnostics,
 )
 from cover_kbc.control.budget_types import (
     COST_SCHEMA_VERSION,
@@ -63,11 +103,10 @@ from cover_kbc.control.relation_budget import (
 )
 
 __all__ = [
-    "COST_SCHEMA_VERSION",
-    "RELATION_BUDGET_POLICIES",
-    "RESOURCE_DISCLAIMER",
-    "SCHEDULER_VERSION",
     "ActionCost",
+    "ActionExecutionStatus",
+    "ActionFamily",
+    "ActionUtilityBreakdown",
     "BudgetActionDescriptor",
     "BudgetDemandTier",
     "BudgetDenial",
@@ -80,12 +119,32 @@ __all__ = [
     "BudgetSchedulerError",
     "BudgetSettlement",
     "BudgetSpendClass",
+    "COST_SCHEMA_VERSION",
     "CacheDisposition",
     "CalibrationSource",
     "CallKind",
     "CoreBudgetSnapshot",
+    "DecisionKind",
+    "DeniedAction",
+    "ESTIMATE_UNITS",
+    "EstimateSource",
+    "HISTORY_SCHEMA_VERSION",
+    "HistoricalActionBin",
+    "HistoricalBinPackage",
+    "MicroPlanner",
+    "MicroPlannerConfig",
+    "MicroPlannerDecision",
+    "PLANNER_DISCLAIMER",
+    "PLANNER_VERSION",
     "PhysicalCallRecord",
+    "PlannerActionCandidate",
+    "PlannerCalibration",
+    "PlannerError",
+    "PlannerStateSnapshot",
     "QualitativeRelationBudgetPolicy",
+    "RELATION_BUDGET_POLICIES",
+    "REQUIRED_ESTIMATES",
+    "RESOURCE_DISCLAIMER",
     "RelationBudgetCalibration",
     "RelationBudgetConfig",
     "RelationBudgetPlan",
@@ -94,19 +153,32 @@ __all__ = [
     "ReplayReconciliation",
     "ReservationStatus",
     "RiskBudgetDemand",
+    "SCHEDULER_VERSION",
     "SpecialReservePurpose",
+    "StateBinningSpec",
+    "StopReason",
     "SubCall",
+    "SuccessorDiagnostics",
+    "SuccessorStat",
+    "build_micro_planner",
     "build_plan",
     "build_relation_budget_scheduler",
     "classify_generation_record",
+    "core_action_family",
     "generation_call",
     "load_calibrations",
+    "load_history",
+    "load_planner_calibration",
     "relation_policy",
     "replay_physical_calls",
     "reservation_id",
     "risk_demand",
     "score_label_call",
     "specialist_verification_plan",
+    "state_bin_key",
+    "state_signature",
     "structural_check_plan",
     "total_calls",
+    "utility",
+    "validate_bins",
 ]

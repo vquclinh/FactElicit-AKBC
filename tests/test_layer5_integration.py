@@ -1229,9 +1229,9 @@ def test_no_dola_and_no_new_model_dependency():
             "enabled", "mode", "estimator_version", "weights"}
         assert config["coverage_gap"]["enabled"] is False
         layer5 = json.dumps(config["coverage_gap"]).casefold()
-        for forbidden in ("m20", "m21", "budget", "reserve", "utility"):
+        for forbidden in ("m20", "m21", "budget", "reserve", "utility",
+                          "tau", "planner"):
             assert forbidden not in layer5, forbidden
-        assert "m21" not in json.dumps(config).casefold()
         models = json.dumps(config.get("models", {})).casefold()
         assert "dola" not in models
 

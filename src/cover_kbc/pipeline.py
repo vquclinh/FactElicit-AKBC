@@ -53,6 +53,11 @@ from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusRes
 from cover_kbc.coverage_gap.facet_coverage import discovery_origins, facet_executions
 from cover_kbc.coverage_gap.gap_types import CoverageGapState
 from cover_kbc.control.budget_types import RelationBudgetResult
+from cover_kbc.control.micro_planner import MicroPlanner
+from cover_kbc.control.planner_types import (
+    MicroPlannerDecision,
+    PlannerStateSnapshot,
+)
 from cover_kbc.control.relation_budget import RelationBudgetScheduler
 from cover_kbc.coverage_gap.missingness import CoverageGapEstimator
 from cover_kbc.evidence.layer4 import Layer4EvidenceIntegrator, prior_family_map
@@ -313,6 +318,7 @@ class CoverPipeline:
         layer4_integrator: "Layer4EvidenceIntegrator | None" = None,
         coverage_gap_estimator: "CoverageGapEstimator | None" = None,
         relation_budget_scheduler: "RelationBudgetScheduler | None" = None,
+        micro_planner: "MicroPlanner | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -451,6 +457,19 @@ class CoverPipeline:
             )
         self.relation_budget_scheduler = relation_budget_scheduler
         self.relation_budget_results: list[RelationBudgetResult] = []
+        # Module 21, shadow. Ranks actions and returns one or STOP; it executes
+        # nothing, reserves nothing and mutates nothing. Module 7 still drives
+        # production and Module 8 still finalises.
+        if micro_planner is not None and (
+            coverage_gap_estimator is None or relation_budget_scheduler is None
+        ):
+            raise ValueError(
+                "the micro-planner (M21) needs Module 19's coverage state and "
+                "Module 20's budget state; Appendix C gives it the full state "
+                "and it may not reconstruct a missing layer"
+            )
+        self.micro_planner = micro_planner
+        self.micro_planner_results: list[MicroPlannerDecision] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -1571,6 +1590,8 @@ class CoverPipeline:
             self._integrate_layer4(result, graph)
             if self.coverage_gap_estimator is not None:
                 self._estimate_coverage_gap(result, graph.contract)
+                if self.micro_planner is not None:
+                    self._plan_micro_action(result, graph.contract)
 
     def _estimate_coverage_gap(
         self, consensus: QueryConsensusResult, contract: RelationContract
@@ -1593,6 +1614,50 @@ class CoverPipeline:
                 ),
             )
         )
+
+    def _plan_micro_action(
+        self, consensus: QueryConsensusResult, contract: RelationContract
+    ) -> None:
+        """Rank actions and select one, or STOP. **Zero calls, no execution.**
+
+        Sits after Layer 4, Module 19 and Module 20 because §17 plans over the
+        full state. The decision is recorded and nothing acts on it: Module 7
+        still drives production and Module 8 still finalises.
+
+        The legal-action list is empty here on purpose. No module yet exposes an
+        owner-declared legal-action surface, and Module 21 may not invent
+        legality from a weak facet or a high residual - so the honest live
+        decision is STOP with reason ``NO_LEGAL_ACTION`` until such a surface
+        exists. Layer-6 integration will supply it.
+        """
+        budget = self._relation_budget_for(consensus)
+        state = PlannerStateSnapshot(
+            subject=consensus.subject, relation=consensus.relation,
+            row_index=consensus.row_index,
+            program_type=contract.program_type.value,
+            risk_profile=self._profile_for_consensus(consensus),
+            layer4=self.layer4_results[-1],
+            coverage_gap=self.coverage_gap_results[-1],
+            budget_plan=budget.plan if budget else None,
+            budget_ledger=None,
+        )
+        self.micro_planner_results.append(self.micro_planner.plan(state, ()))
+
+    def _relation_budget_for(self, consensus: QueryConsensusResult):
+        for result in self.relation_budget_results:
+            if (result.relation == consensus.relation
+                    and result.subject == consensus.subject
+                    and result.row_index == consensus.row_index):
+                return result
+        return None
+
+    def _profile_for_consensus(self, consensus: QueryConsensusResult):
+        for profile in self.query_profiles:
+            if (profile.relation == consensus.relation
+                    and profile.subject == consensus.subject
+                    and profile.row_index == consensus.row_index):
+                return profile
+        return None
 
     def _specialist_result_or_none(self, consensus: QueryConsensusResult):
         """The applicable specialist result, or None when it never ran."""
