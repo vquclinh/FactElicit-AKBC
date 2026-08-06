@@ -1,13 +1,73 @@
 """Layer 2 relation-family specialists.
 
 Implemented: **M12 Numeric Specialist** (``hasCapacity``, ``hasArea``) and
-**M13 Large-Open-Set Specialist** (``awardWonBy``). They are **siblings over
-disjoint relations**: either may be enabled without the other, and neither
-imports the other. Nothing here is a placeholder for the unimplemented
-specialists - M14 (null/temporal) and M15 (small-set closure) get their files
-when they get their milestones, as do the consensus engine, the verifier suite
-and the control modules above them.
+**M13 Large-Open-Set Specialist** (``awardWonBy``) and **M14 Null/Temporal
+Specialist** (``personHasCityOfDeath``). They are **siblings over disjoint
+relations**: any may be enabled without the others, and none imports another.
+Nothing here is a placeholder for the unimplemented specialists - M15
+(small-set closure) gets its files when it gets its milestone, as do the
+consensus engine, the verifier suite and the control modules above them.
 """
+
+from cover_kbc.specialists.null_temporal_registry import (
+    DEATH_LOCALITY_CUES,
+    LOCALITY_CUES,
+    NO_KNOWN_LOCALITY_CUES,
+    NON_LOCALITY_CONTRACT_RULES,
+    NULL_TEMPORAL_RELATIONS,
+    NULL_TEMPORAL_VERSION,
+    STATUS_CUES,
+    LocalityCue,
+    NullTemporalRelationSpec,
+    ProbeTemplate,
+    StatusCue,
+    UnsupportedNullTemporalRelation,
+    check_null_temporal_registry_consistency,
+    locality_taxonomy,
+    null_temporal_spec,
+)
+from cover_kbc.specialists.null_temporal_registry import (
+    probe_catalogue as null_temporal_probe_catalogue,
+)
+from cover_kbc.specialists.null_temporal_specialist import (
+    LOCALITY_SYSTEM_PROMPT,
+    STATUS_SYSTEM_PROMPT,
+    NullTemporalSpecialist,
+    NullTemporalSpecialistConfig,
+    NullTemporalSpecialistError,
+    build_null_evidence,
+    build_null_temporal_specialist,
+    classify_locality,
+    extract_localities,
+    normalise_locality,
+    asserts_relation_level_absence,
+    is_epistemic_abstention,
+    is_explicit_empty_sentinel,
+    parse_death_status,
+    read_gate,
+    states_no_known_locality,
+)
+from cover_kbc.specialists.null_temporal_specialist import (
+    build_occurrences as build_locality_occurrences,
+)
+from cover_kbc.specialists.null_temporal_types import (
+    DeathStatus,
+    DeathStatusObservation,
+    GateReading,
+    GateState,
+    LocalityMentionKind,
+    LocalityObservation,
+    LocalityOccurrence,
+    LocalityProbeFamily,
+    NullEvidenceKind,
+    NullEvidenceState,
+    NullTemporalParseStatus,
+    NullTemporalProbe,
+    NullTemporalSpecialistPlan,
+    NullTemporalSpecialistResult,
+    RecallFamily,
+    StatusProbeFamily,
+)
 
 from cover_kbc.specialists.large_set_registry import (
     AWARD_MENTION_CUES,
@@ -91,6 +151,55 @@ from cover_kbc.specialists.numeric_types import (
 
 __all__ = [
     "AWARD_MENTION_CUES",
+    "DEATH_LOCALITY_CUES",
+    "DeathStatus",
+    "DeathStatusObservation",
+    "GateReading",
+    "GateState",
+    "LOCALITY_CUES",
+    "LOCALITY_SYSTEM_PROMPT",
+    "LocalityCue",
+    "LocalityMentionKind",
+    "LocalityObservation",
+    "LocalityOccurrence",
+    "LocalityProbeFamily",
+    "NON_LOCALITY_CONTRACT_RULES",
+    "NO_KNOWN_LOCALITY_CUES",
+    "NULL_TEMPORAL_RELATIONS",
+    "NULL_TEMPORAL_VERSION",
+    "NullEvidenceKind",
+    "NullEvidenceState",
+    "NullTemporalParseStatus",
+    "NullTemporalProbe",
+    "NullTemporalRelationSpec",
+    "NullTemporalSpecialist",
+    "NullTemporalSpecialistConfig",
+    "NullTemporalSpecialistError",
+    "NullTemporalSpecialistPlan",
+    "NullTemporalSpecialistResult",
+    "ProbeTemplate",
+    "RecallFamily",
+    "STATUS_CUES",
+    "STATUS_SYSTEM_PROMPT",
+    "StatusCue",
+    "StatusProbeFamily",
+    "UnsupportedNullTemporalRelation",
+    "build_locality_occurrences",
+    "build_null_evidence",
+    "build_null_temporal_specialist",
+    "check_null_temporal_registry_consistency",
+    "classify_locality",
+    "extract_localities",
+    "locality_taxonomy",
+    "normalise_locality",
+    "null_temporal_probe_catalogue",
+    "null_temporal_spec",
+    "asserts_relation_level_absence",
+    "is_epistemic_abstention",
+    "is_explicit_empty_sentinel",
+    "parse_death_status",
+    "read_gate",
+    "states_no_known_locality",
     "AwardCandidateObservation",
     "AwardMentionKind",
     "CandidateOccurrence",

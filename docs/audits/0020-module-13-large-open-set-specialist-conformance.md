@@ -15,6 +15,8 @@ facets, mine Module 11's recall, and collect **atomic** candidate mentions with
 full provenance and descriptive per-facet yield.
 
 In scope: the typed contract, the facet and near-miss registries, atomic
+
+
 extraction, occurrence and facet aggregation, configuration, the observability
 artefact, and the M11→M13 seam.
 

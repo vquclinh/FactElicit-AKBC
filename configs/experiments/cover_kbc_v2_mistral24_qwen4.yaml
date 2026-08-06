@@ -220,3 +220,27 @@ specialists:
     mode: shadow
     specialist_version: m13-v1
     mine_parametric_memory: true
+
+  # Module 14 - Null/Temporal Specialist (personHasCityOfDeath).
+  #
+  # DISABLED BY DEFAULT: it spends real neural calls, and its output feeds no
+  # production decision until M16/M17/M18 exist. Requires M9, M10 and M11 - but
+  # NOT M12 or M13: the three specialists are siblings over disjoint relations.
+  #
+  # Stage A asks whether a death exists; the local gate decides whether Stage B
+  # may spend calls looking for a locality. Nothing here accepts a city or
+  # declares an answer empty - see §10.3's three distinct NULL-evidence classes.
+  #
+  # cross_family_recall is §10.2's branch. It runs only when enabled AND a
+  # genuinely distinct second model family is configured AND Module 9 graded the
+  # relation temporally sensitive. It makes no claim that either frozen
+  # checkpoint is fresher than the other; "cross-family" is an architectural
+  # role, not a statement about knowledge cutoffs.
+  null_temporal:
+    enabled: false
+    mode: shadow
+    specialist_version: m14-v1
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    mine_parametric_memory: true

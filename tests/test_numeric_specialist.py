@@ -114,8 +114,16 @@ def _code_without_prose(name: str) -> str:
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type == tokenize.COMMENT:
             continue
-        if token.type == tokenize.STRING and token.string.strip("\"'bruBRU") in docstrings:
-            continue
+        if token.type == tokenize.STRING:
+            try:
+                # Compare the *value*, not the literal: a docstring containing
+                # an escape (``\\--``) has a source form that never equals what
+                # ``ast.get_docstring`` returns, and a literal comparison would
+                # silently leave it in the scanned text.
+                if ast.literal_eval(token.string) in docstrings:
+                    continue
+            except (ValueError, SyntaxError):  # pragma: no cover - exotic literals
+                pass
         kept.append(token.string)
     return " ".join(kept)
 
@@ -806,20 +814,36 @@ def test_no_control_logic_anywhere_in_m12():
 
 
 def test_only_the_implemented_specialists_exist():
-    """M13 landed as a sibling; M14-M21 still have no files."""
+    """M13 and M14 landed as siblings; M15-M21 still have no files."""
     root = Path("src/cover_kbc/specialists")
     assert sorted(p.name for p in root.glob("*.py")) == [
         "__init__.py",
         "large_set_registry.py", "large_set_specialist.py", "large_set_types.py",
+        "null_temporal_registry.py", "null_temporal_specialist.py",
+        "null_temporal_types.py",
         "numeric_registry.py", "numeric_specialist.py", "numeric_types.py",
     ]
 
 
-def test_m12_does_not_depend_on_m13():
-    """Siblings over disjoint relations: neither imports the other."""
+def test_m12_does_not_depend_on_its_siblings():
+    """Siblings over disjoint relations: none imports another.
+
+    Import-level, not textual: ``build_numeric_specialist`` names the sibling
+    *config keys* so it can reject genuinely unknown ones, and naming a key is
+    not depending on a module.
+    """
     for name in M12_MODULES:
-        source = (Path("src/cover_kbc/specialists") / name).read_text()
-        assert "large_set" not in source, f"{name} references M13"
+        tree = ast.parse((Path("src/cover_kbc/specialists") / name).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                modules = [node.module or ""]
+            elif isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            else:
+                continue
+            for module in modules:
+                for sibling in ("large_set", "null_temporal"):
+                    assert sibling not in module, f"{name} imports {module}"
     # And M12 still builds with M13 absent from config entirely.
     assert isinstance(
         build_numeric_specialist(
@@ -1188,10 +1212,11 @@ def test_unsupported_mode_and_unknown_keys_are_rejected():
         NumericSpecialist(NumericSpecialistConfig(enabled=True, mode="production"))
     with pytest.raises(ValueError, match="unknown specialists.numeric key"):
         NumericSpecialistConfig.from_mapping({"enabled": True, "enabledd": True})
-    # `large_open_set` (M13) became valid when that module landed; M14-M21 have not.
+    # `large_open_set` (M13) and `null_temporal` (M14) became valid as those
+    # modules landed; M15-M21 have not.
     with pytest.raises(ValueError, match="unknown specialists key"):
         build_numeric_specialist(
-            {"numeric": {"enabled": True}, "null_temporal": {}},
+            {"numeric": {"enabled": True}, "small_set_closure": {}},
             profiler_enabled=True, compiler_enabled=True, retrieval_enabled=True,
         )
 

@@ -54,6 +54,8 @@ from cover_kbc.query_intelligence.retrieval_types import ParametricRetrievalResu
 from cover_kbc.query_intelligence.profiler import QueryProfiler
 from cover_kbc.specialists.large_set_specialist import LargeSetSpecialist
 from cover_kbc.specialists.large_set_types import LargeSetSpecialistResult
+from cover_kbc.specialists.null_temporal_specialist import NullTemporalSpecialist
+from cover_kbc.specialists.null_temporal_types import NullTemporalSpecialistResult
 from cover_kbc.specialists.numeric_specialist import NumericSpecialist
 from cover_kbc.specialists.numeric_types import NumericSpecialistResult
 from cover_kbc.query_intelligence.prompt_compiler import PromptProgramCompiler
@@ -286,6 +288,7 @@ class CoverPipeline:
         retriever: "ParametricRetriever | None" = None,
         numeric_specialist: "NumericSpecialist | None" = None,
         large_set_specialist: "LargeSetSpecialist | None" = None,
+        null_temporal_specialist: "NullTemporalSpecialist | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -340,6 +343,15 @@ class CoverPipeline:
             )
         self.large_set_specialist = large_set_specialist
         self.large_set_results: list[LargeSetSpecialistResult] = []
+        # Module 14, shadow mode. A sibling of M12 and M13 over a disjoint
+        # relation. Same shadow counters, so a physical call is counted once.
+        if null_temporal_specialist is not None and retriever is None:
+            raise ValueError(
+                "a null/temporal specialist (M14) was supplied without a "
+                "parametric retriever (M11); M14 consumes M11's parametric memory"
+            )
+        self.null_temporal_specialist = null_temporal_specialist
+        self.null_temporal_results: list[NullTemporalSpecialistResult] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -816,6 +828,30 @@ class CoverPipeline:
         self.shadow_calls += result.calls
         self.shadow_generated_tokens += result.generated_tokens
 
+    def _run_null_temporal_specialist(self, query, program, contract, retrieval) -> None:
+        """Run Module 14 for a NULL_SINGLE query, outside the production budget.
+
+        Skipped silently for every other programme, as the sibling specialists
+        are. The cross-family availability test mirrors
+        :attr:`cross_model_recall_available`'s audited rule - compare the
+        *configured* model ids, not whichever runtime object is resident - so a
+        Phase-A run where one object serves both roles is correctly reported as
+        having no second family.
+        """
+        if not self.null_temporal_specialist.applies_to(program):
+            return
+        enumerator = self.config.enumerator_model_id or self.runtime.spec.model_id
+        verifier = self.config.verifier_model_id or self.verifier_runtime.spec.model_id
+        distinct_families = bool(enumerator) and bool(verifier) and enumerator != verifier
+        result = self.null_temporal_specialist.analyse(
+            query, program, contract, self.runtime, retrieval,
+            cross_family_runtime=self.verifier_runtime if distinct_families else None,
+            cross_family_available=distinct_families,
+        )
+        self.null_temporal_results.append(result)
+        self.shadow_calls += result.calls
+        self.shadow_generated_tokens += result.generated_tokens
+
     def enumerate_query(self, query: Query) -> EvidenceGraph:
         """Phase A: gate + candidate discovery. Enumerator model only."""
         query, contract = compile_query(query.subject, query.relation, query.row_index)
@@ -834,6 +870,10 @@ class CoverPipeline:
                         self._run_numeric_specialist(query, program, contract, retrieval)
                     if self.large_set_specialist is not None:
                         self._run_large_set_specialist(
+                            query, program, contract, retrieval
+                        )
+                    if self.null_temporal_specialist is not None:
+                        self._run_null_temporal_specialist(
                             query, program, contract, retrieval
                         )
         graph = build_graph(query, contract)

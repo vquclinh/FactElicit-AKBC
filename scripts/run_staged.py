@@ -45,7 +45,11 @@ from cover_kbc.query_intelligence import (
     build_prompt_compiler,
 )
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
-from cover_kbc.specialists import build_large_set_specialist, build_numeric_specialist
+from cover_kbc.specialists import (
+    build_large_set_specialist,
+    build_null_temporal_specialist,
+    build_numeric_specialist,
+)
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
 from cover_kbc.types import ModelRole, Query
@@ -73,6 +77,8 @@ PARAMETRIC_MEMORY = "parametric_memory.jsonl"
 NUMERIC_SPECIALIST = "numeric_specialist.jsonl"
 #: Module 13 observability artefact: one record per LARGE_OPEN_SET query.
 LARGE_SET_SPECIALIST = "large_open_set_specialist.jsonl"
+#: Module 14 observability artefact: one record per NULL_SINGLE query.
+NULL_TEMPORAL_SPECIALIST = "null_temporal_specialist.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -318,6 +324,28 @@ def write_large_set_specialist(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_null_temporal_specialist(run_dir: Path, results) -> Path | None:
+    """Persist Module 14's analyses, one record per NULL_SINGLE query."""
+    if not results:
+        return None
+    path = run_dir / NULL_TEMPORAL_SPECIALIST
+    calls = tokens = 0
+    staged_b = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            calls += result.calls
+            tokens += result.generated_tokens
+            staged_b += int(result.stage_b_executed)
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[M14] null/temporal specialist: {path}  "
+        f"({len(results)} queries, {staged_b} reached stage B, {calls} shadow "
+        f"calls, {tokens} generated tokens)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -374,6 +402,12 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         compiler_enabled=prompt_compiler is not None,
         retrieval_enabled=retriever is not None,
     )
+    null_temporal_specialist = build_null_temporal_specialist(
+        config.get("specialists") if phase == "enumerate" else None,
+        profiler_enabled=profiler is not None,
+        compiler_enabled=prompt_compiler is not None,
+        retrieval_enabled=retriever is not None,
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -401,6 +435,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         profiler=profiler, prompt_compiler=prompt_compiler, retriever=retriever,
         numeric_specialist=numeric_specialist,
         large_set_specialist=large_set_specialist,
+        null_temporal_specialist=null_temporal_specialist,
     )
 
 
@@ -462,6 +497,7 @@ def phase_enumerate(args, config: dict) -> Path:
     write_parametric_memory(run_dir, pipeline.retrieval_results)
     write_numeric_specialist(run_dir, pipeline.numeric_results)
     write_large_set_specialist(run_dir, pipeline.large_set_results)
+    write_null_temporal_specialist(run_dir, pipeline.null_temporal_results)
     manifest.finish()
     manifest.write(run_dir / "manifest_enumerate.json")
     print(json.dumps(stage_summary(run_dir / ENUMERATED), indent=2))

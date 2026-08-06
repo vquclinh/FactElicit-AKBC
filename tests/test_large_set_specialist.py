@@ -113,8 +113,16 @@ def _code_without_prose(name: str) -> str:
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type == tokenize.COMMENT:
             continue
-        if token.type == tokenize.STRING and token.string.strip("\"'bruBRU") in docstrings:
-            continue
+        if token.type == tokenize.STRING:
+            try:
+                # Compare the *value*, not the literal: a docstring containing
+                # an escape (``\\--``) has a source form that never equals what
+                # ``ast.get_docstring`` returns, and a literal comparison would
+                # silently leave it in the scanned text.
+                if ast.literal_eval(token.string) in docstrings:
+                    continue
+            except (ValueError, SyntaxError):  # pragma: no cover - exotic literals
+                pass
         kept.append(token.string)
     return " ".join(kept)
 
