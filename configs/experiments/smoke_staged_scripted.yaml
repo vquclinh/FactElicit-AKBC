@@ -193,3 +193,35 @@ consensus:
   include_parametric_origins: true
   # Emit query-level events (gates, null classes, M11 records) in the artefact.
   include_query_events: true
+
+# Layer 4 - Module 17 Specialist Verifier Suite.
+#
+# Proposal §13: "A single generic A/B/C prompt is too coarse for all relations."
+# Each relation gets its own verifier contract (Table 5), scored by the SAME
+# frozen Qwen verifier role and the SAME Module 4 calibrated kernel. No third
+# model, no fitted calibrator, and no experimental decoding adapter - the
+# proposal places that under Module 18 and it is not implemented.
+#
+# Shadow-only and off by default: M17 spends real verifier calls and nothing
+# downstream consumes its labels yet. When enabled, the pipeline builds only the
+# deterministic catalogue of verifiable targets - choosing which targets are
+# worth a call is Module 20/21's, and an automatic fan-out here would be an
+# implicit budget policy.
+specialist_verifier:
+  enabled: false
+  mode: shadow
+  verification_version: m17-v1
+  # Two semantically equivalent phrasings, so §13.1's template disagreement is
+  # measurable. A = VALID, B = INVALID, C = UNKNOWN in every one of them.
+  templates:
+    - m17_statement_v1
+    - m17_question_v1
+  bias_controls:
+    # §13.1's label-order swaps. PRESENTATION ORDER ONLY - the letters keep
+    # their meanings, and each variant is calibrated by its own content-free
+    # control so no order's bias is ever subtracted from another's.
+    label_orders:
+      - ABC
+      - BAC
+  # Module 4's contextual calibration (T = 1, nothing fitted).
+  use_calibration: true

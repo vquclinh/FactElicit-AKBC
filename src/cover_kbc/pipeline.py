@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from cover_kbc.contracts.base import RelationContract
 from cover_kbc.contracts.router import compile_query
@@ -50,6 +50,8 @@ from cover_kbc.elicitation.library import get_view, views_for
 from cover_kbc.evidence.consensus import AtomicConsensusEngine
 from cover_kbc.evidence.consensus_adapters import applicable_specialist
 from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusResult
+from cover_kbc.verification.specialist_types import QuerySpecialistVerificationResult
+from cover_kbc.verification.specialist_verifier import SpecialistVerifier
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
 from cover_kbc.models.base import LMRuntime, LogitsUnavailable
 from cover_kbc.query_intelligence.parametric_retrieval import ParametricRetriever
@@ -297,6 +299,7 @@ class CoverPipeline:
         null_temporal_specialist: "NullTemporalSpecialist | None" = None,
         small_set_specialist: "SmallSetSpecialist | None" = None,
         consensus_engine: "AtomicConsensusEngine | None" = None,
+        specialist_verifier: "SpecialistVerifier | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -383,6 +386,18 @@ class CoverPipeline:
         # half an evidence state.
         self.consensus_engine = consensus_engine
         self.consensus_results: list[QueryConsensusResult] = []
+        # Module 17, shadow mode. It spends real verifier calls, so the seam
+        # below builds only the deterministic *catalogue* of verifiable targets
+        # and verifies nothing on its own: choosing which targets are worth a
+        # call is Module 20/21's, and an automatic fan-out here would be an
+        # implicit budget policy shipped four modules early.
+        if specialist_verifier is not None and consensus_engine is None:
+            raise ValueError(
+                "a specialist verifier (M17) was supplied without a consensus "
+                "engine (M16); M17 verifies targets M16 identifies"
+            )
+        self.specialist_verifier = specialist_verifier
+        self.specialist_verifications: list[QuerySpecialistVerificationResult] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -1471,6 +1486,62 @@ class CoverPipeline:
             query_risk=(profile.to_json().get("risk", {}) if profile else {}),
         )
         self.consensus_results.append(result)
+        if self.specialist_verifier is not None:
+            self._catalogue_specialist_targets(result)
+
+    def _catalogue_specialist_targets(self, consensus: QueryConsensusResult) -> None:
+        """Record which targets Module 17 *could* verify. Spends nothing.
+
+        A type judgement over Module 16 state - a hard-contract violation
+        cannot be rescued by a verifier and a candidate with no printable value
+        cannot be shown to one. It reads no support count and makes no
+        selection: ``verify_specialist_targets`` is how a caller asks for
+        actual readings.
+        """
+        from cover_kbc.verification.specialist_contracts import specialist_contract
+        from cover_kbc.verification.specialist_verifier import verifiable_targets
+
+        specialist = specialist_contract(consensus.relation)
+        self.specialist_verifications.append(QuerySpecialistVerificationResult(
+            verification_version=self.specialist_verifier.verification_version,
+            relation=consensus.relation, subject=consensus.subject,
+            row_index=consensus.row_index, family=specialist.family,
+            contract_version=specialist.contract_version,
+            results=(), catalogue=verifiable_targets(consensus),
+        ))
+
+    def verify_specialist_targets(
+        self,
+        consensus: QueryConsensusResult,
+        targets: "Sequence[Any]",
+        runtime: LMRuntime | None = None,
+    ) -> QuerySpecialistVerificationResult:
+        """Run Module 17 on targets **the caller chose**. Explicit by design.
+
+        Shadow spend: it joins the same shadow counters Module 11 established,
+        never Module 7's per-query budget, because Module 20 owns the
+        production verification budget and does not exist yet.
+        """
+        if self.specialist_verifier is None:
+            raise ValueError("no specialist verifier (M17) is configured")
+        _, contract = compile_query(
+            consensus.subject, consensus.relation, consensus.row_index
+        )
+        result = self.specialist_verifier.verify_query(
+            consensus, contract, runtime or self.verifier_runtime, targets
+        )
+        for index, existing in enumerate(self.specialist_verifications):
+            if (
+                existing.relation == result.relation
+                and existing.subject == result.subject
+                and existing.row_index == result.row_index
+            ):
+                self.specialist_verifications[index] = result
+                break
+        else:
+            self.specialist_verifications.append(result)
+        self.shadow_calls += result.calls
+        return result
 
     def decide_graph(self, graph: EvidenceGraph) -> Prediction:
         """Phase C: RCSE, scoring, relation-specific selection. No model calls.

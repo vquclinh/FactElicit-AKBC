@@ -31,6 +31,7 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.verification.specialist_verifier import build_specialist_verifier
 from cover_kbc.pipeline import CoverPipeline, ExecutionMode, PipelineConfig
 from cover_kbc.query_intelligence import (
     build_parametric_retriever,
@@ -186,6 +187,15 @@ def main() -> int:
                 },
                 relations=sorted({q.relation for q in queries}),
             ),
+            # Module 17, shadow: the catalogue costs nothing and no target is
+            # verified without an explicit request.
+            specialist_verifier=build_specialist_verifier(
+                config.get("specialist_verifier"),
+                consensus_enabled=bool(
+                    (config.get("consensus") or {}).get("enabled", False)
+                ),
+                verifier_available=verifier_runtime is not None,
+            ) if (config.get("consensus") or {}).get("enabled", False) else None,
         )
         result = pipeline.run(queries, progress=True)
 
@@ -209,6 +219,7 @@ def main() -> int:
         ("M14", "null_temporal_specialist.jsonl", pipeline.null_temporal_results),
         ("M15", "small_set_specialist.jsonl", pipeline.small_set_results),
         ("M16", "atomic_consensus.jsonl", pipeline.consensus_results),
+        ("M17", "specialist_verification.jsonl", pipeline.specialist_verifications),
     ):
         if not records:
             continue

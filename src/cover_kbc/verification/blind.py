@@ -353,7 +353,7 @@ class ContextualCalibrator:
         # the same module. It must happen *before* the first use of the names -
         # a local import inside the branch below would make them function-local
         # for the whole body and leave the key computation unbound.
-        from cover_kbc.verification import (
+        from cover_kbc.verification.blind import (
             CONTENT_FREE_GATE_QUESTION,
             GATE_LABELS,
             GATE_SYSTEM_PROMPT,

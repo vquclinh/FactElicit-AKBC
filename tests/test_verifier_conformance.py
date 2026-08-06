@@ -244,7 +244,10 @@ def test_the_sequence_fallback_scores_every_token_of_every_label():
 
 
 def test_verification_never_falls_back_to_generated_text():
-    from cover_kbc import verification
+    # Module 4's code moved into cover_kbc.verification.blind when the
+    # package gained Module 17; inspecting the package __init__ would make
+    # every absence assertion below pass vacuously.
+    from cover_kbc.verification import blind as verification
 
     tree = ast.parse(inspect.getsource(verification))
     called = {
@@ -294,7 +297,10 @@ def test_probabilities_sum_to_one():
 
 
 def test_no_learned_calibrator_exists():
-    from cover_kbc import verification
+    # Module 4's code moved into cover_kbc.verification.blind when the
+    # package gained Module 17; inspecting the package __init__ would make
+    # every absence assertion below pass vacuously.
+    from cover_kbc.verification import blind as verification
 
     source = inspect.getsource(verification)
     for banned in ("optimizer", "backward", "requires_grad", "fit(", "train(", "LogisticRegression"):
@@ -364,7 +370,10 @@ def test_the_control_cache_cannot_leak_across_incompatible_setups(vary):
 
 def test_the_control_creates_no_candidate_and_no_edge():
     """verification.py cannot touch the graph at all."""
-    from cover_kbc import verification
+    # Module 4's code moved into cover_kbc.verification.blind when the
+    # package gained Module 17; inspecting the package __init__ would make
+    # every absence assertion below pass vacuously.
+    from cover_kbc.verification import blind as verification
 
     tree = ast.parse(inspect.getsource(verification))
     imported = set()
@@ -904,7 +913,10 @@ def test_verifier_fields_survive_staged_persistence():
 
 
 def test_no_retrieval_reaches_the_verifier():
-    from cover_kbc import verification
+    # Module 4's code moved into cover_kbc.verification.blind when the
+    # package gained Module 17; inspecting the package __init__ would make
+    # every absence assertion below pass vacuously.
+    from cover_kbc.verification import blind as verification
 
     tree = ast.parse(inspect.getsource(verification))
     banned = {"requests", "urllib", "httpx", "aiohttp", "socket", "wikipedia", "wikidata"}

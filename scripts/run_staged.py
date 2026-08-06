@@ -41,6 +41,7 @@ from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_con
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.verification.specialist_verifier import build_specialist_verifier
 from cover_kbc.query_intelligence import (
     ParametricMemoryRecord,
     QueryRiskProfile,
@@ -94,6 +95,8 @@ NULL_TEMPORAL_SPECIALIST = "null_temporal_specialist.jsonl"
 SMALL_SET_SPECIALIST = "small_set_specialist.jsonl"
 #: Module 16 - one atomic-consensus state per query. Observability only.
 ATOMIC_CONSENSUS = "atomic_consensus.jsonl"
+#: Module 17 - one specialist-verification record per query. Observability only.
+SPECIALIST_VERIFICATION = "specialist_verification.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -466,6 +469,34 @@ def load_shadow_results(run_dir: Path, pipeline: CoverPipeline) -> None:
             target.append(loader.from_json(row))
 
 
+def write_specialist_verification(run_dir: Path, results) -> Path | None:
+    """Persist Module 17's specialist verification, one record per query.
+
+    In this milestone the pipeline writes the deterministic *catalogue* of
+    verifiable targets and verifies nothing on its own: Module 17 spends real
+    verifier calls, and choosing which targets deserve one is Module 20/21's.
+    A caller that asks explicitly gets its readings recorded in the same row.
+    """
+    if not results:
+        return None
+    path = run_dir / SPECIALIST_VERIFICATION
+    eligible = skipped = calls = readings = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            eligible += sum(1 for t in result.catalogue if t.eligible)
+            skipped += len(result.skipped_targets)
+            calls += result.calls
+            readings += sum(len(r.template_results) for r in result.results)
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[M17] specialist verification: {path}  "
+        f"({len(results)} queries, {eligible} verifiable targets, {skipped} "
+        f"skipped without a call, {readings} readings, {calls} verifier calls)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -562,6 +593,19 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         )
         if phase == "decide" else None
     )
+    # Module 17 is built wherever Module 16 is: it reads M16's state to build
+    # the verifiable-target catalogue, which costs nothing. Actual readings
+    # require an explicit caller and the verifier model role.
+    specialist_verifier = (
+        build_specialist_verifier(
+            config.get("specialist_verifier"),
+            consensus_enabled=bool(
+                (config.get("consensus") or {}).get("enabled", False)
+            ),
+            verifier_available=True,
+        )
+        if consensus_engine is not None else None
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -592,6 +636,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         null_temporal_specialist=null_temporal_specialist,
         small_set_specialist=small_set_specialist,
         consensus_engine=consensus_engine,
+        specialist_verifier=specialist_verifier,
     )
 
 
@@ -796,6 +841,7 @@ def phase_decide(args, config: dict) -> Path:
         load_shadow_results(run_dir, pipeline)
     result = pipeline.decide(read_stage(source), on_result=_decide_reporter(total))
     write_atomic_consensus(run_dir, pipeline.consensus_results)
+    write_specialist_verification(run_dir, pipeline.specialist_verifications)
 
     # Completeness is checked against the *intended* query set, not against the
     # predictions themselves - comparing output to itself could never catch an
