@@ -36,7 +36,7 @@ profile, it would be state.
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping
 
 from cover_kbc.contracts.base import RelationContract
@@ -51,6 +51,8 @@ from cover_kbc.query_intelligence.priors import (
     specialist_hint_for,
 )
 from cover_kbc.query_intelligence.types import (
+    RiskLevel,
+    SecondaryRoute,
     QueryRiskProfile,
     SubjectSurfaceFeatures,
 )
@@ -124,6 +126,34 @@ class ProfilerConfig:
             profile_version=str(payload.get("profile_version", PROFILE_VERSION)),
             relation_priors=payload.get("relation_priors"),
         )
+
+
+#: Proposal Table 3's *secondary modules* column, transcribed once.
+#:
+#: Static and advisory: these name the secondary paths the architecture intends
+#: for each relation. They route nothing - the owning module still declares
+#: legality and Module 21 still decides value.
+SECONDARY_ROUTES: dict[str, tuple[SecondaryRoute, ...]] = {
+    "countryLandBordersCountry": (SecondaryRoute.M18_REVERSE_SINGLETON,),
+    "personHasCityOfDeath": (
+        SecondaryRoute.M11_PSEUDO_MEMORY, SecondaryRoute.M18_KEY_CONDITION,
+        SecondaryRoute.CROSS_MODEL_FRESHNESS,
+    ),
+    "hasCapacity": (
+        SecondaryRoute.M17_NUMERIC_VERIFIER,
+        SecondaryRoute.M18_CONTRAST_ATTENDANCE,
+    ),
+    "awardWonBy": (
+        SecondaryRoute.M11_QUERY_SPECIFICATION, SecondaryRoute.M19_MISSINGNESS,
+        SecondaryRoute.M20_RESERVED_VERIFY,
+    ),
+    "companyTradesAtStockExchange": (
+        SecondaryRoute.M14_FRESHNESS, SecondaryRoute.M18_PARENT_SUBSIDIARY,
+    ),
+    "hasArea": (
+        SecondaryRoute.M17_TOTAL_VS_LAND, SecondaryRoute.CROSS_UNIT_CYCLE,
+    ),
+}
 
 
 class QueryProfiler:
@@ -209,6 +239,7 @@ class QueryProfiler:
             program_type=routed.program_type,
             cardinality_regime=cardinality_regime_for(routed.program_type),
             specialist_hint=specialist_hint_for(routed.program_type),
+            secondary_hints=SECONDARY_ROUTES.get(contract.relation, ()),
             subject_surface=subject_surface_features(query.subject),
             profile_version=self.profile_version,
             **priors.axes(),
@@ -217,6 +248,63 @@ class QueryProfiler:
     def profile_all(self, queries: Iterable[Query]) -> list[QueryRiskProfile]:
         """Profile many queries, preserving order."""
         return [self.profile(query) for query in queries]
+
+    def refine(self, profile: QueryRiskProfile, graph: Any) -> QueryRiskProfile:
+        """§5's graph-aware refinement: the *early graph* half of M9's input.
+
+        Proposal §5 says M9 reads "the relation, subject surface form, **initial
+        graph**, and **early-return signals**", and Appendix C calls the result
+        a *dynamic* risk vector. §20.1 nonetheless runs M9 at step 2, before any
+        view has executed. Both are true only if M9 is evaluated **twice**: a
+        static profile from the query alone, then this deterministic refinement
+        once early evidence exists. That is what this method is.
+
+        It returns a **new** profile and mutates neither the old one nor the
+        graph. Only ``q_novel`` is refined: every other axis is a static
+        property of the relation and its subject surface, and letting early
+        evidence move them would turn a prior into a measurement.
+
+        ``q_novel`` is derived **only** from early-return structure - did
+        acquisition return anything, and was it a lone candidate - never from
+        the subject string. Guessing obscurity from a person's or company's name
+        is a factual claim M9 is not entitled to make, and the boundaries used
+        here are structural (nothing / exactly one / more than one), not fitted
+        thresholds.
+
+        This is **not** Module 19's ``noveltyRate``. M19 measures, per discovery
+        origin and across a whole run, the fraction of identities first seen at
+        the latest eligible origin - a residual *search-need* signal at Layer 5.
+        M9's ``q_novel`` is a one-shot instance-difficulty prior read from the
+        first returns at Layer 1. Different quantity, different layer, different
+        time; neither is derived from the other.
+        """
+        if profile.relation != graph.query.relation or (
+            profile.subject != graph.query.subject
+        ):
+            raise ValueError(
+                f"risk profile is for {profile.subject!r}/{profile.relation!r} "
+                f"but the graph is {graph.query.subject!r}/"
+                f"{graph.query.relation!r}; Module 9 may not refine across "
+                "queries"
+            )
+
+        records = len(getattr(graph, "records", ()) or ())
+        if not records:
+            return replace(
+                profile, novelty_risk=None,
+                novelty_basis="no early acquisition record exists yet")
+
+        candidates = len(getattr(graph, "candidates", ()) or ())
+        if candidates == 0:
+            level, basis = RiskLevel.HIGH, (
+                f"{records} early acquisition record(s) returned no candidate")
+        elif candidates == 1:
+            level, basis = RiskLevel.MEDIUM, (
+                "early acquisition returned a single candidate")
+        else:
+            level, basis = RiskLevel.LOW, (
+                f"early acquisition returned {candidates} candidates")
+        return replace(profile, novelty_risk=level, novelty_basis=basis)
 
 
 def _check_resolved_priors(resolved: Mapping[str, RelationRiskPriors]) -> None:

@@ -244,9 +244,40 @@ DEFAULT_GENERATION_TOKENS = 256
 # --------------------------------------------------------------------------
 
 
+def m17_call_plan(config: Any) -> tuple[int, int]:
+    """The live Module 17 call plan: (factual readings, controls).
+
+    Derived from Module 17's **own configuration**, never hard-coded:
+
+        factual readings = enabled template phrasings x enabled label orders
+
+    With the shipped defaults - two phrasings and two label orders - that is
+    **four** readings, plus one contextual control per reading, so a cold
+    request costs eight physical calls and a fully warm one costs four.
+
+    A fixed count here would silently become a production assumption: changing
+    the configured phrasings or orders would move the real cost while Module
+    20's safe precharge stayed put, and the hard cap is only as good as the
+    number it is checked against.
+    """
+    templates = tuple(getattr(config, "template_ids", ()) or ())
+    orders = tuple(getattr(config, "label_orders", ()) or ())
+    readings = len(templates) * len(orders)
+    if readings <= 0:
+        raise PlannerError(
+            "Module 17 declares no template phrasing or no label order, so its "
+            "call plan cannot be priced"
+        )
+    # One contextual control per reading when calibration is on; a cached
+    # control still costs zero, which the cache disposition expresses.
+    controls = readings if getattr(config, "use_calibration", True) else 0
+    return readings, controls
+
+
 def m17_actions(
     targets: Iterable[Any], *, subject: str, relation: str, row_index: int,
-    readings: int = 1, control_calls_needed: int = 0, controls_total: int = 0,
+    verifier_config: Any = None, readings: int | None = None,
+    control_calls_needed: int = 0, controls_total: int | None = None,
 ) -> tuple[list[ControlActionCandidate], list[CatalogExclusion]]:
     """Module 17's eligibility catalogue, adapted.
 
@@ -257,8 +288,24 @@ def m17_actions(
 
     The cost plan is cache-aware through Module 20's own helper, so a warm
     control cache produces a cheaper *plan* for the **same semantic action**.
+
+    The reading and control counts come from Module 17's live configuration via
+    :func:`m17_call_plan` unless a caller overrides them explicitly, which only
+    tests do.
     """
     from cover_kbc.control.budget_accounting import specialist_verification_plan
+
+    if readings is None or controls_total is None:
+        if verifier_config is None:
+            from cover_kbc.verification.specialist_verifier import (
+                SpecialistVerifierConfig,
+            )
+
+            verifier_config = SpecialistVerifierConfig()
+        planned_readings, planned_controls = m17_call_plan(verifier_config)
+        readings = planned_readings if readings is None else readings
+        controls_total = (
+            planned_controls if controls_total is None else controls_total)
 
     actions: list[ControlActionCandidate] = []
     excluded: list[CatalogExclusion] = []

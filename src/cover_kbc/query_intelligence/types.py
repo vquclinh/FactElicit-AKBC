@@ -94,6 +94,34 @@ class CardinalityRegime(str, Enum):
     LARGE_OPEN_SET = "LARGE_OPEN_SET"
 
 
+class SecondaryRoute(str, Enum):
+    """Proposal Table 3's *secondary modules*, as a closed vocabulary.
+
+    Table 3 gives each relation a primary specialist **and** a secondary path -
+    "M18 reverse check for singleton/territory risk", "M11 pseudo-memory;
+    M18 key-condition; cross-model freshness", and so on. ``specialist_hint``
+    carries only the first column, so these carry the second.
+
+    Advisory, static and derived from the Module 1 programme. Nothing here
+    routes, schedules or authorises: legality stays with the owning module and
+    value with Module 21.
+    """
+
+    M11_PSEUDO_MEMORY = "M11_PSEUDO_MEMORY"
+    M11_QUERY_SPECIFICATION = "M11_QUERY_SPECIFICATION"
+    M14_FRESHNESS = "M14_FRESHNESS"
+    M17_NUMERIC_VERIFIER = "M17_NUMERIC_VERIFIER"
+    M17_TOTAL_VS_LAND = "M17_TOTAL_VS_LAND"
+    M18_REVERSE_SINGLETON = "M18_REVERSE_SINGLETON"
+    M18_KEY_CONDITION = "M18_KEY_CONDITION"
+    M18_CONTRAST_ATTENDANCE = "M18_CONTRAST_ATTENDANCE"
+    M18_PARENT_SUBSIDIARY = "M18_PARENT_SUBSIDIARY"
+    M19_MISSINGNESS = "M19_MISSINGNESS"
+    M20_RESERVED_VERIFY = "M20_RESERVED_VERIFY"
+    CROSS_MODEL_FRESHNESS = "CROSS_MODEL_FRESHNESS"
+    CROSS_UNIT_CYCLE = "CROSS_UNIT_CYCLE"
+
+
 class SpecialistHint(str, Enum):
     """Advisory pointer to the specialist a later milestone will route to.
 
@@ -234,6 +262,18 @@ class QueryRiskProfile:
     specialist_hint: SpecialistHint
     profile_version: str
     row_index: int = -1
+    #: Proposal Table 3's *secondary modules* column - the rest of the "route
+    #: hints" Appendix C assigns to M9. Advisory and static, exactly like
+    #: ``specialist_hint``: it names branches the architecture intends, selects
+    #: nothing, and no M2-M8 decision reads it.
+    secondary_hints: tuple[SecondaryRoute, ...] = ()
+    #: §5's ``q_novel``. ``None`` means **unmeasured**, which is the honest
+    #: state before any evidence exists - §5 derives novelty from the initial
+    #: graph and early-return signals, and guessing it from a subject string
+    #: would be a factual claim M9 is not entitled to make.
+    novelty_risk: RiskLevel | None = None
+    #: Why ``novelty_risk`` holds its value, or why it is unmeasured.
+    novelty_basis: str = "no early graph has been observed"
 
     def axis(self, name: str) -> RiskLevel:
         """One risk axis by name, refusing anything not in :data:`RISK_AXES`."""
@@ -255,6 +295,10 @@ class QueryRiskProfile:
             "program_type": self.program_type.value,
             "cardinality_regime": self.cardinality_regime.value,
             "specialist_hint": self.specialist_hint.value,
+            "secondary_hints": [h.value for h in self.secondary_hints],
+            "novelty_risk": (
+                self.novelty_risk.value if self.novelty_risk else None),
+            "novelty_basis": self.novelty_basis,
         }
         payload["risk"] = {name: level.value for name, level in self.axes().items()}
         payload["subject_surface"] = self.subject_surface.to_json()
@@ -269,6 +313,13 @@ class QueryRiskProfile:
             program_type=ProgramType(payload["program_type"]),
             cardinality_regime=CardinalityRegime(payload["cardinality_regime"]),
             specialist_hint=SpecialistHint(payload["specialist_hint"]),
+            secondary_hints=tuple(
+                SecondaryRoute(h) for h in payload.get("secondary_hints", ())),
+            novelty_risk=(
+                RiskLevel(payload["novelty_risk"])
+                if payload.get("novelty_risk") else None),
+            novelty_basis=payload.get(
+                "novelty_basis", "no early graph has been observed"),
             profile_version=str(payload["profile_version"]),
             row_index=int(payload.get("row_index", -1)),
             subject_surface=SubjectSurfaceFeatures.from_json(payload["subject_surface"]),

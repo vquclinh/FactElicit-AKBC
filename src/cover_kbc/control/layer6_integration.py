@@ -103,8 +103,8 @@ def collect_catalog(
     verifiable_targets: Sequence[Any] = (), eligible_checks: Sequence[Any] = (),
     core_actions: Sequence[Any] = (),
     executed: Sequence[tuple[str, str, str, str]] = (),
-    m17_readings: int = 1, m17_control_calls_needed: int = 0,
-    m17_controls_total: int = 0,
+    verifier_config: Any = None, m17_readings: int | None = None,
+    m17_control_calls_needed: int = 0, m17_controls_total: int | None = None,
 ) -> tuple[tuple[ControlActionCandidate, ...], tuple[CatalogExclusion, ...]]:
     """Project every owner's declared legality into one catalogue. **Zero calls.**
 
@@ -125,7 +125,8 @@ def collect_catalog(
     if verifiable_targets:
         projections.append(m17_actions(
             verifiable_targets, subject=subject, relation=relation,
-            row_index=row_index, readings=m17_readings,
+            row_index=row_index, verifier_config=verifier_config,
+            readings=m17_readings,
             control_calls_needed=m17_control_calls_needed,
             controls_total=m17_controls_total))
     if eligible_checks:

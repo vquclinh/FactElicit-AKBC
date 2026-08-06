@@ -1106,6 +1106,7 @@ class CoverPipeline:
             "calls_used": budget.calls_used,
             "generated_tokens_used": budget.generated_tokens_used,
         }
+        self._refine_risk_profile(graph)
         return graph
 
     def _adaptive_discovery(
@@ -1546,6 +1547,28 @@ class CoverPipeline:
                 return result
         return None
 
+    def _refine_risk_profile(self, graph: EvidenceGraph) -> None:
+        """Proposal §5's *early graph* half of Module 9's input.
+
+        §5 gives M9 the initial graph and early-return signals, while §20.1 runs
+        it before any view executes; both hold only if M9 is evaluated twice.
+        The static profile was recorded before acquisition; this replaces it
+        with the graph-aware refinement now that early evidence exists.
+
+        Observability only: the profile is a shadow artefact, the refinement is
+        deterministic and non-neural, and it mutates neither the graph nor any
+        production state.
+        """
+        if self.profiler is None:
+            return
+        query = graph.query
+        for index, profile in enumerate(self.query_profiles):
+            if (profile.relation == query.relation
+                    and profile.subject == query.subject
+                    and profile.row_index == query.row_index):
+                self.query_profiles[index] = self.profiler.refine(profile, graph)
+                return
+
     def _schedule_relation_budget(self, query: Query, contract, profile) -> None:
         """Plan Module 20's compute envelopes. **Zero calls.**
 
@@ -1697,6 +1720,13 @@ class CoverPipeline:
             retrieval=self._retrieval_result_for_consensus(consensus),
             verifiable_targets=verifiable_targets(consensus),
             eligible_checks=eligible_checks(consensus),
+            # Module 17's live configuration, so its safe precharge tracks the
+            # phrasings and label orders actually configured rather than a
+            # fixed count that would silently become a production assumption.
+            verifier_config=(
+                self.specialist_verifier.config
+                if self.specialist_verifier is not None else None
+            ),
         )
 
     def _retrieval_result_for_consensus(self, consensus: QueryConsensusResult):

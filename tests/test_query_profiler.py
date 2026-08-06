@@ -397,6 +397,10 @@ def test_the_profile_contains_no_candidate_or_factual_field(profiler):
     assert set(payload) == {
         "profile_version", "SubjectEntity", "Relation", "row_index",
         "program_type", "cardinality_regime", "specialist_hint",
+        # Proposal Table 3's secondary-module column, and §5's q_novel with the
+        # basis that says why it holds its value. Route hints and a difficulty
+        # grade - still no candidate and no factual answer.
+        "secondary_hints", "novelty_risk", "novelty_basis",
         "risk", "subject_surface",
     }
 
@@ -529,7 +533,16 @@ def test_staged_phases_keep_their_semantics_with_m9_on(cli, tmp_path, monkeypatc
 
 
 def test_persisted_profiles_equal_recomputed_ones(cli, tmp_path, monkeypatch, capsys):
-    """Recomputation is exact, which is why later phases need not persist them."""
+    """The static half recomputes exactly; the refined half needs the graph.
+
+    Proposal §5 gives Module 9 both a query-only reading and an early-graph
+    reading, so the persisted profile is the **refined** one. Every static axis
+    still recomputes from the query alone - which is what later phases rely on -
+    while ``q_novel`` cannot, because it is measured from early returns rather
+    than derived from the subject.
+    """
+    from dataclasses import replace
+
     run_dir = tmp_path / "recompute"
     _run(cli, monkeypatch, _config_with_profiler(tmp_path, True), run_dir, STOCK)
     capsys.readouterr()
@@ -541,7 +554,12 @@ def test_persisted_profiles_equal_recomputed_ones(cli, tmp_path, monkeypatch, ca
         recomputed = profiler.profile(
             Query(payload["SubjectEntity"], payload["Relation"], payload["row_index"])
         )
-        assert persisted == recomputed
+        # Everything except the two graph-derived fields recomputes exactly.
+        assert replace(
+            persisted, novelty_risk=None,
+            novelty_basis=recomputed.novelty_basis) == recomputed
+        # And the persisted profile really is the refined one.
+        assert persisted.novelty_basis != "no early graph has been observed"
 
 
 def test_pipeline_without_a_profiler_is_the_pre_m9_path():
