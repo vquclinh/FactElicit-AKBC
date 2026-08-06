@@ -258,6 +258,7 @@ def main() -> int:
         ("M19", "coverage_gap.jsonl", pipeline.coverage_gap_results),
         ("M20", "relation_budget.jsonl", pipeline.relation_budget_results),
         ("M21", "micro_planner.jsonl", pipeline.micro_planner_results),
+        ("L6", "layer6_control.jsonl", pipeline.layer6_results),
     ):
         if not records:
             continue

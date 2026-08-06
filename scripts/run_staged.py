@@ -114,6 +114,8 @@ COVERAGE_GAP = "coverage_gap.jsonl"
 RELATION_BUDGET = "relation_budget.jsonl"
 #: Module 21 - one shadow control decision per planned round.
 MICRO_PLANNER = "micro_planner.jsonl"
+#: Layer-6 integration - one shadow control state per query.
+LAYER6_CONTROL = "layer6_control.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -654,6 +656,29 @@ def write_micro_planner(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_layer6_control(run_dir: Path, results) -> Path | None:
+    """Persist the Layer-6 shadow control state, one record per query.
+
+    Observability only: an action catalogue, what Module 20 could fund, and
+    what Module 21 would choose. Nothing was executed.
+    """
+    if not results:
+        return None
+    path = run_dir / LAYER6_CONTROL
+    legal = sum(len(r.catalog) for r in results)
+    affordable = sum(len(r.affordable_actions) for r in results)
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[L6] control integration: {path}  "
+        f"({len(results)} queries, {legal} legal / {affordable} affordable "
+        f"actions, 0 neural calls, nothing executed)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -1046,6 +1071,7 @@ def phase_decide(args, config: dict) -> Path:
     write_coverage_gap(run_dir, pipeline.coverage_gap_results)
     write_relation_budget(run_dir, pipeline.relation_budget_results)
     write_micro_planner(run_dir, pipeline.micro_planner_results)
+    write_layer6_control(run_dir, pipeline.layer6_results)
 
     # Completeness is checked against the *intended* query set, not against the
     # predictions themselves - comparing output to itself could never catch an

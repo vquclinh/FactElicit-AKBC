@@ -446,3 +446,19 @@ micro_planner:
   planner_version: m21-v1
   historical_bins: null
   planner_calibration: null
+
+# Layer 6 integration - owner catalogue -> M20 affordability -> M21 value.
+#
+# Not a new module: a seam that connects three existing authorities in the one
+# order that keeps them honest. Owner modules say what is LEGAL, M20 says what
+# is AFFORDABLE, M21 says what is WORTH DOING. Zero neural calls, and nothing
+# is executed - M7 remains the production controller and M8 the finaliser.
+#
+# DISABLED. Activation requires M20 and M21, and both remain uncalibrated:
+# §16 defers budget values to TRAIN and §17 defers the historical bins and the
+# coefficients to TRAIN, and no TRAIN calibration has been performed. The
+# integration architecture is complete; the numeric policy behind it is not,
+# and shipping it enabled would mean inventing that policy.
+layer6_integration:
+  enabled: false
+  mode: shadow

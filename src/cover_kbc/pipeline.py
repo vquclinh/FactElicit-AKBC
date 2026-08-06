@@ -53,6 +53,11 @@ from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusRes
 from cover_kbc.coverage_gap.facet_coverage import discovery_origins, facet_executions
 from cover_kbc.coverage_gap.gap_types import CoverageGapState
 from cover_kbc.control.budget_types import RelationBudgetResult
+from cover_kbc.control.layer6_integration import (
+    Layer6ControlState,
+    Layer6Integrator,
+    collect_catalog,
+)
 from cover_kbc.control.micro_planner import MicroPlanner
 from cover_kbc.control.planner_types import (
     MicroPlannerDecision,
@@ -319,6 +324,7 @@ class CoverPipeline:
         coverage_gap_estimator: "CoverageGapEstimator | None" = None,
         relation_budget_scheduler: "RelationBudgetScheduler | None" = None,
         micro_planner: "MicroPlanner | None" = None,
+        layer6_integrator: "Layer6Integrator | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -470,6 +476,15 @@ class CoverPipeline:
             )
         self.micro_planner = micro_planner
         self.micro_planner_results: list[MicroPlannerDecision] = []
+        # Layer-6 integration, shadow. Projects each owner's declared legality
+        # into one catalogue, prices it through Module 20 and ranks it through
+        # Module 21. Executes nothing.
+        if layer6_integrator is not None and micro_planner is None:
+            raise ValueError(
+                "Layer-6 integration needs Module 21; it ranks nothing itself"
+            )
+        self.layer6_integrator = layer6_integrator
+        self.layer6_results: list[Layer6ControlState] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -1631,6 +1646,11 @@ class CoverPipeline:
         exists. Layer-6 integration will supply it.
         """
         budget = self._relation_budget_for(consensus)
+        ledger = None
+        if self.layer6_integrator is not None and budget and budget.plan.is_numeric:
+            from cover_kbc.control.budget_accounting import BudgetLedger
+
+            ledger = BudgetLedger(budget.plan)
         state = PlannerStateSnapshot(
             subject=consensus.subject, relation=consensus.relation,
             row_index=consensus.row_index,
@@ -1639,9 +1659,54 @@ class CoverPipeline:
             layer4=self.layer4_results[-1],
             coverage_gap=self.coverage_gap_results[-1],
             budget_plan=budget.plan if budget else None,
-            budget_ledger=None,
+            budget_ledger=ledger,
         )
-        self.micro_planner_results.append(self.micro_planner.plan(state, ()))
+        if self.layer6_integrator is None:
+            # Module 21 alone has no owner-declared legal-action surface to
+            # read, and may not invent one, so the honest decision is STOP.
+            self.micro_planner_results.append(self.micro_planner.plan(state, ()))
+            return
+
+        catalog, exclusions = self._owner_action_catalog(consensus)
+        result = self.layer6_integrator.integrate(
+            state, catalog, exclusions,
+            production_control={
+                "controller": "M7",
+                "note": "Module 7 remains the production controller",
+            },
+        )
+        self.layer6_results.append(result)
+        self.micro_planner_results.append(result.decision)
+
+    def _owner_action_catalog(self, consensus: QueryConsensusResult):
+        """Project every owner's declared legality. **Zero calls.**
+
+        Each surface is the owner's own: Module 17's verifiable targets, Module
+        18's eligible checks, the applicable specialist's live registry and
+        execution record, and Module 11's probe record. Layer 6 declares
+        nothing.
+        """
+        from cover_kbc.verification.bidirectional_verifier import eligible_checks
+        from cover_kbc.verification.specialist_verifier import verifiable_targets
+
+        return collect_catalog(
+            subject=consensus.subject, relation=consensus.relation,
+            row_index=consensus.row_index,
+            specialist_result=self._specialist_result_or_none(consensus),
+            specialist_declared=True,
+            retrieval=self._retrieval_result_for_consensus(consensus),
+            verifiable_targets=verifiable_targets(consensus),
+            eligible_checks=eligible_checks(consensus),
+        )
+
+    def _retrieval_result_for_consensus(self, consensus: QueryConsensusResult):
+        for result in self.retrieval_results:
+            plan = result.plan
+            if (plan.relation == consensus.relation
+                    and plan.subject == consensus.subject
+                    and plan.row_index == consensus.row_index):
+                return result
+        return None
 
     def _relation_budget_for(self, consensus: QueryConsensusResult):
         for result in self.relation_budget_results:
