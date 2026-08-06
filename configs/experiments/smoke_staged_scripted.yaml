@@ -106,3 +106,19 @@ specialists:
     mode: shadow
     specialist_version: m12-v1
     mine_parametric_memory: true
+
+  # Module 13 - Large-Open-Set Specialist (awardWonBy).
+  #
+  # DISABLED BY DEFAULT: it spends real neural calls, and its output feeds no
+  # production decision until M16 (consensus) and M17 (verification) exist.
+  # Requires M9, M10 and M11 - but NOT M12: the two specialists are siblings
+  # over disjoint relations and are independently enableable.
+  #
+  # It runs a seed query and partitions the recall space into the proposal's
+  # generic non-factual facets, collecting atomic candidate mentions with full
+  # provenance. It decides nothing: no acceptance, no score, no pruning.
+  large_open_set:
+    enabled: false
+    mode: shadow
+    specialist_version: m13-v1
+    mine_parametric_memory: true

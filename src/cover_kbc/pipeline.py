@@ -52,6 +52,8 @@ from cover_kbc.models.base import LMRuntime, LogitsUnavailable
 from cover_kbc.query_intelligence.parametric_retrieval import ParametricRetriever
 from cover_kbc.query_intelligence.retrieval_types import ParametricRetrievalResult
 from cover_kbc.query_intelligence.profiler import QueryProfiler
+from cover_kbc.specialists.large_set_specialist import LargeSetSpecialist
+from cover_kbc.specialists.large_set_types import LargeSetSpecialistResult
 from cover_kbc.specialists.numeric_specialist import NumericSpecialist
 from cover_kbc.specialists.numeric_types import NumericSpecialistResult
 from cover_kbc.query_intelligence.prompt_compiler import PromptProgramCompiler
@@ -283,6 +285,7 @@ class CoverPipeline:
         prompt_compiler: "PromptProgramCompiler | None" = None,
         retriever: "ParametricRetriever | None" = None,
         numeric_specialist: "NumericSpecialist | None" = None,
+        large_set_specialist: "LargeSetSpecialist | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -327,6 +330,16 @@ class CoverPipeline:
             )
         self.numeric_specialist = numeric_specialist
         self.numeric_results: list[NumericSpecialistResult] = []
+        # Module 13, shadow mode. A sibling of M12 over a disjoint relation:
+        # either may run without the other. Same shadow counters, so a physical
+        # call is still counted exactly once.
+        if large_set_specialist is not None and retriever is None:
+            raise ValueError(
+                "a large-open-set specialist (M13) was supplied without a "
+                "parametric retriever (M11); M13 consumes M11's parametric memory"
+            )
+        self.large_set_specialist = large_set_specialist
+        self.large_set_results: list[LargeSetSpecialistResult] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -787,6 +800,22 @@ class CoverPipeline:
         self.shadow_calls += result.calls
         self.shadow_generated_tokens += result.generated_tokens
 
+    def _run_large_set_specialist(self, query, program, contract, retrieval) -> None:
+        """Run Module 13 for a LARGE_OPEN_SET query, outside the production budget.
+
+        Skipped silently for every other programme, for the same reason Module
+        12 is: the specialist declares which relations it handles, and a numeric
+        query is simply not its query.
+        """
+        if not self.large_set_specialist.applies_to(program):
+            return
+        result = self.large_set_specialist.analyse(
+            query, program, contract, self.runtime, retrieval
+        )
+        self.large_set_results.append(result)
+        self.shadow_calls += result.calls
+        self.shadow_generated_tokens += result.generated_tokens
+
     def enumerate_query(self, query: Query) -> EvidenceGraph:
         """Phase A: gate + candidate discovery. Enumerator model only."""
         query, contract = compile_query(query.subject, query.relation, query.row_index)
@@ -803,6 +832,10 @@ class CoverPipeline:
                     retrieval = self._run_shadow_retrieval(query, program)
                     if self.numeric_specialist is not None:
                         self._run_numeric_specialist(query, program, contract, retrieval)
+                    if self.large_set_specialist is not None:
+                        self._run_large_set_specialist(
+                            query, program, contract, retrieval
+                        )
         graph = build_graph(query, contract)
         budget = self.config.budget(contract)
         state = RCSEState()

@@ -37,7 +37,7 @@ from cover_kbc.query_intelligence import (
     build_prompt_compiler,
 )
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
-from cover_kbc.specialists import build_numeric_specialist
+from cover_kbc.specialists import build_large_set_specialist, build_numeric_specialist
 from cover_kbc.runtime.tracing import RunTracer
 
 
@@ -142,6 +142,12 @@ def main() -> int:
                 compiler_enabled=prompt_compiler is not None,
                 retrieval_enabled=retriever is not None,
             ),
+            large_set_specialist=build_large_set_specialist(
+                config.get("specialists"),
+                profiler_enabled=profiler is not None,
+                compiler_enabled=prompt_compiler is not None,
+                retrieval_enabled=retriever is not None,
+            ),
         )
         result = pipeline.run(queries, progress=True)
 
@@ -161,6 +167,7 @@ def main() -> int:
         ("M10", "prompt_programs.jsonl", pipeline.prompt_programs),
         ("M11", "parametric_memory.jsonl", pipeline.retrieval_results),
         ("M12", "numeric_specialist.jsonl", pipeline.numeric_results),
+        ("M13", "large_open_set_specialist.jsonl", pipeline.large_set_results),
     ):
         if not records:
             continue

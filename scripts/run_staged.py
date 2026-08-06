@@ -45,7 +45,7 @@ from cover_kbc.query_intelligence import (
     build_prompt_compiler,
 )
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
-from cover_kbc.specialists import build_numeric_specialist
+from cover_kbc.specialists import build_large_set_specialist, build_numeric_specialist
 from cover_kbc.runtime.tracing import RunTracer
 from cover_kbc.staging import StageWriter, read_stage, stage_summary
 from cover_kbc.types import ModelRole, Query
@@ -71,6 +71,8 @@ PROMPT_PROGRAMS = "prompt_programs.jsonl"
 PARAMETRIC_MEMORY = "parametric_memory.jsonl"
 #: Module 12 observability artefact: one record per NUMERIC query analysed.
 NUMERIC_SPECIALIST = "numeric_specialist.jsonl"
+#: Module 13 observability artefact: one record per LARGE_OPEN_SET query.
+LARGE_SET_SPECIALIST = "large_open_set_specialist.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -297,6 +299,25 @@ def write_numeric_specialist(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_large_set_specialist(run_dir: Path, results) -> Path | None:
+    """Persist Module 13's analyses, one record per LARGE_OPEN_SET query."""
+    if not results:
+        return None
+    path = run_dir / LARGE_SET_SPECIALIST
+    calls = tokens = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            calls += result.calls
+            tokens += result.generated_tokens
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[M13] large-open-set specialist: {path}  "
+        f"({len(results)} queries, {calls} shadow calls, {tokens} generated tokens)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -347,6 +368,12 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         compiler_enabled=prompt_compiler is not None,
         retrieval_enabled=retriever is not None,
     )
+    large_set_specialist = build_large_set_specialist(
+        config.get("specialists") if phase == "enumerate" else None,
+        profiler_enabled=profiler is not None,
+        compiler_enabled=prompt_compiler is not None,
+        retrieval_enabled=retriever is not None,
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -373,6 +400,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         runtime, pipeline_cfg, tracer=tracer, verifier_runtime=verifier,
         profiler=profiler, prompt_compiler=prompt_compiler, retriever=retriever,
         numeric_specialist=numeric_specialist,
+        large_set_specialist=large_set_specialist,
     )
 
 
@@ -433,6 +461,7 @@ def phase_enumerate(args, config: dict) -> Path:
     write_prompt_programs(run_dir, pipeline.prompt_programs)
     write_parametric_memory(run_dir, pipeline.retrieval_results)
     write_numeric_specialist(run_dir, pipeline.numeric_results)
+    write_large_set_specialist(run_dir, pipeline.large_set_results)
     manifest.finish()
     manifest.write(run_dir / "manifest_enumerate.json")
     print(json.dumps(stage_summary(run_dir / ENUMERATED), indent=2))

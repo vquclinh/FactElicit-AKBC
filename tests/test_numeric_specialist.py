@@ -805,11 +805,29 @@ def test_no_control_logic_anywhere_in_m12():
         assert forbidden not in blob, f"M12 implements {forbidden}"
 
 
-def test_no_other_specialist_logic_exists():
+def test_only_the_implemented_specialists_exist():
+    """M13 landed as a sibling; M14-M21 still have no files."""
     root = Path("src/cover_kbc/specialists")
     assert sorted(p.name for p in root.glob("*.py")) == [
-        "__init__.py", "numeric_registry.py", "numeric_specialist.py", "numeric_types.py"
+        "__init__.py",
+        "large_set_registry.py", "large_set_specialist.py", "large_set_types.py",
+        "numeric_registry.py", "numeric_specialist.py", "numeric_types.py",
     ]
+
+
+def test_m12_does_not_depend_on_m13():
+    """Siblings over disjoint relations: neither imports the other."""
+    for name in M12_MODULES:
+        source = (Path("src/cover_kbc/specialists") / name).read_text()
+        assert "large_set" not in source, f"{name} references M13"
+    # And M12 still builds with M13 absent from config entirely.
+    assert isinstance(
+        build_numeric_specialist(
+            {"numeric": {"enabled": True}},
+            profiler_enabled=True, compiler_enabled=True, retrieval_enabled=True,
+        ),
+        NumericSpecialist,
+    )
 
 
 def test_module_2_and_module_4_are_untouched():
@@ -1170,9 +1188,10 @@ def test_unsupported_mode_and_unknown_keys_are_rejected():
         NumericSpecialist(NumericSpecialistConfig(enabled=True, mode="production"))
     with pytest.raises(ValueError, match="unknown specialists.numeric key"):
         NumericSpecialistConfig.from_mapping({"enabled": True, "enabledd": True})
+    # `large_open_set` (M13) became valid when that module landed; M14-M21 have not.
     with pytest.raises(ValueError, match="unknown specialists key"):
         build_numeric_specialist(
-            {"numeric": {"enabled": True}, "large_open_set": {}},
+            {"numeric": {"enabled": True}, "null_temporal": {}},
             profiler_enabled=True, compiler_enabled=True, retrieval_enabled=True,
         )
 

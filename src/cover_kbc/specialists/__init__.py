@@ -1,11 +1,54 @@
 """Layer 2 relation-family specialists.
 
-Implemented: **M12 Numeric Specialist** (``hasCapacity``, ``hasArea``). Nothing
-here is a placeholder for the unimplemented specialists - M13 (large open set),
-M14 (null/temporal) and M15 (small-set closure) get their files when they get
-their milestones, as do the consensus engine, the verifier suite and the control
-modules above them.
+Implemented: **M12 Numeric Specialist** (``hasCapacity``, ``hasArea``) and
+**M13 Large-Open-Set Specialist** (``awardWonBy``). They are **siblings over
+disjoint relations**: either may be enabled without the other, and neither
+imports the other. Nothing here is a placeholder for the unimplemented
+specialists - M14 (null/temporal) and M15 (small-set closure) get their files
+when they get their milestones, as do the consensus engine, the verifier suite
+and the control modules above them.
 """
+
+from cover_kbc.specialists.large_set_registry import (
+    AWARD_MENTION_CUES,
+    LARGE_SET_RELATIONS,
+    LARGE_SET_VERSION,
+    FacetTemplate,
+    LargeSetRelationSpec,
+    MentionCue,
+    UnsupportedLargeSetRelation,
+    check_large_set_registry_consistency,
+    facet_taxonomy,
+    facets_for,
+    large_set_spec,
+    mention_taxonomy,
+)
+from cover_kbc.specialists.large_set_specialist import (
+    LARGE_SET_SYSTEM_PROMPT,
+    LargeSetSpecialist,
+    LargeSetSpecialistConfig,
+    LargeSetSpecialistError,
+    build_facet_states,
+    build_large_set_specialist,
+    build_occurrences,
+    classify_mention,
+    extract_mentions,
+    normalise_surface,
+    split_mentions,
+)
+from cover_kbc.specialists.large_set_types import (
+    AwardCandidateObservation,
+    AwardMentionKind,
+    CandidateOccurrence,
+    FacetSearchState,
+    LargeSetFacet,
+    LargeSetFacetKind,
+    LargeSetParseStatus,
+    LargeSetProbe,
+    LargeSetSpecialistPlan,
+    LargeSetSpecialistResult,
+    MentionSource,
+)
 
 from cover_kbc.specialists.numeric_registry import (
     NUMERIC_RELATIONS,
@@ -47,7 +90,41 @@ from cover_kbc.specialists.numeric_types import (
 )
 
 __all__ = [
+    "AWARD_MENTION_CUES",
+    "AwardCandidateObservation",
+    "AwardMentionKind",
+    "CandidateOccurrence",
     "CrossUnitCheck",
+    "FacetSearchState",
+    "FacetTemplate",
+    "LARGE_SET_RELATIONS",
+    "LARGE_SET_SYSTEM_PROMPT",
+    "LARGE_SET_VERSION",
+    "LargeSetFacet",
+    "LargeSetFacetKind",
+    "LargeSetParseStatus",
+    "LargeSetProbe",
+    "LargeSetRelationSpec",
+    "LargeSetSpecialist",
+    "LargeSetSpecialistConfig",
+    "LargeSetSpecialistError",
+    "LargeSetSpecialistPlan",
+    "LargeSetSpecialistResult",
+    "MentionCue",
+    "MentionSource",
+    "UnsupportedLargeSetRelation",
+    "build_facet_states",
+    "build_large_set_specialist",
+    "build_occurrences",
+    "check_large_set_registry_consistency",
+    "classify_mention",
+    "extract_mentions",
+    "facet_taxonomy",
+    "facets_for",
+    "large_set_spec",
+    "mention_taxonomy",
+    "normalise_surface",
+    "split_mentions",
     "NUMERIC_RELATIONS",
     "NUMERIC_SYSTEM_PROMPT",
     "NumericClusterState",

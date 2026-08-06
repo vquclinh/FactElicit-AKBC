@@ -858,11 +858,12 @@ def build_numeric_specialist(
             all three and rebuilds none of them.
     """
     block = dict(config or {})
-    unknown = sorted(set(block) - {"numeric"})
+    unknown = sorted(set(block) - {"numeric", "large_open_set"})
     if unknown:
         raise ValueError(
             f"unknown specialists key(s) {unknown}; this milestone defines "
-            "'numeric' (M12) only (M13-M21 are not implemented)"
+            "'numeric' (M12) and 'large_open_set' (M13) only (M14-M21 are not "
+            "implemented)"
         )
     specialist_config = NumericSpecialistConfig.from_mapping(block.get("numeric"))
     if not specialist_config.enabled:
