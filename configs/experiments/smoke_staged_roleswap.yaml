@@ -232,3 +232,30 @@ specialist_verifier:
       - BAC
   # Module 4's contextual calibration (T = 1, nothing fitted).
   use_calibration: true
+
+# Layer 4 - Module 18 Bidirectional and Counterfactual Verification.
+#
+# Proposal §14: "M18 creates genuinely new evidence instead of issuing a generic
+# 'think again' instruction." Four mechanisms - reverse check, key-condition
+# reconstruction, counterfactual pair, candidate-free recall - each asking a
+# structurally different question rather than rewording Module 17's.
+#
+# Shadow-only and off by default. Enabling it builds the deterministic catalogue
+# of eligible checks and executes NOTHING: every check spends a real call, and
+# deciding which is worth one is Module 20/21's. A caller runs checks explicitly.
+#
+# The optional §14.1 factual-decoding adapter is deliberately absent: the
+# proposal makes it experimental and conditional on a validation ablation that
+# cannot run during architecture construction.
+bidirectional_verification:
+  enabled: false
+  mode: shadow
+  check_version: m18-v1
+  # Which §14 mechanisms the catalogue may offer. Counterfactual near-miss
+  # classes are never listed here - they come from the relation contract's own
+  # hard-negative rules, so this file cannot invent one.
+  supported_checks:
+    - REVERSE
+    - KEY_CONDITION
+    - COUNTERFACTUAL
+    - CANDIDATE_FREE_RECALL

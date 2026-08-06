@@ -50,6 +50,8 @@ from cover_kbc.elicitation.library import get_view, views_for
 from cover_kbc.evidence.consensus import AtomicConsensusEngine
 from cover_kbc.evidence.consensus_adapters import applicable_specialist
 from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusResult
+from cover_kbc.verification.bidirectional_types import QueryBidirectionalResult
+from cover_kbc.verification.bidirectional_verifier import BidirectionalVerifier
 from cover_kbc.verification.specialist_types import QuerySpecialistVerificationResult
 from cover_kbc.verification.specialist_verifier import SpecialistVerifier
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
@@ -300,6 +302,7 @@ class CoverPipeline:
         small_set_specialist: "SmallSetSpecialist | None" = None,
         consensus_engine: "AtomicConsensusEngine | None" = None,
         specialist_verifier: "SpecialistVerifier | None" = None,
+        bidirectional_verifier: "BidirectionalVerifier | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -398,6 +401,17 @@ class CoverPipeline:
             )
         self.specialist_verifier = specialist_verifier
         self.specialist_verifications: list[QuerySpecialistVerificationResult] = []
+        # Module 18, shadow mode. Like Module 17 it builds only the
+        # deterministic catalogue of eligible checks - §14's four mechanisms
+        # each spend a real call, and choosing which is worth one is Module
+        # 20/21's. Nothing is executed without an explicit request.
+        if bidirectional_verifier is not None and consensus_engine is None:
+            raise ValueError(
+                "a bidirectional verifier (M18) was supplied without a "
+                "consensus engine (M16); M18 checks targets M16 identifies"
+            )
+        self.bidirectional_verifier = bidirectional_verifier
+        self.bidirectional_results: list[QueryBidirectionalResult] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -1488,6 +1502,55 @@ class CoverPipeline:
         self.consensus_results.append(result)
         if self.specialist_verifier is not None:
             self._catalogue_specialist_targets(result)
+        if self.bidirectional_verifier is not None:
+            self._catalogue_bidirectional_checks(result)
+
+    def _catalogue_bidirectional_checks(self, consensus: QueryConsensusResult) -> None:
+        """Record which §14 checks *could* be posed. Spends nothing.
+
+        Module 15's pending descriptors are attached to the checks they asked
+        for, as provenance - they never reach a prompt.
+        """
+        self.bidirectional_results.append(QueryBidirectionalResult(
+            check_version=self.bidirectional_verifier.check_version,
+            relation=consensus.relation, subject=consensus.subject,
+            row_index=consensus.row_index,
+            catalogue=self.bidirectional_verifier.catalogue(consensus),
+        ))
+
+    def execute_bidirectional_checks(
+        self,
+        consensus: QueryConsensusResult,
+        requests: "Sequence[Any]",
+        runtime: LMRuntime | None = None,
+    ) -> QueryBidirectionalResult:
+        """Run Module 18 checks **the caller chose**. Explicit by design.
+
+        Shadow spend: it joins the same shadow counters Module 11 established,
+        never Module 7's per-query budget - Module 20 owns production
+        verification spend and does not exist yet.
+        """
+        if self.bidirectional_verifier is None:
+            raise ValueError("no bidirectional verifier (M18) is configured")
+        _, contract = compile_query(
+            consensus.subject, consensus.relation, consensus.row_index
+        )
+        result = self.bidirectional_verifier.execute_all(
+            consensus, contract, runtime or self.runtime, requests,
+            primary_model_family=getattr(self.runtime.spec, "family", ""),
+        )
+        for index, existing in enumerate(self.bidirectional_results):
+            if (
+                existing.relation == result.relation
+                and existing.subject == result.subject
+                and existing.row_index == result.row_index
+            ):
+                self.bidirectional_results[index] = result
+                break
+        else:
+            self.bidirectional_results.append(result)
+        self.shadow_calls += result.calls
+        return result
 
     def _catalogue_specialist_targets(self, consensus: QueryConsensusResult) -> None:
         """Record which targets Module 17 *could* verify. Spends nothing.

@@ -41,6 +41,7 @@ from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_con
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
 from cover_kbc.verification.specialist_verifier import build_specialist_verifier
 from cover_kbc.query_intelligence import (
     ParametricMemoryRecord,
@@ -97,6 +98,8 @@ SMALL_SET_SPECIALIST = "small_set_specialist.jsonl"
 ATOMIC_CONSENSUS = "atomic_consensus.jsonl"
 #: Module 17 - one specialist-verification record per query. Observability only.
 SPECIALIST_VERIFICATION = "specialist_verification.jsonl"
+#: Module 18 - one bidirectional-check record per query. Observability only.
+BIDIRECTIONAL_VERIFICATION = "bidirectional_verification.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -497,6 +500,36 @@ def write_specialist_verification(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_bidirectional_verification(run_dir: Path, results) -> Path | None:
+    """Persist Module 18's checks, one record per query.
+
+    The pipeline writes the deterministic catalogue of eligible §14 checks and
+    executes none: each check spends a real call, and choosing which is worth
+    one is Module 20/21's. A caller that asks explicitly gets its records in the
+    same row.
+    """
+    if not results:
+        return None
+    path = run_dir / BIDIRECTIONAL_VERIFICATION
+    eligible = skipped = calls = executed = recalled = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            eligible += sum(1 for c in result.catalogue if c.eligible)
+            skipped += len(result.ineligible_checks)
+            calls += result.calls
+            executed += len(result.records)
+            recalled += len(result.newly_recalled_candidates)
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[M18] bidirectional checks: {path}  "
+        f"({len(results)} queries, {eligible} eligible checks, {skipped} "
+        f"ineligible, {executed} executed, {recalled} newly recalled "
+        f"candidates, {calls} calls)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -606,6 +639,17 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         )
         if consensus_engine is not None else None
     )
+    # Module 18 is built wherever Module 16 is, for the same reason: its
+    # catalogue is a projection of M16 state and costs nothing.
+    bidirectional_verifier = (
+        build_bidirectional_verifier(
+            config.get("bidirectional_verification"),
+            consensus_enabled=bool(
+                (config.get("consensus") or {}).get("enabled", False)
+            ),
+        )
+        if consensus_engine is not None else None
+    )
 
     if phase == "enumerate":
         runtime = build_runtime(enumerator_cfg)
@@ -637,6 +681,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         small_set_specialist=small_set_specialist,
         consensus_engine=consensus_engine,
         specialist_verifier=specialist_verifier,
+        bidirectional_verifier=bidirectional_verifier,
     )
 
 
@@ -842,6 +887,7 @@ def phase_decide(args, config: dict) -> Path:
     result = pipeline.decide(read_stage(source), on_result=_decide_reporter(total))
     write_atomic_consensus(run_dir, pipeline.consensus_results)
     write_specialist_verification(run_dir, pipeline.specialist_verifications)
+    write_bidirectional_verification(run_dir, pipeline.bidirectional_results)
 
     # Completeness is checked against the *intended* query set, not against the
     # predictions themselves - comparing output to itself could never catch an

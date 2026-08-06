@@ -31,6 +31,7 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
 from cover_kbc.verification.specialist_verifier import build_specialist_verifier
 from cover_kbc.pipeline import CoverPipeline, ExecutionMode, PipelineConfig
 from cover_kbc.query_intelligence import (
@@ -196,6 +197,14 @@ def main() -> int:
                 ),
                 verifier_available=verifier_runtime is not None,
             ) if (config.get("consensus") or {}).get("enabled", False) else None,
+            # Module 18, shadow: the catalogue costs nothing and no check runs
+            # without an explicit request.
+            bidirectional_verifier=build_bidirectional_verifier(
+                config.get("bidirectional_verification"),
+                consensus_enabled=bool(
+                    (config.get("consensus") or {}).get("enabled", False)
+                ),
+            ) if (config.get("consensus") or {}).get("enabled", False) else None,
         )
         result = pipeline.run(queries, progress=True)
 
@@ -220,6 +229,7 @@ def main() -> int:
         ("M15", "small_set_specialist.jsonl", pipeline.small_set_results),
         ("M16", "atomic_consensus.jsonl", pipeline.consensus_results),
         ("M17", "specialist_verification.jsonl", pipeline.specialist_verifications),
+        ("M18", "bidirectional_verification.jsonl", pipeline.bidirectional_results),
     ):
         if not records:
             continue
