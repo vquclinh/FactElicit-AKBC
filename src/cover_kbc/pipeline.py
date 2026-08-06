@@ -50,6 +50,8 @@ from cover_kbc.elicitation.library import get_view, views_for
 from cover_kbc.evidence.consensus import AtomicConsensusEngine
 from cover_kbc.evidence.consensus_adapters import applicable_specialist
 from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusResult
+from cover_kbc.evidence.layer4 import Layer4EvidenceIntegrator, prior_family_map
+from cover_kbc.evidence.layer4_types import Layer4EvidenceState
 from cover_kbc.verification.bidirectional_types import QueryBidirectionalResult
 from cover_kbc.verification.bidirectional_verifier import BidirectionalVerifier
 from cover_kbc.verification.specialist_types import QuerySpecialistVerificationResult
@@ -303,6 +305,7 @@ class CoverPipeline:
         consensus_engine: "AtomicConsensusEngine | None" = None,
         specialist_verifier: "SpecialistVerifier | None" = None,
         bidirectional_verifier: "BidirectionalVerifier | None" = None,
+        layer4_integrator: "Layer4EvidenceIntegrator | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -412,6 +415,15 @@ class CoverPipeline:
             )
         self.bidirectional_verifier = bidirectional_verifier
         self.bidirectional_results: list[QueryBidirectionalResult] = []
+        # Layer-4 integration, shadow mode. Non-neural: it projects Modules 16,
+        # 17 and 18 into one evidence view for Module 19 and spends nothing.
+        if layer4_integrator is not None and consensus_engine is None:
+            raise ValueError(
+                "a Layer-4 integrator was supplied without a consensus engine "
+                "(M16); the Layer-4 view is a projection of Module 16's state"
+            )
+        self.layer4_integrator = layer4_integrator
+        self.layer4_results: list[Layer4EvidenceState] = []
         self.shadow_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
@@ -1504,6 +1516,60 @@ class CoverPipeline:
             self._catalogue_specialist_targets(result)
         if self.bidirectional_verifier is not None:
             self._catalogue_bidirectional_checks(result)
+        if self.layer4_integrator is not None:
+            self._integrate_layer4(result, graph)
+
+    def _integrate_layer4(
+        self, consensus: QueryConsensusResult, graph: EvidenceGraph
+    ) -> None:
+        """Project M16 + whatever M17/M18 already ran. **Zero calls.**
+
+        Whatever a caller has executed by this point is integrated; nothing is
+        executed to fill a gap, and a query with no verification simply has an
+        overlay that says so.
+        """
+        self.layer4_results.append(self.layer4_integrator.integrate(
+            consensus,
+            verifications=[
+                result
+                for query in self.specialist_verifications
+                if self._same_query(query, consensus)
+                for result in query.results
+            ],
+            checks=[
+                record
+                for query in self.bidirectional_results
+                if self._same_query(query, consensus)
+                for record in query.records
+            ],
+            # Module 16's persisted state carries candidate keys but not the
+            # families behind them, so the only defensible source is Module 3.
+            prior_families=prior_family_map(graph),
+        ))
+
+    @staticmethod
+    def _same_query(result: Any, consensus: QueryConsensusResult) -> bool:
+        return (
+            result.relation == consensus.relation
+            and result.subject == consensus.subject
+            and result.row_index == consensus.row_index
+        )
+
+    def integrate_layer4(
+        self, consensus: QueryConsensusResult, graph: EvidenceGraph
+    ) -> Layer4EvidenceState:
+        """Rebuild one query's Layer-4 view after explicit M17/M18 execution."""
+        if self.layer4_integrator is None:
+            raise ValueError("no Layer-4 integrator is configured")
+        before = len(self.layer4_results)
+        self._integrate_layer4(consensus, graph)
+        result = self.layer4_results.pop()
+        for index in range(before):
+            if self._same_query(self.layer4_results[index], consensus):
+                self.layer4_results[index] = result
+                return result
+        self.layer4_results.append(result)
+        return result
 
     def _catalogue_bidirectional_checks(self, consensus: QueryConsensusResult) -> None:
         """Record which §14 checks *could* be posed. Spends nothing.

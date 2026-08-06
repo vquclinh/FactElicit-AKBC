@@ -41,6 +41,7 @@ from cover_kbc.models.registry import build_runtime, model_blocks, spec_from_con
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.evidence.layer4 import build_layer4_integrator
 from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
 from cover_kbc.verification.specialist_verifier import build_specialist_verifier
 from cover_kbc.query_intelligence import (
@@ -100,6 +101,8 @@ ATOMIC_CONSENSUS = "atomic_consensus.jsonl"
 SPECIALIST_VERIFICATION = "specialist_verification.jsonl"
 #: Module 18 - one bidirectional-check record per query. Observability only.
 BIDIRECTIONAL_VERIFICATION = "bidirectional_verification.jsonl"
+#: Layer-4 boundary - one integrated evidence state per query.
+LAYER4_EVIDENCE = "layer4_evidence.jsonl"
 #: Bug detector, not a stopping rule: the call/token budget is what actually
 #: bounds the loop. Exceeding this means the orchestration is cycling, which
 #: must fail loudly rather than quietly return a half-finished row.
@@ -530,6 +533,39 @@ def write_bidirectional_verification(run_dir: Path, results) -> Path | None:
     return path
 
 
+def write_layer4_evidence(run_dir: Path, results) -> Path | None:
+    """Persist the Layer-4 evidence state, one record per query.
+
+    Non-neural: the call counts in each row are the Module 17 and Module 18
+    calls the row *represents*, each counted once. Integration itself spends
+    nothing.
+    """
+    if not results:
+        return None
+    path = run_dir / LAYER4_EVIDENCE
+    candidates = verified = checked = discovered = credited = calls = 0
+    with path.open("w", encoding="utf-8") as handle:
+        for result in results:
+            candidates += len(result.candidates)
+            verified += sum(
+                1 for c in result.candidates if c.specialist_verifier.available
+            )
+            checked += sum(len(c.structural_checks) for c in result.candidates)
+            discovered += len(result.discovered_candidates)
+            credited += len(result.cross_model_credited)
+            calls += result.cost.total_calls
+            handle.write(json.dumps(result.to_json(), ensure_ascii=False) + "\n")
+    print(
+        f"[L4] verification evidence: {path}  "
+        f"({len(results)} queries, {candidates} candidate overlays, {verified} "
+        f"with verifier evidence, {checked} structural checks, {discovered} "
+        f"discovered, {credited} cross-model credited, {calls} represented "
+        f"calls, 0 integration calls)",
+        flush=True,
+    )
+    return path
+
+
 def audit_or_die(config: dict) -> dict:
     """Check the 32B budget before any weights load. Fails closed."""
     enumerator, verifier = model_blocks(config)
@@ -639,6 +675,15 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         )
         if consensus_engine is not None else None
     )
+    layer4_integrator = (
+        build_layer4_integrator(
+            config.get("layer4_integration"),
+            consensus_enabled=bool(
+                (config.get("consensus") or {}).get("enabled", False)
+            ),
+        )
+        if consensus_engine is not None else None
+    )
     # Module 18 is built wherever Module 16 is, for the same reason: its
     # catalogue is a projection of M16 state and costs nothing.
     bidirectional_verifier = (
@@ -682,6 +727,7 @@ def build_pipeline(config: dict, *, phase: str, tracer: RunTracer | None) -> Cov
         consensus_engine=consensus_engine,
         specialist_verifier=specialist_verifier,
         bidirectional_verifier=bidirectional_verifier,
+        layer4_integrator=layer4_integrator,
     )
 
 
@@ -888,6 +934,7 @@ def phase_decide(args, config: dict) -> Path:
     write_atomic_consensus(run_dir, pipeline.consensus_results)
     write_specialist_verification(run_dir, pipeline.specialist_verifications)
     write_bidirectional_verification(run_dir, pipeline.bidirectional_results)
+    write_layer4_evidence(run_dir, pipeline.layer4_results)
 
     # Completeness is checked against the *intended* query set, not against the
     # predictions themselves - comparing output to itself could never catch an

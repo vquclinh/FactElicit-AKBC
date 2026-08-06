@@ -31,6 +31,7 @@ from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.evidence.consensus import build_consensus_engine
+from cover_kbc.evidence.layer4 import build_layer4_integrator
 from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
 from cover_kbc.verification.specialist_verifier import build_specialist_verifier
 from cover_kbc.pipeline import CoverPipeline, ExecutionMode, PipelineConfig
@@ -205,6 +206,13 @@ def main() -> int:
                     (config.get("consensus") or {}).get("enabled", False)
                 ),
             ) if (config.get("consensus") or {}).get("enabled", False) else None,
+            # Layer-4 boundary integration, shadow and non-neural.
+            layer4_integrator=build_layer4_integrator(
+                config.get("layer4_integration"),
+                consensus_enabled=bool(
+                    (config.get("consensus") or {}).get("enabled", False)
+                ),
+            ) if (config.get("consensus") or {}).get("enabled", False) else None,
         )
         result = pipeline.run(queries, progress=True)
 
@@ -230,6 +238,7 @@ def main() -> int:
         ("M16", "atomic_consensus.jsonl", pipeline.consensus_results),
         ("M17", "specialist_verification.jsonl", pipeline.specialist_verifications),
         ("M18", "bidirectional_verification.jsonl", pipeline.bidirectional_results),
+        ("L4", "layer4_evidence.jsonl", pipeline.layer4_results),
     ):
         if not records:
             continue

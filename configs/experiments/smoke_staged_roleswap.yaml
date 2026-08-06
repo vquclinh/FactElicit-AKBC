@@ -259,3 +259,21 @@ bidirectional_verification:
     - KEY_CONDITION
     - COUNTERFACTUAL
     - CANDIDATE_FREE_RECALL
+
+# Layer 4 boundary - verification evidence integration.
+#
+# NOT a new numbered module. It projects Module 16's consensus, Module 17's
+# calibrated verifications and Module 18's structural checks into one
+# deterministic evidence state for Module 19 to consume.
+#
+# Non-neural: zero calls, zero tokens. It integrates what explicit callers
+# already executed and never fills a gap by running something itself.
+# atomic_consensus.jsonl stays byte-identical, so the M16 / M16+M17 /
+# M16+M17+M18 ablations remain honest.
+#
+# Deterministic, so there is nothing to tune: no threshold, no weight, no
+# cutoff, no stop value.
+layer4_integration:
+  enabled: false
+  mode: shadow
+  integration_version: layer4-v1
