@@ -487,3 +487,100 @@ def test_the_staged_pass_runs_end_to_end_without_weights(harness, tmp_path):
     assert upgraded["upgraded_state"]["coverage_gap"] == len(harness.SMOKE_MANIFEST)
     # Roles alternated and nothing is left resident.
     assert staged.history == ["enumerator", "verifier"] * 2
+
+
+# ==========================================================================
+# LabelScoreRequest contract
+#
+# The first real Qwen run reached `score_labels` and failed on a malformed
+# `labels` argument. The runtime was right to refuse it; the harness was wrong.
+# ==========================================================================
+
+
+def test_the_primitive_smoke_uses_the_canonical_label_mapping():
+    source = HARNESS.read_text()
+    assert "from cover_kbc.verification.blind import LABEL_TOKENS" in source
+    assert "labels = dict(LABEL_TOKENS)" in source
+    # Never a flattened sequence, and never hand-retyped labels.
+    for forbidden in ("tuple(LABEL_TOKENS", "list(LABEL_TOKENS",
+                      'labels=("A", "B", "C")', '("A", "B", "C")',
+                      'LABEL_TOKENS[name]'):
+        assert forbidden not in source, forbidden
+
+
+def test_the_harness_declares_no_duplicate_label_mapping():
+    """A/B/C exists once, in Module 4. The harness reads it."""
+    code = _code_only()
+    for forbidden in ('"VALID": "A"', '"INVALID": "B"', '"UNKNOWN": "C"',
+                      "LABEL_TOKENS ="):
+        assert forbidden not in code, forbidden
+
+
+def test_the_harness_matches_the_production_call_shape():
+    """Same construction as every `LabelScoreRequest` in production."""
+    import inspect
+
+    from cover_kbc.verification import blind, specialist_verifier
+
+    production = inspect.getsource(blind) + inspect.getsource(specialist_verifier)
+    # The invariant, not a count: every production `labels=` argument is a
+    # `dict(...)` of a declared mapping - LABEL_TOKENS, GATE_LABELS or a
+    # passthrough - and never a flattened sequence.
+    label_arguments = [
+        line.split("labels=", 1)[1].strip().rstrip(",")
+        for line in production.splitlines() if "labels=" in line
+    ]
+    assert label_arguments, "no production label argument found"
+    assert all(a.startswith("dict(") for a in label_arguments), label_arguments
+    assert "dict(LABEL_TOKENS)" in label_arguments
+    from cover_kbc.verification.blind import GATE_LABELS, LABEL_TOKENS
+
+    assert isinstance(LABEL_TOKENS, dict) and isinstance(GATE_LABELS, dict)
+    assert "labels=dict(LABEL_TOKENS)" not in HARNESS.read_text()  # via a local
+    assert "labels=labels" in HARNESS.read_text()
+    assert "labels = dict(LABEL_TOKENS)" in HARNESS.read_text()
+    # And the audited verifier system prompt is used, as production does.
+    assert "system_prompt=VERIFIER_SYSTEM_PROMPT" in HARNESS.read_text()
+
+
+def test_the_declared_contract_is_a_mapping_and_the_old_shape_fails():
+    import dataclasses
+
+    from cover_kbc.models.base import LabelScoreRequest
+    from cover_kbc.verification.blind import LABEL_TOKENS
+
+    field = next(
+        f for f in dataclasses.fields(LabelScoreRequest) if f.name == "labels")
+    assert "dict" in str(field.type)
+    assert isinstance(LABEL_TOKENS, dict)
+
+    # The exact failure the real run hit, reproduced from the old shape.
+    flattened = tuple(LABEL_TOKENS[n] for n in ("VALID", "INVALID", "UNKNOWN"))
+    with pytest.raises(ValueError, match="length 1; 2 is required"):
+        dict(flattened)
+    # The corrected shape round-trips.
+    assert dict(dict(LABEL_TOKENS)) == LABEL_TOKENS
+
+
+def test_single_token_scoring_is_inspected_never_assumed():
+    """A/B/C may or may not be single-token; the runtime decides."""
+    source = HARNESS.read_text()
+    assert '"label_single_token"' in source
+    assert '"scoring_strategy"' in source
+    # The harness never asserts single-token, and never picks a strategy.
+    for forbidden in ("single_token = True", "assert encoding.single_token",
+                      "next_token_logits\"", "sequence_loglikelihood\""):
+        assert forbidden not in source, forbidden
+
+
+def test_the_production_runtime_and_verifier_are_unchanged():
+    assert subprocess.run(
+        ["git", "status", "--porcelain",
+         "src/cover_kbc/models/huggingface.py",
+         "src/cover_kbc/models/base.py",
+         "src/cover_kbc/verification/blind.py",
+         "src/cover_kbc/verification/specialist_verifier.py"],
+        capture_output=True, text=True, check=True).stdout == ""
+    # `dict(request.labels)` still fails closed on a malformed sequence.
+    source = Path("src/cover_kbc/models/huggingface.py").read_text()
+    assert "self.inspect_labels(dict(request.labels))" in source

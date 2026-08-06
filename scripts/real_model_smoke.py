@@ -205,16 +205,21 @@ def primitive_generate(runtime: Any, spec: dict) -> dict:
 
 def primitive_score_labels(runtime: Any, spec: dict) -> dict:
     """One real `LMRuntime.score_labels` through the production Qwen runtime."""
-    from cover_kbc.verification.blind import LABEL_TOKENS
+    from cover_kbc.verification.blind import LABEL_TOKENS, VERIFIER_SYSTEM_PROMPT
 
-    # The audited A/B/C surface tokens, read from Module 4 rather than retyped.
-    labels = tuple(LABEL_TOKENS[name] for name in ("VALID", "INVALID", "UNKNOWN"))
+    # `LabelScoreRequest.labels` is a **mapping** from label name to the exact
+    # continuation string whose first token is scored. Every production call
+    # site passes `dict(LABEL_TOKENS)`; flattening it to its values produced a
+    # sequence that `dict(request.labels)` cannot unpack, which is what the
+    # first real Qwen run caught. The runtime was right to refuse it.
+    labels = dict(LABEL_TOKENS)
     prompt = (
         "Statement: Lisbon is the capital of Portugal.\n"
         "A) VALID  B) INVALID  C) UNKNOWN\nAnswer:"
     )
     request = LabelScoreRequest(
         prompt=prompt, labels=labels,
+        system_prompt=VERIFIER_SYSTEM_PROMPT,
         metadata={"smoke": "primitive_score_labels"},
     )
     result = runtime.score_labels(request)
@@ -234,13 +239,24 @@ def primitive_score_labels(runtime: Any, spec: dict) -> dict:
     probabilities = [v / total for v in exps]
     if abs(sum(probabilities) - 1.0) > 1e-6:
         raise SmokeFailure("label probabilities do not normalise")
+    # How the *real* tokenizer encoded the labels, and therefore which scoring
+    # path ran. Never assumed to be single-token: the runtime inspects it and
+    # falls back to sequence log-likelihood when it is not.
+    encoding = getattr(runtime, "label_encoding", None)
     return {
         "ok": True,
         "model_id": result.model_id,
         "expected_model_id": spec["model_id"],
         "revision": spec.get("revision"),
         "tokenizer_backend": spec.get("tokenizer_backend"),
-        "labels": list(labels),
+        "labels": dict(labels),
+        "label_single_token": (
+            bool(encoding.single_token) if encoding is not None else None),
+        "scoring_strategy": (
+            encoding.strategy if encoding is not None else None),
+        "label_token_ids": (
+            {name: list(ids) for name, ids in encoding.token_ids.items()}
+            if encoding is not None else None),
         "logits_finite": True,
         "probabilities_normalise": True,
         "generated_tokens": 0,          # scoring generates nothing (Audit 0010)
