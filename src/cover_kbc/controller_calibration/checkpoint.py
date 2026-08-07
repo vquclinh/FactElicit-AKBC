@@ -14,13 +14,22 @@ leaderboard score weeks later. Refusing is cheap; the run restarts.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 #: Written into the checkpoint so a future format change is detectable.
-CHECKPOINT_VERSION = "collection-checkpoint-v1"
+#:
+#: ``v3`` (Audit 0045 C-16) adds an explicit committed telemetry prefix. The
+#: completed row set remains the row-commit authority, but the checkpoint now
+#: also records the exact telemetry bytes that were acknowledged by that commit.
+#: On resume, bytes outside that prefix are an interrupted tail; any mutation
+#: inside it is committed corruption and is refused.
+CHECKPOINT_VERSION = "collection-checkpoint-v3"
+
+EMPTY_TELEMETRY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 class ResumeRefused(RuntimeError):
@@ -57,24 +66,96 @@ class RunIdentity:
         )
 
 
-@dataclass
-class CollectionCheckpoint:
-    """Which rows are done, plus the accounting to restore alongside them."""
+@dataclass(frozen=True)
+class TelemetryCommitBoundary:
+    """The telemetry prefix acknowledged by the last checkpoint commit."""
 
-    identity: RunIdentity
-    completed_rows: list[int]
-    failed_rows: list[int]
-    counters: dict[str, Any]
-    checkpoint_version: str = CHECKPOINT_VERSION
+    byte_length: int = 0
+    record_count: int = 0
+    sha256: str = EMPTY_TELEMETRY_SHA256
+
+    def __post_init__(self) -> None:
+        if self.byte_length < 0:
+            raise ResumeRefused("telemetry_committed_bytes cannot be negative")
+        if self.record_count < 0:
+            raise ResumeRefused("telemetry_committed_records cannot be negative")
+        if len(self.sha256) != 64:
+            raise ResumeRefused(
+                "telemetry_committed_sha256 must be a SHA-256 hex digest"
+            )
+        try:
+            int(self.sha256, 16)
+        except ValueError as error:
+            raise ResumeRefused(
+                "telemetry_committed_sha256 must be a SHA-256 hex digest"
+            ) from error
+
+    @classmethod
+    def empty(cls) -> "TelemetryCommitBoundary":
+        return cls()
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, Any]) -> "TelemetryCommitBoundary":
+        try:
+            return cls(
+                byte_length=int(payload["telemetry_committed_bytes"]),
+                record_count=int(payload["telemetry_committed_records"]),
+                sha256=str(payload["telemetry_committed_sha256"]),
+            )
+        except KeyError as error:
+            raise ResumeRefused(
+                f"checkpoint is missing committed telemetry boundary field "
+                f"{error.args[0]!r}; refusing to infer it from artifacts"
+            ) from None
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "telemetry_committed_bytes": self.byte_length,
+            "telemetry_committed_records": self.record_count,
+            "telemetry_committed_sha256": self.sha256,
+        }
+
+
+@dataclass
+class CollectionCheckpoint:
+    """Which rows are done, plus the accounting to restore alongside them.
+
+    ``completed_rows`` is **the durable commit boundary**. A row is in it only
+    once its telemetry, prediction, coverage and accounting have all been
+    written, so on resume it is the authority against which every artifact is
+    reconciled: anything on disk describing a row that is not listed here
+    belongs to an interrupted transaction and is not committed calibration
+    data (Audit 0043 C-04).
+
+    ``unresolved_failed_rows`` and ``failure_history`` answer two different
+    questions and are therefore two fields. The first is "is the corpus
+    incomplete?", which the exit gate reads. The second is "what went wrong
+    along the way?", which is diagnostics and survives a successful retry.
+    """
+
+    identity: RunIdentity
+    completed_rows: list[int]
+    #: Rows that failed and have not since completed. Empties as retries land.
+    unresolved_failed_rows: list[int]
+    counters: dict[str, Any]
+    #: Every failed attempt, in order. Never pruned by a later success.
+    failure_history: list[dict[str, Any]] = field(default_factory=list)
+    telemetry_committed: TelemetryCommitBoundary = field(
+        default_factory=TelemetryCommitBoundary.empty
+    )
+    checkpoint_version: str = CHECKPOINT_VERSION
+
+    def to_json(self) -> dict[str, Any]:
+        payload = {
             "checkpoint_version": self.checkpoint_version,
             "identity": self.identity.to_json(),
             "completed_rows": sorted(self.completed_rows),
-            "failed_rows": sorted(self.failed_rows),
+            "unresolved_failed_rows": sorted(self.unresolved_failed_rows),
+            "failure_history": list(self.failure_history),
             "counters": dict(self.counters),
         }
+        payload.update(self.telemetry_committed.to_json())
+        return payload
 
     def save(self, path: str | Path) -> Path:
         """Write atomically - a torn checkpoint is worse than none."""
@@ -96,8 +177,10 @@ class CollectionCheckpoint:
         return cls(
             identity=RunIdentity.from_json(payload["identity"]),
             completed_rows=list(payload.get("completed_rows", [])),
-            failed_rows=list(payload.get("failed_rows", [])),
+            unresolved_failed_rows=list(payload.get("unresolved_failed_rows", [])),
             counters=dict(payload.get("counters", {})),
+            failure_history=list(payload.get("failure_history", [])),
+            telemetry_committed=TelemetryCommitBoundary.from_json(payload),
             checkpoint_version=version,
         )
 
@@ -131,5 +214,6 @@ __all__ = [
     "CollectionCheckpoint",
     "ResumeRefused",
     "RunIdentity",
+    "TelemetryCommitBoundary",
     "resume_from",
 ]

@@ -8,6 +8,9 @@ nothing in the artifacts showing it happened.
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from cover_kbc.controller_calibration.readiness import ReadinessState, evaluate_readiness
 
@@ -118,3 +121,99 @@ def test_report_serialises_its_reasons(tmp_path) -> None:
     payload = evaluate_readiness(_config(tmp_path), base_dir=tmp_path).to_json()
     assert payload["may_run_validation"] is False
     assert payload["blockers"]
+
+
+# ==========================================================================
+# Collection readiness - Audit 0041 F-09
+#
+# The artifact gate above says nothing about whether a profile can *collect*.
+# Audit 0041 found the collection runner starting on a `split: val` profile
+# with every upgraded module off, running to completion, and printing PASS over
+# an empty telemetry file. These are the checks that now refuse it, and they
+# run before a single weight loads.
+# ==========================================================================
+
+import yaml
+
+from cover_kbc.controller_calibration.readiness import (
+    FORBIDDEN_COLLECTION_MODULES,
+    REQUIRED_COLLECTION_MODULES,
+    evaluate_collection_readiness,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+TRAIN_CONFIG = ROOT / "configs" / "experiments" / "cover_kbc_v2_train_collection.yaml"
+TARGET_CONFIG = ROOT / "configs" / "experiments" / "cover_kbc_v2_mistral24_qwen4.yaml"
+
+
+def _train_config() -> dict:
+    return yaml.safe_load(TRAIN_CONFIG.read_text())
+
+
+def test_the_committed_train_config_may_collect() -> None:
+    report = evaluate_collection_readiness(
+        _train_config(), base_dir=TRAIN_CONFIG.parent)
+    assert report.may_run_collection, report.blockers
+    assert report.details["split"] == "train"
+
+
+def test_the_committed_train_config_is_not_validation_ready() -> None:
+    """No TRAIN-derived M20/M21 artifact exists yet, and it must not pretend."""
+    report = evaluate_collection_readiness(
+        _train_config(), base_dir=TRAIN_CONFIG.parent)
+    assert not report.may_run_validation
+
+
+def test_the_frozen_target_config_may_not_collect() -> None:
+    """It declares `split: val` and leaves the upgraded stack off."""
+    report = evaluate_collection_readiness(
+        yaml.safe_load(TARGET_CONFIG.read_text()), base_dir=TARGET_CONFIG.parent)
+    assert not report.may_run_collection
+    assert any("may only read 'train'" in b for b in report.blockers)
+    assert any("parametric_retrieval" in b for b in report.blockers)
+
+
+def test_a_val_split_is_refused() -> None:
+    config = _train_config()
+    config["experiment"]["split"] = "val"
+    report = evaluate_collection_readiness(config, base_dir=TRAIN_CONFIG.parent)
+    assert not report.may_run_collection
+
+
+@pytest.mark.parametrize("path,label", REQUIRED_COLLECTION_MODULES)
+def test_every_required_upgraded_module_is_enforced(path, label) -> None:
+    config = _train_config()
+    node = config
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]]["enabled"] = False
+    report = evaluate_collection_readiness(config, base_dir=TRAIN_CONFIG.parent)
+    assert not report.may_run_collection, label
+    assert any(label in b for b in report.blockers)
+
+
+@pytest.mark.parametrize("path,label", FORBIDDEN_COLLECTION_MODULES)
+def test_calibrated_modules_may_not_be_on_during_collection(path, label) -> None:
+    """M20/M21 are what this run produces; enabling them would be circular."""
+    config = _train_config()
+    node = config
+    for key in path[:-1]:
+        node = node[key]
+    node.setdefault(path[-1], {})["enabled"] = True
+    report = evaluate_collection_readiness(config, base_dir=TRAIN_CONFIG.parent)
+    assert not report.may_run_collection, label
+
+
+def test_an_unusable_model_profile_is_refused() -> None:
+    config = _train_config()
+    config["model_profile"]["verifier"].pop("model_id")
+    report = evaluate_collection_readiness(config, base_dir=TRAIN_CONFIG.parent)
+    assert not report.may_run_collection
+    assert any("verifier declares no model_id" in b for b in report.blockers)
+
+
+def test_the_committed_train_config_keeps_the_frozen_model_profile() -> None:
+    """Collection must measure the system validation will run, not a cheaper one."""
+    train = _train_config()["model_profile"]
+    target = yaml.safe_load(TARGET_CONFIG.read_text())["model_profile"]
+    assert train == target

@@ -497,10 +497,12 @@ def test_the_state_carries_every_layer_separately():
 
 
 def test_module_7_is_untouched_by_the_planner():
-    assert subprocess.run(
-        ["git", "status", "--porcelain", "src/cover_kbc/controller.py",
-         "src/cover_kbc/types.py"],
-        capture_output=True, text=True, check=True).stdout == ""
+    """Module 21 reaches into no part of Module 7's vocabulary.
+
+    Asserted over the planner's *own* source rather than over ``git status``:
+    a clean working tree says nothing about what the planner references, and it
+    fails on any deliberate change elsewhere in the tree.
+    """
     blob = _scan_blob()
     for forbidden in ("pending_action", "action_score", "should_stop",
                       "ProgramState", "finalize"):

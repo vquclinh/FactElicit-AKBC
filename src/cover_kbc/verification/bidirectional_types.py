@@ -286,6 +286,31 @@ class EligibleCheck:
     requested_by: PendingCheckOrigin | None = None
 
     @property
+    def check_id(self) -> str:
+        """**Module 18's canonical logical check identity.**
+
+        The mechanism, the target it is posed about, and - for a counterfactual
+        - the contract-declared near-miss class. Those three are what make two
+        checks different questions: §14's counterfactual against ``hn0`` and
+        against ``hn1`` render different prompts and produce different
+        evidence, so they are two checks, not one asked twice.
+
+        This is the *single* identity Module 18 publishes. Everything that has
+        to name a check downstream derives from it rather than inventing its
+        own scheme: Layer 6's ``action_id`` is ``M18:<check_id>``, the
+        request's ``operation_id`` embeds it, and the execution seam attributes
+        a reading back to the action through it. Audit 0043 C-01 found the
+        request identity omitting target and class, so a second same-mechanism
+        check in one query silently inherited the first one's outcome.
+        """
+        return ":".join(
+            part for part in (
+                self.check_kind.value, self.target.target_id,
+                self.counterfactual_class,
+            ) if part
+        )
+
+    @property
     def candidate_shown(self) -> bool:
         return self.check_kind.shows_candidate
 
@@ -343,9 +368,28 @@ class BidirectionalCheckRequest:
         return self.check.target
 
     @property
+    def check_id(self) -> str:
+        """The logical check this request poses, in its owner's vocabulary."""
+        return self.check.check_id
+
+    @property
     def operation_id(self) -> str:
+        """This request's identity: the logical check, plus how it was asked.
+
+        Built **on** :attr:`EligibleCheck.check_id` rather than beside it, so
+        one identity runs from the catalogue through the request, the origin
+        event id, the prompt's ``view_id`` and the telemetry attribution.
+
+        The template and sample index stay in it because two renderings of one
+        check are two operations with two prompts and two costs. What changed
+        (Audit 0043 C-01) is that the *check* is now named: the previous form
+        was ``m18_<kind>:<template>#<sample>``, which was identical for every
+        counterfactual in a query however many targets and near-miss classes
+        were in play, and the seam then attributed the first record's reading
+        to all of them.
+        """
         return (
-            f"m18_{self.check_kind.value.casefold()}"
+            f"m18:{self.check_id}"
             f":{self.template_id}#{self.sample_index}"
         )
 

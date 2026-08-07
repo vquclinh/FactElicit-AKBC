@@ -263,6 +263,7 @@ class HuggingFaceRuntime(BaseRuntime):
 
         generated = int(new_tokens.shape[-1])
         self.generated_tokens += generated
+        self.charge_prompt_tokens(prompt_tokens)
         return GenerationResult(
             text=completion.strip(),
             model_id=self.spec.model_id,
@@ -289,6 +290,7 @@ class HuggingFaceRuntime(BaseRuntime):
         self.calls += 1
 
         input_ids = self._prompt_ids(request).to(self.model.device)
+        self.charge_prompt_tokens(int(input_ids.shape[-1]))
         with torch.no_grad():
             logits = self.model(input_ids=input_ids).logits[0, -1, :]
 
@@ -317,6 +319,9 @@ class HuggingFaceRuntime(BaseRuntime):
 
         for label, ids in encoding.token_ids.items():
             self.calls += 1
+            # Each label is a separate forward pass over the whole prompt, so
+            # the prompt is genuinely paid for once per label.
+            self.charge_prompt_tokens(int(prompt_ids.shape[-1]))
             continuation = torch.tensor([list(ids)], dtype=prompt_ids.dtype)
             full = torch.cat([prompt_ids, continuation], dim=-1).to(self.model.device)
             with torch.no_grad():

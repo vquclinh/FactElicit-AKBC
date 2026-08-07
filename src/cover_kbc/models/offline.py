@@ -68,10 +68,13 @@ class NullRuntime(BaseRuntime):
     def generate(self, request: GenerationRequest) -> GenerationResult:
         start = time.perf_counter()
         self.calls += 1
+        prompt_tokens = approximate_token_count(request.prompt)
+        self.charge_prompt_tokens(prompt_tokens)
+        self.generated_tokens += 1
         return GenerationResult(
             text=ABSTAIN_OUTPUT,
             model_id=self.spec.model_id,
-            prompt_tokens=approximate_token_count(request.prompt),
+            prompt_tokens=prompt_tokens,
             generated_tokens=1,
             latency_ms=(time.perf_counter() - start) * 1000.0,
         )
@@ -79,10 +82,12 @@ class NullRuntime(BaseRuntime):
     def score_labels(self, request: LabelScoreRequest) -> LabelScoreResult:
         """Uniform logits: the stub has no opinion about any candidate."""
         self.calls += 1
+        prompt_tokens = approximate_token_count(request.prompt)
+        self.charge_prompt_tokens(prompt_tokens)
         return LabelScoreResult(
             logits={label: 0.0 for label in request.labels},
             model_id=self.spec.model_id,
-            prompt_tokens=approximate_token_count(request.prompt),
+            prompt_tokens=prompt_tokens,
         )
 
 
@@ -148,10 +153,12 @@ class ScriptedRuntime(BaseRuntime):
 
         generated = approximate_token_count(text)
         self.generated_tokens += generated
+        prompt_tokens = approximate_token_count(request.prompt)
+        self.charge_prompt_tokens(prompt_tokens)
         return GenerationResult(
             text=text,
             model_id=self.spec.model_id,
-            prompt_tokens=approximate_token_count(request.prompt),
+            prompt_tokens=prompt_tokens,
             generated_tokens=generated,
         )
 
@@ -159,8 +166,10 @@ class ScriptedRuntime(BaseRuntime):
         self.calls += 1
         key = self._key(request.metadata)
         logits = self.label_scores.get(key)
+        prompt_tokens = approximate_token_count(request.prompt)
+        self.charge_prompt_tokens(prompt_tokens)
         return LabelScoreResult(
             logits=dict(logits) if logits else {label: 0.0 for label in request.labels},
             model_id=self.spec.model_id,
-            prompt_tokens=approximate_token_count(request.prompt),
+            prompt_tokens=prompt_tokens,
         )

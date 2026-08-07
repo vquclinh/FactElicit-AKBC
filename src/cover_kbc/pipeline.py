@@ -31,7 +31,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping, Sequence
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import cycle
+    from cover_kbc.controller_calibration.telemetry import ControlStateFeatures
 
 from cover_kbc.contracts.base import RelationContract
 from cover_kbc.contracts.router import compile_query
@@ -142,14 +145,24 @@ GATE_QUESTIONS: dict[str, str] = {
 }
 
 
-def _program_type_value(contract: Any) -> str:
+def program_type_value(contract: Any) -> str:
     """The contract's ProgramType as its canonical value.
 
     ``str(enum)`` yields ``"ProgramType.SMALL_SET"``, which does not match the
-    risk profile's ``"SMALL_SET"`` and makes Module 20 reject every schedule.
+    risk profile's ``"SMALL_SET"``, makes Module 20 reject every schedule, and -
+    once persisted into TRAIN telemetry - produces historical bins whose
+    ``program_type`` no ``HistoricalBinPackage.lookup`` can ever match.
+
+    Public because anything that *persists* a program type needs it, not just
+    the pipeline: a caller reaching for ``str(contract.program_type)`` is the
+    bug this exists to prevent (Audit 0041 F-13).
     """
     program_type = getattr(contract, "program_type", "")
     return str(getattr(program_type, "value", program_type))
+
+
+#: Retained for internal call sites that predate the public name.
+_program_type_value = program_type_value
 
 
 class ExecutionMode(str, Enum):
@@ -159,6 +172,16 @@ class ExecutionMode(str, Enum):
 
 class GateRoleUnavailable(RuntimeError):
     """The configured gate model role has no runtime loaded in this phase."""
+
+
+class AccountingInvariantError(ValueError):
+    """Physical accounting stopped being measurable.
+
+    A counter moved backwards, or a call was attributed to no role or to two.
+    Distinct from an ordinary ``ValueError`` because it is **process-fatal**:
+    every cost estimate derived after it would be wrong, so a long run must
+    abort rather than contain it as a row-local failure.
+    """
 
 
 class UnsupportedAction(RuntimeError):
@@ -185,6 +208,17 @@ class PipelineConfig:
     #: Let the controller choose actions instead of running a fixed view list.
     enable_active_controller: bool = False
     max_steps_per_query: int = 12
+
+    #: Hard ceiling on Layer-4 action rounds **per catalogue kind** (Module 17,
+    #: Module 18) for one query. §22's loop is adaptive, not unbounded, and this
+    #: is the explicit deterministic bound that keeps it so.
+    #:
+    #: Per *kind* rather than per query on purpose: Module 18 publishes four
+    #: mechanism families and Module 17 one, so a shared pool would let a long
+    #: M17 catalogue exhaust the allowance before any M18 family was reached -
+    #: exactly the family-coverage failure the collection policy's round-robin
+    #: exists to prevent.
+    max_control_rounds_per_catalogue: int = 3
 
     # -- verification --------------------------------------------------------
     enable_verifier: bool = False
@@ -515,6 +549,9 @@ class CoverPipeline:
         self.action_records: list[dict[str, Any]] = []
         #: One Module 20 ledger per query, so caps actually bind.
         self._budget_ledgers: dict[tuple[str, str, int], Any] = {}
+        #: Physical counters as they stood when each query started, so a control
+        #: state can report query-scoped accounting rather than a run total.
+        self._query_baselines: dict[tuple[str, str, int], dict[str, int]] = {}
         # Chooses which *legal* catalogue entries execute. Deliberately
         # injected rather than decided here: in collection it will be the
         # TrainCollectionPolicy, in production it belongs to Modules 20/21, and
@@ -1049,6 +1086,11 @@ class CoverPipeline:
     def enumerate_query(self, query: Query) -> EvidenceGraph:
         """Phase A: gate + candidate discovery. Enumerator model only."""
         query, contract = compile_query(query.subject, query.relation, query.row_index)
+        # Taken before any work for this query, so every later control state can
+        # report what *this* query cost rather than what the run has cost.
+        self._query_baselines.setdefault(
+            (query.subject, query.relation, query.row_index),
+            self.physical_snapshot())
         # M0 -> M1 -> M9 -> acquisition. The profile is written to an
         # observability buffer, never to the graph: Module 10 will be its first
         # consumer, and until then nothing below may read it.
@@ -1706,37 +1748,31 @@ class CoverPipeline:
         and executes nothing; mapping that decision back to the owner's own
         catalogue entry is done here, and ``execute_action`` does the work.
         """
-        from cover_kbc.control.action_catalog import m17_actions, m18_actions
-
         if not catalogue or self.micro_planner is None:
             return ()
-        query = graph.query
-        if kind == "m17":
-            candidates, _ = m17_actions(
-                tuple(catalogue), subject=query.subject, relation=query.relation,
-                row_index=query.row_index,
-                verifier_config=getattr(self.specialist_verifier, "config", None))
-        else:
-            candidates, _ = m18_actions(
-                tuple(catalogue), subject=query.subject, relation=query.relation,
-                row_index=query.row_index)
-        if not candidates:
-            return ()
-        # Several catalogue entries can project to one action identity. The
-        # planner refuses to be offered the same action twice, and rightly so:
-        # ranking one action as two would double its apparent value. Keep the
-        # first occurrence, which preserves the catalogue's own order.
+        # Projected one entry at a time, so an ineligible entry the owner drops
+        # cannot shift the pairing: a positional ``zip`` over the adapter's
+        # filtered output would silently label action *i* with entry *i*.
+        #
+        # Several catalogue entries can still project to one action identity.
+        # The planner refuses to be offered the same action twice, and rightly
+        # so: ranking one action as two would double its apparent value. Keep
+        # the first occurrence, which preserves the catalogue's own order.
         unique: list = []
         paired: list = []
         seen: set = set()
-        for candidate, entry in zip(candidates, catalogue):
-            if candidate.action_id in seen:
+        for entry in catalogue:
+            candidate = self.project_action(kind, entry, graph)
+            if candidate is None or candidate.action_id in seen:
                 continue
             seen.add(candidate.action_id)
             unique.append(candidate)
             paired.append(entry)
+        if not unique:
+            return ()
         candidates, catalogue = unique, paired
 
+        query = graph.query
         ledger = self._budget_ledger_for(graph)
         state = PlannerStateSnapshot(
             subject=query.subject, relation=query.relation,
@@ -1815,54 +1851,212 @@ class CoverPipeline:
         it is the caller, has already returned; it never touches a runtime.
 
         Returns:
-            A record with the pre/post physical snapshots and the measured cost
-            of *this* action, which is what per-action telemetry needs.
+            A record carrying the **canonical control state either side of this
+            action**, the measured cost of this action alone, the candidate
+            effect it produced, and the owner's own action identity. Everything
+            per-action telemetry needs is captured *here*, at the moment it is
+            true; reconstructing it afterwards from mutable pipeline state is
+            what made ``ΔR`` zero by construction (Audit 0041 F-03).
         """
+        from cover_kbc.controller_calibration.telemetry import RedundancyStatus
+
         before = self.physical_snapshot()
-        entropy_before = self.control_entropy(graph)
+        projection = self.project_action(kind, action, graph)
+        # The full control state, not just H: Module 19's residual and its five
+        # components are part of what an action changes.
+        state_before = self.control_state(graph)
+        evidence_before = self._candidate_evidence_signature(graph)
         admitted, refusal = self._precharge(kind, action, graph)
+        base = {
+            "kind": kind, "round_index": round_index, "action": action,
+            "projection": projection,
+            "pre": before, "state_before": state_before,
+            "entropy_before": state_before.entropy,
+        }
         if not admitted:
             # A refused action must cost nothing: no generate, no score_labels,
             # no counter movement. Asserted by returning before touching a
             # runtime rather than by cleaning up afterwards.
             return {
-                "kind": kind, "round_index": round_index, "executed": False,
-                "admitted": False, "refusal": refusal,
-                "pre": before, "post": before,
-                "entropy_before": entropy_before, "entropy_after": None,
+                **base, "executed": False, "admitted": False, "refusal": refusal,
+                "post": before, "state_after": None, "entropy_after": None,
+                "effect": None, "bridge": None,
                 "cost": self.physical_delta(before, before),
             }
 
+        # The owner's own reading is captured here, from the result it just
+        # returned - not inferred later from a graph diff. For a relation whose
+        # Module 17 target is a numeric *cluster* rather than an entity
+        # candidate, the bridge correctly applies no candidate edge, and a
+        # graph-derived verdict would silently be empty for exactly the two
+        # relations §8 exists for.
+        owner_reading = {"verifier_outcome": "", "structural_outcome": "",
+                         "errors": ()}
         if kind == "m17":
-            self.verify_specialist_targets(consensus, (action,))
+            executed = self.verify_specialist_targets(consensus, (action,))
+            owner_reading.update(
+                self._m17_reading(executed, getattr(projection, "target", "")))
         elif kind == "m18":
             request = self.bidirectional_verifier.build_request(action)
-            self.execute_bidirectional_checks(consensus, (request,))
+            executed = self.execute_bidirectional_checks(consensus, (request,))
+            owner_reading.update(self._m18_reading(executed, request))
         else:
             raise UnsupportedAction(f"no executor for action kind {kind!r}")
 
         # Integrate, then refresh: Module 19 must describe the state that
         # exists after this action, not the one before it.
         self._integrate_layer4(consensus, graph)
-        self.bridge_reports.append(
-            self.production_bridge.apply(graph, self.layer4_results[-1]))
+        report = self.production_bridge.apply(graph, self.layer4_results[-1])
+        self.bridge_reports.append(report)
         if self.coverage_gap_estimator is not None:
             self._estimate_coverage_gap(consensus, graph.contract)
 
         after = self.physical_snapshot()
         # Read *after* integration, bridge and the Module 19 refresh, so it
-        # describes the state the next planner round will actually see.
-        entropy_after = self.control_entropy(graph)
+        # describes the state the next planner round will actually see - and is
+        # therefore literally the next action's pre-state.
+        state_after = self.control_state(graph)
+        effect = self._candidate_effect(
+            evidence_before, self._candidate_evidence_signature(graph))
+        # Names the probe produced that the graph does not hold. The bridge
+        # reports them and inserts nothing; recording them keeps redundancy
+        # measurable and preserves recall the action genuinely produced.
+        named = tuple(report.discovered_not_inserted)
+        touched = tuple(report.candidates_touched)
+        surface = len(named) + len(touched)
         return {
-            "kind": kind, "round_index": round_index, "executed": True,
-            "admitted": True, "refusal": "",
-            "pre": before, "post": after,
-            "entropy_before": entropy_before, "entropy_after": entropy_after,
+            **base, "executed": True, "admitted": True, "refusal": "",
+            "post": after, "state_after": state_after,
+            "entropy_after": state_after.entropy,
             #: Reduction in uncertainty is positive, matching §17's +γ·ΔĤ and
             #: ``historical_bins``' "reduction in uncertainty" definition.
-            "delta_entropy": entropy_before - entropy_after,
+            "delta_entropy": state_before.entropy - state_after.entropy,
+            #: Reduction in residual search need is positive, same convention.
+            "delta_residual": state_before.residual - state_after.residual,
+            "effect": {
+                **effect,
+                # Module 17's own verdict, and only Module 17's: the graph
+                # -derived fallback exists because a numeric-cluster verdict
+                # never reaches a candidate, but attributing it to a Module 18
+                # action - which has no verdict to give - would misreport whose
+                # reading it was.
+                "verifier_outcome": (
+                    owner_reading["verifier_outcome"] or effect["verifier_outcome"]
+                    if kind == "m17" else ""),
+                "structural_outcome": owner_reading["structural_outcome"],
+                "errors": owner_reading["errors"],
+                "candidates_named": named,
+                # The bridge's own account of what this action wrote evidence
+                # for. Recorded because it *is* the surface redundancy is a
+                # fraction of, so the NOT_APPLICABLE claim below is checkable
+                # from the record instead of taken on trust.
+                "candidates_touched": touched,
+                # The diff above genuinely ran, so four empty lists would be a
+                # real observation rather than a hole. Stated rather than left
+                # to be inferred (Audit 0043 C-05).
+                "candidate_effect_measured": True,
+                # Fraction of this action's candidate surface the graph already
+                # held. An action that touched and named nothing has no surface
+                # for redundancy to be about, which is a contract fact and not
+                # a missing measurement - so it is named, not encoded as None.
+                "redundancy": (len(touched) / surface) if surface else None,
+                "redundancy_status": (
+                    RedundancyStatus.MEASURED if surface
+                    else RedundancyStatus.NOT_APPLICABLE),
+            },
+            "bridge": report,
             "cost": self.physical_delta(before, after),
         }
+
+    @staticmethod
+    def _m17_reading(result: Any, target_id: str) -> dict[str, Any]:
+        """Module 17's own verdict for one target, and its errors.
+
+        Read off the result M17 just returned rather than inferred from the
+        graph: the verdict is what §17's false-positive estimate is built from,
+        and it exists whether or not the bridge had a candidate to attach it to.
+        """
+        for entry in getattr(result, "results", ()):
+            if getattr(entry.request.target, "target_id", "") != target_id:
+                continue
+            return {
+                "verifier_outcome": str(entry.argmax_label or ""),
+                "errors": tuple(entry.errors),
+            }
+        return {}
+
+    @staticmethod
+    def _m18_reading(result: Any, request: Any) -> dict[str, Any]:
+        """Module 18's own signed reading for one executed check.
+
+        §14's four mechanisms each publish their own outcome enum; the record
+        carries exactly one of them. Recorded as the owner named it, with no
+        re-interpretation - ``ALTERNATE_RECOVERED`` in particular is neither
+        support nor contradiction, and flattening it here would lose that.
+
+        Attribution is by ``operation_id``, which now embeds Module 18's
+        canonical ``check_id`` and is therefore unique to this logical check.
+        Two matches would mean the identity had gone ambiguous again, so that
+        raises rather than quietly taking the first - the merged result holds
+        every round's records, and picking the wrong one is precisely how a
+        second counterfactual inherited the first one's outcome (Audit 0043
+        C-01). No positional or fuzzy matching is used anywhere on this path.
+
+        Raises:
+            AccountingInvariantError: if the merged result holds more than one
+                record for this request's identity.
+        """
+        matched = [record for record in getattr(result, "records", ())
+                   if record.request.operation_id == request.operation_id]
+        if len(matched) > 1:
+            raise AccountingInvariantError(
+                f"Module 18 returned {len(matched)} records for one request "
+                f"identity {request.operation_id!r}; a structural reading "
+                "cannot be attributed to an action that shares an identity "
+                "with another"
+            )
+        for record in matched:
+            outcome = next(
+                (value for value in (
+                    record.reverse_outcome, record.reconstruction_outcome,
+                    record.counterfactual_outcome, record.recall_outcome,
+                ) if value is not None), None)
+            return {
+                "structural_outcome": str(getattr(outcome, "value", "") or ""),
+                "errors": (() if record.parse_status.name == "OK"
+                           else (f"parse:{record.parse_status.value}",)),
+            }
+        return {}
+
+    def project_action(self, kind: str, action: Any, graph: EvidenceGraph):
+        """The owner's canonical projection of one catalogue entry.
+
+        The single source of an action's persistent identity: ``action_id``,
+        ``ActionFamily``, target class and the Module 20 spend classification
+        all come from the owning module's own adapter rather than from this call
+        site. Projecting one entry at a time keeps identity exact - the
+        catalogue adapters drop ineligible entries, so zipping their output
+        against the input catalogue positionally would mislabel actions.
+
+        Returns:
+            The ``ControlActionCandidate``, or ``None`` when the owner declares
+            this entry ineligible and it therefore projects to no action.
+        """
+        from cover_kbc.control.action_catalog import m17_actions, m18_actions
+
+        query = graph.query
+        if kind == "m17":
+            candidates, _ = m17_actions(
+                (action,), subject=query.subject, relation=query.relation,
+                row_index=query.row_index,
+                verifier_config=getattr(self.specialist_verifier, "config", None))
+        elif kind == "m18":
+            candidates, _ = m18_actions(
+                (action,), subject=query.subject, relation=query.relation,
+                row_index=query.row_index)
+        else:
+            raise UnsupportedAction(f"no budget projection for kind {kind!r}")
+        return candidates[0] if candidates else None
 
     def _budget_ledger_for(self, graph: EvidenceGraph):
         """Module 20's ledger for this query, built through its real contract.
@@ -1896,28 +2090,13 @@ class CoverPipeline:
     def _action_descriptor(self, kind: str, action: Any, graph: EvidenceGraph):
         """The owner's own budget descriptor for one action.
 
-        Built by the same ``action_catalog`` projections Layer 6 uses, so the
+        Built by the same ``action_catalog`` projection Layer 6 uses, so the
         spend class, reserve purpose and sub-call plan are the owner's
-        declaration rather than this call site's opinion.
+        declaration rather than this call site's opinion. An action the owner
+        excluded projects to nothing and therefore has no descriptor.
         """
-        from cover_kbc.control.action_catalog import m17_actions, m18_actions
-
-        query = graph.query
-        if kind == "m17":
-            projected = m17_actions(
-                (action,), subject=query.subject, relation=query.relation,
-                row_index=query.row_index,
-                verifier_config=getattr(self.specialist_verifier, "config", None))
-        elif kind == "m18":
-            projected = m18_actions(
-                (action,), subject=query.subject, relation=query.relation,
-                row_index=query.row_index)
-        else:
-            raise UnsupportedAction(f"no budget projection for kind {kind!r}")
-        # Both projections return ``(candidates, exclusions)``. An action the
-        # owner excluded yields no candidate and therefore no descriptor.
-        candidates, _exclusions = projected
-        return candidates[0].budget_descriptor if candidates else None
+        projected = self.project_action(kind, action, graph)
+        return projected.budget_descriptor if projected is not None else None
 
     def _precharge(
         self, kind: str, action: Any, graph: EvidenceGraph
@@ -1969,6 +2148,7 @@ class CoverPipeline:
         if not self.integration_mode.may_mutate_production_state:
             return records
 
+        bound = max(0, int(self.config.max_control_rounds_per_catalogue))
         round_index = 0
         for kind, source, available in (
             ("m17", self._catalogued_targets, self.specialist_verifier),
@@ -1976,12 +2156,23 @@ class CoverPipeline:
         ):
             if available is None:
                 continue
-            # Re-read the catalogue between actions: a stale one would offer
-            # targets the previous action already resolved.
-            remaining = list(source(consensus))
-            executed_ids: set[int] = set()
-            while True:
-                pending = [a for a in remaining if id(a) not in executed_ids]
+            #: Canonical, owner-published identities of the actions already run
+            #: for this query. Keyed on ``action_id`` rather than ``id(entry)``
+            #: because the catalogue is re-read between rounds and yields fresh
+            #: objects: a memory address would let a completed action be offered
+            #: again, and a resumed process would not recognise it at all.
+            executed_ids: set[str] = set()
+            for _ in range(bound):
+                # Re-read the catalogue between actions: a stale one would offer
+                # targets the previous action already resolved.
+                pairs = [
+                    (entry, projection)
+                    for entry in source(consensus)
+                    if (projection := self.project_action(kind, entry, graph))
+                    is not None and projection.action_id not in executed_ids
+                ]
+                pending = [entry for entry, _ in pairs]
+                by_entry = {id(entry): projection for entry, projection in pairs}
                 chosen = self._select_actions(
                     kind, tuple(pending), consensus, graph)
                 if not chosen:
@@ -1990,21 +2181,33 @@ class CoverPipeline:
                 round_index += 1
                 record = self.execute_action(
                     kind, action, consensus, graph, round_index=round_index)
-                record["action"] = action
                 records.append(record)
-                executed_ids.add(id(action))
+                projection = record.get("projection") or by_entry.get(id(action))
+                if projection is not None:
+                    executed_ids.add(projection.action_id)
+                elif not record["executed"]:
+                    # Nothing ran and nothing projects: offering it again would
+                    # spin. Stop this catalogue rather than loop.
+                    break
                 for other in pending:
-                    if id(other) is not id(action) and other is not action:
-                        records.append({
-                            "kind": kind, "round_index": round_index,
-                            "action": other, "executed": False, "admitted": True,
-                            "refusal": "", "legal_not_selected": True,
-                            "pre": record["pre"], "post": None,
-                            "entropy_before": record.get("entropy_before"),
-                            "entropy_after": None,
-                            "cost": self.physical_delta(record["pre"], record["pre"]),
-                        })
-                break                        # one action per catalogue per query
+                    if other is action:
+                        continue
+                    records.append({
+                        "kind": kind, "round_index": round_index,
+                        "action": other, "projection": by_entry.get(id(other)),
+                        "executed": False, "admitted": True,
+                        "refusal": "", "legal_not_selected": True,
+                        "pre": record["pre"], "post": None,
+                        "state_before": record["state_before"],
+                        "state_after": None,
+                        "entropy_before": record.get("entropy_before"),
+                        "entropy_after": None, "effect": None, "bridge": None,
+                        "cost": self.physical_delta(record["pre"], record["pre"]),
+                    })
+                if not record["executed"]:
+                    # Module 20 refused this action; the next round would be
+                    # offered the same catalogue and refused identically.
+                    break
         return records
 
     def _catalogued_targets(self, consensus: QueryConsensusResult) -> tuple:
@@ -2035,6 +2238,12 @@ class CoverPipeline:
         return float(mean_inclusion_uncertainty(
             graph.active_candidates(), graph.contract))
 
+    #: Counters ``physical_snapshot`` publishes and ``physical_delta`` differences.
+    PHYSICAL_COUNTERS = (
+        "enumerator_calls", "verifier_calls", "physical_calls",
+        "prompt_tokens", "generated_tokens",
+    )
+
     def physical_snapshot(self) -> dict[str, int]:
         """Ground-truth physical counters, read from the runtimes themselves.
 
@@ -2044,46 +2253,161 @@ class CoverPipeline:
         because they counted. Differencing this around an action gives that
         action's true cost, which is what Module 21's ``Ĉost`` has to be built
         from.
+
+        Prompt tokens are summed from the same runtimes for the same reason
+        generated tokens are: Module 20's token ceiling is priced in real
+        tokens, and re-tokenising a prompt in a runner to guess would be a
+        second measurement of a number the backend already reported.
         """
         single_role = self.verifier_runtime is self.runtime
         enumerator = int(getattr(self.runtime, "calls", 0))
         verifier = 0 if single_role else int(
             getattr(self.verifier_runtime, "calls", 0))
         generated = int(getattr(self.runtime, "generated_tokens", 0))
+        prompt = int(getattr(self.runtime, "prompt_tokens", 0))
         if not single_role:
             generated += int(getattr(self.verifier_runtime, "generated_tokens", 0))
+            prompt += int(getattr(self.verifier_runtime, "prompt_tokens", 0))
         return {
             "enumerator_calls": enumerator,
             "verifier_calls": verifier,
             "physical_calls": enumerator + verifier,
+            "prompt_tokens": prompt,
             "generated_tokens": generated,
             "single_role_profile": single_role,
         }
 
-    @staticmethod
-    def physical_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    @classmethod
+    def physical_delta(
+        cls, before: dict[str, int], after: dict[str, int]
+    ) -> dict[str, int]:
         """Cost of whatever happened between two snapshots.
 
         Raises:
-            ValueError: if a counter moved backwards, which would mean a
-                counter was reset mid-action and the delta is meaningless.
+            AccountingInvariantError: if a counter moved backwards, which would
+                mean a counter was reset mid-action and the delta is
+                meaningless, or if the role partition stops summing. Both are
+                process-fatal: every later cost estimate would inherit the
+                error.
         """
         delta = {}
-        for key in ("enumerator_calls", "verifier_calls", "physical_calls",
-                    "generated_tokens"):
+        for key in cls.PHYSICAL_COUNTERS:
             moved = int(after.get(key, 0)) - int(before.get(key, 0))
             if moved < 0:
-                raise ValueError(
+                raise AccountingInvariantError(
                     f"physical counter {key} moved backwards ({moved}); an "
                     "action's cost cannot be measured across a counter reset"
                 )
             delta[key] = moved
         if delta["enumerator_calls"] + delta["verifier_calls"] != delta["physical_calls"]:
-            raise ValueError(
+            raise AccountingInvariantError(
                 "role partition does not sum to the physical call total; a "
                 "neural call was attributed to no role or to two"
             )
         return delta
+
+    # ------------------------------------------------------- control state --
+
+    def _query_key(self, graph: EvidenceGraph) -> tuple[str, str, int]:
+        return (graph.query.subject, graph.query.relation, graph.query.row_index)
+
+    def query_physical_cost(self, graph: EvidenceGraph) -> dict[str, int]:
+        """Physical spend attributable to *this query* so far.
+
+        Differenced against the baseline taken when the query started, so a
+        control state carries query-scoped accounting rather than a
+        run-cumulative counter that says nothing about the query being planned.
+        """
+        baseline = self._query_baselines.get(self._query_key(graph))
+        if baseline is None:
+            return {key: 0 for key in self.PHYSICAL_COUNTERS}
+        return self.physical_delta(baseline, self.physical_snapshot())
+
+    def coverage_gap_state(self, graph: EvidenceGraph):
+        """Module 19's current state for this query, or ``None`` if it never ran.
+
+        One state per query by construction - ``_estimate_coverage_gap``
+        replaces rather than appends - so this is the current residual, not a
+        history of it.
+        """
+        query = graph.query
+        for state in self.coverage_gap_results:
+            if (state.relation == query.relation
+                    and state.subject == query.subject
+                    and getattr(state, "row_index", query.row_index) == query.row_index):
+                return state
+        return None
+
+    def control_state(self, graph: EvidenceGraph) -> "ControlStateFeatures":
+        """The canonical Layer-5/6 control state, read from its owners.
+
+        Module 19 owns the residual and its five §15 components; Module 5 owns
+        ``H``; Module 3 owns the active candidate set; the runtimes own the
+        physical accounting. Nothing is recomputed here and nothing is
+        defaulted - a shape Module 19 does not publish raises, because a zeroed
+        control state is indistinguishable from a real one once it is written.
+        """
+        from cover_kbc.controller_calibration.telemetry import ControlStateFeatures
+
+        cost = self.query_physical_cost(graph)
+        budget = self.config.budget(graph.contract)
+        used = int((graph.budget_snapshot or {}).get("calls_used", 0))
+        return ControlStateFeatures.from_coverage_gap(
+            self.coverage_gap_state(graph),
+            entropy=self.control_entropy(graph),
+            active_candidates=len(graph.active_candidates()),
+            calls_used=cost["physical_calls"],
+            # Module 7's own remaining per-query allowance, which is the ceiling
+            # an action is actually planned against. Never Module 20's, which
+            # has no calibrated envelope yet.
+            calls_remaining=max(0, budget.max_calls - used),
+            prompt_tokens=cost["prompt_tokens"],
+            generated_tokens=cost["generated_tokens"],
+        )
+
+    @staticmethod
+    def _candidate_evidence_signature(graph: EvidenceGraph) -> dict[str, tuple]:
+        """Per-candidate evidence counters, for differencing around one action.
+
+        Reads only what Module 3 already publishes: supporting-event totals,
+        contradiction totals and the verdicts attached so far. A candidate that
+        gains support is *supported by* the action that ran between two of these.
+        """
+        return {
+            key: (
+                candidate.raw_support_count,
+                candidate.contradiction_count,
+                tuple(v.label.value for v in candidate.verifications),
+            )
+            for key, candidate in graph.candidates.items()
+        }
+
+    @classmethod
+    def _candidate_effect(
+        cls, before: dict[str, tuple], after: dict[str, tuple],
+    ) -> dict[str, Any]:
+        """What one action did to the candidate graph. Measured, never assumed."""
+        added = sorted(set(after) - set(before))
+        supported: list[str] = []
+        contradicted: list[str] = []
+        verdicts: list[str] = []
+        for key, (support, contradiction, labels) in after.items():
+            prior_support, prior_contradiction, prior_labels = before.get(
+                key, (0, 0, ()))
+            new_labels = list(labels[len(prior_labels):])
+            verdicts.extend(new_labels)
+            if support > prior_support or "VALID" in new_labels:
+                supported.append(key)
+            if contradiction > prior_contradiction or "INVALID" in new_labels:
+                contradicted.append(key)
+        return {
+            "candidates_added": tuple(added),
+            "candidates_supported": tuple(sorted(supported)),
+            "candidates_contradicted": tuple(sorted(contradicted)),
+            # One action verifies one target, so a single verdict is the normal
+            # case; several are joined rather than one silently winning.
+            "verifier_outcome": "|".join(verdicts),
+        }
 
     def _charge_calls(self, calls: int) -> None:
         """Bill physical calls to whichever ledger this mode owns.
@@ -2355,12 +2679,44 @@ class CoverPipeline:
                 and existing.subject == result.subject
                 and existing.row_index == result.row_index
             ):
+                # Merge, never replace. Module 18 reports exactly what it was
+                # asked to run, so a second round would otherwise erase the
+                # first round's records from the Layer-4 projection and undo
+                # evidence the bridge had already applied.
+                result = replace(
+                    result,
+                    records=self._merge_by(
+                        existing.records, result.records,
+                        lambda record: record.origin_event_id),
+                    errors=tuple(existing.errors) + tuple(result.errors),
+                )
                 self.bidirectional_results[index] = result
                 break
         else:
             self.bidirectional_results.append(result)
         self._charge_calls(result.calls)
         return result
+
+    @staticmethod
+    def _merge_by(
+        previous: "Sequence[Any]", latest: "Sequence[Any]",
+        key: "Callable[[Any], Any]",
+    ) -> tuple:
+        """Union two rounds' typed records, keeping each identity once.
+
+        Order is previous-then-new, so the sequence reads as execution history.
+        A repeated identity keeps the earlier record: it is the one whose
+        evidence the bridge already applied.
+        """
+        merged = list(previous)
+        seen = {key(item) for item in merged}
+        for item in latest:
+            identity = key(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            merged.append(item)
+        return tuple(merged)
 
     def _catalogue_specialist_targets(self, consensus: QueryConsensusResult) -> None:
         """Record which targets Module 17 *could* verify. Spends nothing.
@@ -2409,6 +2765,14 @@ class CoverPipeline:
                 and existing.subject == result.subject
                 and existing.row_index == result.row_index
             ):
+                # Merge, never replace - see ``execute_bidirectional_checks``.
+                result = replace(
+                    result,
+                    results=self._merge_by(
+                        existing.results, result.results,
+                        lambda entry: entry.request.target.target_id),
+                    errors=tuple(existing.errors) + tuple(result.errors),
+                )
                 self.specialist_verifications[index] = result
                 break
         else:

@@ -132,6 +132,25 @@ class IndependenceGroup(str, Enum):
     # Reserved for the experimental factual-decoding branch.
     FACTUAL_DECODING = "FACTUAL_DECODING"
 
+    # -- §14's four structural mechanisms ------------------------------------
+    #
+    # One group per mechanism, named exactly as ``BidirectionalCheckKind``
+    # publishes them, because the production bridge converts an M18 reading into
+    # a graph edge by resolving that string here. Without these members the
+    # bridge raised on the first entity-relation candidate a structural check
+    # resolved against - a numeric-only smoke never reached the path.
+    #
+    # Deliberately their *own* groups rather than aliases of an acquisition
+    # family: mapping a reverse check onto ``REVERSE_ALTERNATE`` would let a
+    # structural verification inflate acquisition support, which is precisely
+    # the double counting §12.1 forbids. No relation contract declares any of
+    # them in ``eligible_independence_groups``, so ``m(o)`` is unchanged and
+    # ``q(o) = g(o) / m(o)`` cannot move.
+    M18_REVERSE = "M18_REVERSE"
+    M18_KEY_CONDITION = "M18_KEY_CONDITION"
+    M18_COUNTERFACTUAL = "M18_COUNTERFACTUAL"
+    M18_CANDIDATE_FREE_RECALL = "M18_CANDIDATE_FREE_RECALL"
+
 
 class EdgeType(str, Enum):
     """Signed evidence edge (spec section 9.2)."""

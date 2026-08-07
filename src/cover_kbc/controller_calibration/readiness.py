@@ -173,4 +173,131 @@ def evaluate_readiness(
         ReadinessState.FULL_VALIDATION_READY, (), tuple(satisfied), details)
 
 
-__all__ = ["ReadinessReport", "ReadinessState", "evaluate_readiness"]
+# --------------------------------------------------------------------------
+# Collection readiness
+# --------------------------------------------------------------------------
+
+#: The upgraded stack TRAIN calibration collection has to observe, as
+#: ``(config path, label)``. Anything disabled here is not a degraded run - it
+#: is a run that emits no action telemetry at all, which is exactly the outcome
+#: Audit 0041 F-01 caught reporting success.
+REQUIRED_COLLECTION_MODULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("query_intelligence", "profiler"), "M9 risk profiler"),
+    (("query_intelligence", "prompt_compiler"), "M10 prompt program compiler"),
+    (("query_intelligence", "parametric_retrieval"), "M11 parametric retrieval"),
+    (("specialists", "numeric"), "M12 numeric specialist"),
+    (("specialists", "large_open_set"), "M13 large-open-set specialist"),
+    (("specialists", "null_temporal"), "M14 null/temporal specialist"),
+    (("specialists", "small_set_closure"), "M15 small-set closure specialist"),
+    (("consensus",), "M16 atomic consensus"),
+    (("specialist_verifier",), "M17 specialist verifier"),
+    (("bidirectional_verification",), "M18 bidirectional verification"),
+    (("layer4_integration",), "Layer-4 evidence integration"),
+    (("coverage_gap",), "M19 coverage gap"),
+)
+
+#: Modules that must stay *off* during collection: each fails closed without a
+#: TRAIN artifact, and collection is what produces those artifacts.
+FORBIDDEN_COLLECTION_MODULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("relation_budget_scheduler",), "M20 relation budget scheduler"),
+    (("micro_planner",), "M21 expected-value micro-planner"),
+    (("layer6_integration",), "Layer-6 control integration"),
+)
+
+
+def _block(config: Mapping[str, Any], path: tuple[str, ...]) -> Mapping[str, Any]:
+    node: Any = config
+    for key in path:
+        node = (node or {}).get(key) if isinstance(node, Mapping) else None
+    return node if isinstance(node, Mapping) else {}
+
+
+def evaluate_collection_readiness(
+    config: Mapping[str, Any], *, base_dir: str | Path = ".",
+    split: str | None = None,
+) -> ReadinessReport:
+    """May this profile start a TRAIN calibration collection run?
+
+    Composed from :func:`evaluate_readiness` rather than duplicating it, plus
+    the three requirements that are specific to collection and that Audit 0041
+    found nothing checking:
+
+    * the split really is TRAIN - a ``val`` profile must never load a model;
+    * the whole M9-M19 stack is enabled, because a collection with M16 off
+      executes no action and writes an empty telemetry file while exiting 0;
+    * M20/M21/Layer-6 stay off, since collection exists to produce the very
+      artifacts they refuse to run without.
+
+    The verdict is authoritative through ``may_run_collection``, and its default
+    is refusal.
+    """
+    from cover_kbc.integration_mode import CALIBRATION_SPLIT
+    from cover_kbc.models.registry import model_blocks
+
+    artifacts = evaluate_readiness(config, base_dir=base_dir)
+    blockers: list[str] = []
+    satisfied: list[str] = []
+    details: dict[str, Any] = dict(artifacts.details)
+
+    declared = split if split is not None else str(
+        (config.get("experiment") or {}).get("split", CALIBRATION_SPLIT))
+    details["split"] = declared
+    if declared != CALIBRATION_SPLIT:
+        blockers.append(
+            f"split: collection may only read {CALIBRATION_SPLIT!r}, this "
+            f"profile declares {declared!r}"
+        )
+    else:
+        satisfied.append(f"split: {CALIBRATION_SPLIT}")
+
+    for path, label in REQUIRED_COLLECTION_MODULES:
+        if not _block(config, path).get("enabled", False):
+            blockers.append(
+                f"{label}: {'.'.join(path)}.enabled is false; collection would "
+                "observe no action for it"
+            )
+    for path, label in FORBIDDEN_COLLECTION_MODULES:
+        if _block(config, path).get("enabled", False):
+            blockers.append(
+                f"{label}: {'.'.join(path)}.enabled is true, but no "
+                "TRAIN-calibrated artifact exists yet; collection is what "
+                "produces it"
+            )
+    enabled = len(REQUIRED_COLLECTION_MODULES) - len(
+        [b for b in blockers if "enabled is false" in b])
+    satisfied.append(
+        f"upgraded stack: {enabled}/{len(REQUIRED_COLLECTION_MODULES)} enabled")
+
+    try:
+        enumerator, verifier = model_blocks(config)
+    except Exception as error:                              # noqa: BLE001
+        enumerator, verifier = {}, {}
+        blockers.append(f"model profile: unreadable ({error})")
+    for role, block in (("enumerator", enumerator), ("verifier", verifier)):
+        if not block.get("model_id"):
+            blockers.append(f"model profile: {role} declares no model_id")
+        if "backend" not in block:
+            blockers.append(f"model profile: {role} declares no backend")
+    details["enumerator_model_id"] = enumerator.get("model_id", "")
+    details["verifier_model_id"] = verifier.get("model_id", "")
+
+    if blockers:
+        return ReadinessReport(
+            ReadinessState.NOT_READY, tuple(blockers),
+            tuple(satisfied) + artifacts.satisfied, details)
+    # Artifact-only blockers are exactly what collection exists to remove, so
+    # they never block collection - ``evaluate_readiness`` already says so.
+    return ReadinessReport(
+        artifacts.state if artifacts.may_run_collection
+        else ReadinessState.CALIBRATION_COLLECTION_READY,
+        artifacts.blockers, tuple(satisfied) + artifacts.satisfied, details)
+
+
+__all__ = [
+    "FORBIDDEN_COLLECTION_MODULES",
+    "REQUIRED_COLLECTION_MODULES",
+    "ReadinessReport",
+    "ReadinessState",
+    "evaluate_collection_readiness",
+    "evaluate_readiness",
+]

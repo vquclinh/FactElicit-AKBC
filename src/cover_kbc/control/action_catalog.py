@@ -348,6 +348,45 @@ _M18_FAMILY = {
     "CANDIDATE_FREE_RECALL": _F.CANDIDATE_FREE_RECALL,
 }
 
+#: Every family a Module 18 catalogue can project to. Published so a caller
+#: needing the vocabulary - the collection coverage gate, for one - reads the
+#: adapter's own mapping instead of maintaining a parallel string list that
+#: would drift the moment a mechanism was added.
+M18_FAMILIES: tuple[ActionFamily, ...] = tuple(
+    sorted(set(_M18_FAMILY.values()), key=lambda family: family.value))
+
+#: Every family a Module 17 catalogue can project to. One, by construction:
+#: §13 gives each relation its own verifier contract, not its own action family.
+M17_FAMILIES: tuple[ActionFamily, ...] = (_F.SPECIALIST_VERIFY,)
+
+
+def action_family_for(kind: str, entry: Any) -> ActionFamily:
+    """The canonical family one raw catalogue entry projects to.
+
+    A pure read of the owner's own declaration, needing no query context, so a
+    caller that only wants to *group* actions - the collection coverage ledger -
+    does not have to build a full projection to learn the family. The full
+    projection remains the only source of ``action_id`` and the budget
+    descriptor.
+
+    Raises:
+        PlannerError: for a catalogue kind with no published mapping, rather
+            than guessing a family that Module 21's bins would then key on.
+    """
+    if kind == "m17":
+        return _F.SPECIALIST_VERIFY
+    if kind == "m18":
+        declared = getattr(getattr(entry, "check_kind", None), "value", "")
+        try:
+            return _M18_FAMILY[declared]
+        except KeyError:
+            raise PlannerError(
+                f"Module 18 check kind {declared!r} has no canonical action "
+                f"family; known: {sorted(_M18_FAMILY)}"
+            ) from None
+    raise PlannerError(
+        f"no action-family mapping is published for catalogue kind {kind!r}")
+
 #: Which protected reserve each mechanism draws on, per Table 6.
 _M18_PURPOSE = {
     "REVERSE": _P.REVERSE,
@@ -403,7 +442,15 @@ def m18_actions(
     for check in checks:
         kind = check.check_kind.value
         target_id = getattr(check.target, "target_id", "")
-        action_id = f"M18:{kind}:{target_id}"
+        # The action id **is** Module 18's own `check_id`, namespaced. Not
+        # rebuilt here from the same parts: two constructions of one identity
+        # is how they drift, and Audit 0043 C-01 was exactly that drift one
+        # layer down. The near-miss class is inside `check_id` because §14's
+        # counterfactual poses a *different question* per contract-declared
+        # class - two classes against one target are two distinct actions with
+        # distinct prompts and distinct evidence.
+        near_miss = str(getattr(check, "counterfactual_class", "") or "")
+        action_id = f"M18:{check.check_id}"
         family = _M18_FAMILY[kind]
         if not check.eligible:
             excluded.append(CatalogExclusion(
@@ -412,7 +459,7 @@ def m18_actions(
                 getattr(check.ineligible_reason, "value", "") or "owner ineligible",
             ))
             continue
-        candidate_identity = (family.value, action_id, target_id, "")
+        candidate_identity = (family.value, action_id, target_id, near_miss)
         if candidate_identity in set(executed):
             excluded.append(CatalogExclusion(
                 action_id, ActionOwner.M18_STRUCTURAL,
@@ -427,6 +474,9 @@ def m18_actions(
             subject=subject, relation=relation, row_index=row_index,
             action_id=action_id, owner=ActionOwner.M18_STRUCTURAL, family=family,
             target=target_id,
+            # The near-miss class is this action's target *class*, which is
+            # exactly what Module 21's bins may narrow on.
+            facet_id=near_miss,
             budget_descriptor=_descriptor(
                 subject, relation, row_index, action_id=action_id,
                 owner=ActionOwner.M18_STRUCTURAL, action_kind=kind,
@@ -816,7 +866,10 @@ def owner_action_families() -> Mapping[ActionFamily, tuple[ActionOwner, ...]]:
 __all__ = [
     "CATALOG_VERSION",
     "DEFAULT_GENERATION_TOKENS",
+    "M17_FAMILIES",
+    "M18_FAMILIES",
     "ActionOwner",
+    "action_family_for",
     "CatalogExclusion",
     "ControlActionCandidate",
     "ExclusionReason",

@@ -1,0 +1,309 @@
+# COVER-KBC v2 - TRAIN calibration collection.
+#
+# THE canonical config for `scripts/run_train_calibration_collection.py`. It is
+# the only committed profile that declares `split: train`, and it is not a
+# leaderboard configuration: its purpose is to observe, on the real seams, the
+# action outcomes Modules 20 and 21 are later calibrated from (§16, §17).
+#
+# Derived from `cover_kbc_v2_mistral24_qwen4.yaml`. The model profile, prompt
+# package, decoding, scoring, selection and controller settings below are
+# **byte-identical** to that frozen target: collection has to measure the system
+# that will run validation, not a cheaper relative of it. What differs is
+# exactly three things, and each is listed here so a reader never has to diff:
+#
+#   1. `experiment.split: train`   - the only split collection may read.
+#   2. The M11-M19 upgraded stack is ENABLED. In the target config these are
+#      off because nothing consumed them; here they are the whole point, and a
+#      collection with them off writes an empty telemetry file (Audit 0041 F-01).
+#   3. `pipeline.mode` is irrelevant - the collection runner forces INTERLEAVED,
+#      because a staged role swap would split one query's action chain across
+#      two processes and there would be no successor transition to observe.
+#
+#   ENUMERATOR : mistralai/Mistral-Small-3.2-24B-Instruct-2506   24,011,361,280
+#   VERIFIER   : Qwen/Qwen3.5-4B                                  4,659,865,088
+#   ------------------------------------------------------------------------
+#   TOTAL published parameters                                   28,671,226,368
+#   Official inference-time limit                                32,000,000,000
+#   Legal                                                        true (3.33B spare)
+#
+# M20, M21 and Layer-6 integration stay DISABLED, and that is not an omission:
+# each fails closed without a TRAIN-derived artifact, and this run is what
+# produces those artifacts. Selection during collection belongs to
+# `TrainCollectionPolicy` - a fixed, deterministic, family-balanced bootstrap
+# that ranks nothing. Using an uncalibrated planner to gather the bins it needs
+# would be circular.
+#
+# No calibration artifact is referenced. No SYNTHETIC_TEST fixture is referenced.
+# `evaluate_collection_readiness` checks all of the above before a weight loads.
+
+experiment:
+  name: cover_kbc_v2_train_collection
+  split: train
+  seed: 42
+  notes: >-
+    TRAIN calibration collection for Modules 20 and 21. Not a leaderboard run
+    and never comparable to one: actions come from the fixed collection policy,
+    not from utility. Requires a GPU runtime; intended for Colab/A100.
+
+model_profile:
+  enumerator:
+    backend: huggingface
+    model_id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    revision: "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+    family: mistral
+    role: enumerator
+    license: apache-2.0
+    published_checkpoint_parameters: 24011361280
+    budget_count_parameters: 24011361280
+    published_total_parameters: 24011361280
+    parameter_source: "https://huggingface.co/api/models/mistralai/Mistral-Small-3.2-24B-Instruct-2506 (safetensors.total)"
+    parameter_source_verified: true
+    # Tekken tokenizer; AutoTokenizer converts it lossily and the enumerator
+    # then emits byte-BPE debris. Declared explicitly, exactly as in the target.
+    tokenizer_backend: mistral_common
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+  verifier:
+    backend: huggingface
+    model_id: "Qwen/Qwen3.5-4B"
+    revision: "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    family: qwen
+    role: verifier
+    license: apache-2.0
+    published_checkpoint_parameters: 4659865088
+    budget_count_parameters: 4659865088
+    published_total_parameters: 4659865088
+    parameter_source: "https://huggingface.co/api/models/Qwen/Qwen3.5-4B (safetensors.total)"
+    parameter_source_verified: true
+    tokenizer_backend: huggingface
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+budget_assertion:
+  total_published_parameters: 28671226368
+  limit: 32000000000
+  legal: true
+
+pipeline:
+  # Forced to `interleaved` by the collection runner; recorded here so the file
+  # reads truthfully rather than declaring a mode that is overridden.
+  mode: interleaved
+  enable_active_controller: true
+  max_steps_per_query: 12
+  max_calls_per_query: 12
+  max_generated_tokens_per_query: 6000
+
+  # The explicit, deterministic per-query action bound (§22's loop is adaptive,
+  # not unbounded). Three rounds for Module 17's catalogue and three for Module
+  # 18's, so a query can contribute up to six action transitions and at least
+  # two are available for §17's depth-2 successor statistics. Per catalogue
+  # rather than shared, so Module 18's four mechanism families are never
+  # crowded out by a long Module 17 target list.
+  max_control_rounds_per_catalogue: 3
+
+  enable_calibrated_gate: true
+  gate_min_margin: 1.0
+  gate_min_prob: 0.5
+
+  enable_verifier: true
+  use_calibration: true
+  max_verifications_per_query: 6
+  enable_prompt_disagreement: true
+
+  enable_cross_model_recall: true
+  cross_model_view: ""      # empty = the relation's first mandatory view
+
+  scoring:
+    alpha_support: 1.0
+    beta_logit: 0.6
+    gamma_cross_model: 0.5
+    delta_contradiction: 1.5
+    eta_disagreement: 1.0
+    auto_accept_support: 3
+    verify_max_support: 2
+    adversarial_disagreement: 0.15
+    accept_score: 0.2
+    min_valid_prob: 0.40
+    drop_on_unknown: true
+    logit_clip: 3.0
+    logit_epsilon: 1.0e-6
+
+  selection:
+    capacity_support_ratio: 1.0
+    capacity_trust_verified: true
+
+  controller:
+    alpha_yield: 1.0
+    beta_gap: 1.0
+    gamma_uncertainty: 0.8
+    lambda_cost: 0.15
+    rho_redundancy: 1.0
+    residual_stop: 0.25
+    saturation_patience: 2
+    stability_threshold: 1.0
+    verify_first_unresolved: 0.5
+    rcse:
+      saturation_window: 3
+      w_yield: 1.0
+      w_saturation: 1.0
+      w_unresolved: 0.8
+      w_facet_gap: 1.0
+      w_disagreement: 0.6
+      w_instability: 0.8
+      stop_threshold: 0.25
+
+# Layer 1 - query intelligence. All three enabled: M11 is the acquisition layer
+# the Layer-2 specialists consume, and without it M12-M15 cannot be built at all.
+query_intelligence:
+  profiler:
+    enabled: true
+    mode: shadow
+    profile_version: m9-v1
+  prompt_compiler:
+    enabled: true
+    mode: shadow
+    compiler_version: m10-v1
+  # §7.2's three probe families. Not RAG: no retriever, corpus, index or cache,
+  # and the only factual source is the frozen model's own weights. Pseudo-context
+  # is never evidence - it reaches the graph only as parsed candidate
+  # observations, through Module 16 and the production bridge.
+  parametric_retrieval:
+    enabled: true
+    mode: shadow
+    retrieval_version: m11-v1
+    operations:
+      - pseudo_memory
+      - self_ask
+      - query_rewrite
+    samples_per_operation: 1
+
+# Layer 2 - the four relation-family specialists. All four are enabled because
+# TRAIN contains all six relations and each is routed to exactly one owner; a
+# disabled owner makes Module 16 refuse every query it routes there.
+specialists:
+  numeric:
+    enabled: true
+    mode: shadow
+    specialist_version: m12-v1
+    mine_parametric_memory: true
+
+  large_open_set:
+    enabled: true
+    mode: shadow
+    specialist_version: m13-v1
+    mine_parametric_memory: true
+
+  null_temporal:
+    enabled: true
+    mode: shadow
+    specialist_version: m14-v1
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    # §10.2's cross-family branch stays off for collection: it is a *quality*
+    # option whose value has never been validated, and enabling it here would
+    # make the collected outcomes describe a system the validation run has not
+    # been shown to be. Identical to the frozen target's setting.
+    cross_family_recall: false
+    mine_parametric_memory: true
+
+  small_set_closure:
+    enabled: true
+    mode: shadow
+    specialist_version: m15-v1
+    # §11.1's minimal-change rule for borders. Identical to the frozen target.
+    enable_facets: []
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    candidate_explosion_threshold: 0
+    mine_parametric_memory: true
+
+# Layer 3 - Module 16. Non-neural; produces phi(o) = (F, L, X, C, U, I, D,
+# cost, risk) and no score.
+consensus:
+  enabled: true
+  mode: shadow
+  consensus_version: m16-v1
+  include_parametric_origins: true
+  include_query_events: true
+
+# Layer 4 - Module 17. Same frozen Qwen verifier role, same Module 4 calibrated
+# kernel, two phrasings x two label orders (§13.1). Label ORDER only: the letters
+# keep their meanings and each order carries its own content-free control.
+specialist_verifier:
+  enabled: true
+  mode: shadow
+  verification_version: m17-v1
+  templates:
+    - m17_statement_v1
+    - m17_question_v1
+  bias_controls:
+    label_orders:
+      - ABC
+      - BAC
+  use_calibration: true
+
+# Layer 4 - Module 18. All four §14 mechanisms, so every action family has a
+# chance to be surfaced and none is left without calibration support.
+bidirectional_verification:
+  enabled: true
+  mode: shadow
+  check_version: m18-v1
+  supported_checks:
+    - REVERSE
+    - KEY_CONDITION
+    - COUNTERFACTUAL
+    - CANDIDATE_FREE_RECALL
+
+# Layer 4 boundary. Deterministic projection of M16 + M17 + M18 into the one
+# evidence state Module 19 reads and the production bridge applies.
+layer4_integration:
+  enabled: true
+  mode: shadow
+  integration_version: layer4-v1
+
+# Layer 5 - Module 19. §15's residual and its five components are what the
+# per-action telemetry records either side of every executed action, so this
+# module being enabled is what makes DeltaR observable at all.
+coverage_gap:
+  enabled: true
+  mode: shadow
+  estimator_version: m19-v1
+  weights:
+    novelty_rate: 1
+    singleton_ratio: 1
+    facet_gap: 1
+    disagreement: 1
+    unresolved_mass: 1
+
+# Layer 6 - DISABLED, and that is the point of this run.
+#
+# §16 defers M20's concrete call counts, class caps and reserve sizes to TRAIN;
+# §17 defers M21's historical bins and every one of alpha, beta, gamma, delta,
+# eta, kappa and tau_continue to TRAIN. Neither artifact exists. Both modules
+# fail closed rather than defaulting, so leaving them enabled would refuse the
+# run - and inventing an artifact to satisfy them would be inventing the policy
+# this collection is meant to measure.
+#
+# During collection Module 20 therefore reserves nothing, and the telemetry says
+# so: `reserved_class` stays empty and only the owner-declared `spend_class` and
+# `reserve_purpose` are recorded, which is what offline derivation groups by.
+relation_budget_scheduler:
+  enabled: false
+  mode: shadow
+  scheduler_version: m20-v1
+  calibration_file: null
+
+micro_planner:
+  enabled: false
+  mode: shadow
+  planner_version: m21-v1
+  historical_bins: null
+  planner_calibration: null
+
+layer6_integration:
+  enabled: false
+  mode: shadow

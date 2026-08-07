@@ -235,6 +235,13 @@ class BaseRuntime:
         self._spec = spec
         self.calls = 0
         self.generated_tokens = 0
+        #: Cumulative prompt tokens actually submitted to this runtime, summed
+        #: from the per-call figures the backend reports. A sibling of
+        #: ``generated_tokens`` rather than an estimate: Module 20's token
+        #: budget and Module 21's ``Ĉost`` are both priced in real tokens, and
+        #: a runner re-tokenising the prompt to guess would be a second,
+        #: divergent measurement of a quantity the backend already knows.
+        self.prompt_tokens = 0
 
     @property
     def spec(self) -> ModelSpec:
@@ -253,5 +260,19 @@ class BaseRuntime:
             f"{type(self).__name__} ({self._spec.model_id}) does not expose hidden states"
         )
 
+    def charge_prompt_tokens(self, tokens: int | None) -> None:
+        """Accumulate one call's prompt tokens, ignoring an unreported figure.
+
+        A backend that cannot report prompt length contributes nothing rather
+        than a guess: an estimated token is indistinguishable from a measured
+        one once it is in the ledger.
+        """
+        if tokens:
+            self.prompt_tokens += int(tokens)
+
     def usage(self) -> dict[str, int]:
-        return {"calls": self.calls, "generated_tokens": self.generated_tokens}
+        return {
+            "calls": self.calls,
+            "prompt_tokens": self.prompt_tokens,
+            "generated_tokens": self.generated_tokens,
+        }

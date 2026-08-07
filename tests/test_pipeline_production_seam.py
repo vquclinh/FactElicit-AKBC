@@ -326,3 +326,117 @@ def test_m8_remains_the_sole_final_owner() -> None:
     from cover_kbc.selection import finalize
     assert finalize(graph, stopped_reason="t").object_entities is not None
     assert prediction.subject == SUBJECT and prediction.relation == RELATION
+
+
+# ==========================================================================
+# Multi-round collection - Audit 0041 F-04
+#
+# An unconditional `break` used to cap every query at one Module 17 action and
+# one Module 18 action, leaving the loop's own bookkeeping dead. §17's depth-2
+# lookahead is calibrated from successor states, and one action per catalogue
+# produces none.
+# ==========================================================================
+
+def test_more_than_one_action_runs_per_catalogue() -> None:
+    pipeline = build(IntegrationMode.PRODUCTION)
+    run(pipeline)
+    executed = [r for r in pipeline.action_records if r["executed"]]
+    by_kind: dict[str, int] = {}
+    for record in executed:
+        by_kind[record["kind"]] = by_kind.get(record["kind"], 0) + 1
+    assert max(by_kind.values()) >= 2, by_kind
+
+
+def test_the_action_loop_is_bounded_not_unbounded() -> None:
+    """The bound is explicit and configured, never 'until nothing is legal'."""
+    config = PipelineConfig(max_control_rounds_per_catalogue=1)
+    runtime = ScriptedRuntime(
+        {}, model_id="offline/enumerator",
+        fallback=lambda request: "Alphaland, Betaland")
+    pipeline = build(IntegrationMode.PRODUCTION)
+    pipeline.config = config
+    run(pipeline)
+    executed = [r for r in pipeline.action_records if r["executed"]]
+    by_kind: dict[str, int] = {}
+    for record in executed:
+        by_kind[record["kind"]] = by_kind.get(record["kind"], 0) + 1
+    assert by_kind and max(by_kind.values()) == 1, by_kind
+    assert runtime.calls == 0        # the fixture's own runtime, untouched
+
+
+def test_a_completed_action_is_not_offered_again_after_the_catalogue_reload() -> None:
+    """Identity survives the re-read; a memory address would not."""
+    pipeline = build(IntegrationMode.PRODUCTION)
+    run(pipeline)
+    executed = [r["projection"].action_id
+                for r in pipeline.action_records if r["executed"]]
+    assert len(executed) == len(set(executed))
+
+
+def test_every_round_re_reads_and_refreshes_before_deciding() -> None:
+    """Round t+1 plans over what round t changed, in state and in cost."""
+    pipeline = build(IntegrationMode.PRODUCTION)
+    run(pipeline)
+    executed = [r for r in pipeline.action_records if r["executed"]]
+    if len(executed) < 2:
+        pytest.skip("fixture executed fewer than two actions")
+    assert [r["round_index"] for r in executed] == sorted(
+        r["round_index"] for r in executed)
+    assert len({r["round_index"] for r in executed}) == len(executed)
+
+
+def test_multi_round_verifications_are_merged_not_replaced() -> None:
+    """A second round must not erase the first round's typed results."""
+    pipeline = build(IntegrationMode.PRODUCTION)
+    run(pipeline)
+    executed_m17 = [r for r in pipeline.action_records
+                    if r["executed"] and r["kind"] == "m17"]
+    if len(executed_m17) < 2:
+        pytest.skip("fixture executed fewer than two M17 actions")
+    (entry,) = [e for e in pipeline.specialist_verifications
+                if e.subject == SUBJECT and e.relation == RELATION]
+    assert len(entry.results) >= len(executed_m17)
+
+
+# ==========================================================================
+# Prompt-token accounting - Audit 0041 F-06
+# ==========================================================================
+
+def test_prompt_tokens_are_cumulative_on_the_runtime() -> None:
+    from cover_kbc.models.base import LabelScoreRequest
+    from cover_kbc.models.offline import NullRuntime
+
+    runtime = NullRuntime()
+    runtime.generate(_generation_request("one two three"))
+    assert runtime.prompt_tokens == 3
+    runtime.score_labels(LabelScoreRequest(prompt="a b", labels={"A": "A"}))
+    assert runtime.prompt_tokens == 5
+    assert runtime.usage()["prompt_tokens"] == 5
+
+
+def _generation_request(prompt: str):
+    from cover_kbc.models.base import GenerationRequest
+
+    return GenerationRequest(prompt=prompt)
+
+
+def test_the_physical_snapshot_carries_prompt_tokens() -> None:
+    pipeline = build(IntegrationMode.PRODUCTION)
+    before = pipeline.physical_snapshot()
+    run(pipeline)
+    after = pipeline.physical_snapshot()
+    delta = pipeline.physical_delta(before, after)
+    assert delta["prompt_tokens"] > 0
+    assert set(delta) == set(pipeline.PHYSICAL_COUNTERS)
+
+
+def test_a_broken_role_partition_is_a_typed_fatal_error() -> None:
+    from cover_kbc.pipeline import AccountingInvariantError
+
+    pipeline = build(IntegrationMode.PRODUCTION)
+    with pytest.raises(AccountingInvariantError, match="role partition"):
+        pipeline.physical_delta(
+            {"enumerator_calls": 0, "verifier_calls": 0, "physical_calls": 0,
+             "prompt_tokens": 0, "generated_tokens": 0},
+            {"enumerator_calls": 1, "verifier_calls": 0, "physical_calls": 3,
+             "prompt_tokens": 0, "generated_tokens": 0})

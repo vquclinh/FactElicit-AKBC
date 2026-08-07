@@ -20,8 +20,10 @@ from cover_kbc.controller_calibration.checkpoint import (
 from cover_kbc.controller_calibration.collection_policy import (
     COLLECTION_POLICY_VERSION,
     CollectionPolicyError,
+    FamilyStatus,
     TrainCollectionPolicy,
     family_of,
+    required_families,
 )
 from cover_kbc.controller_calibration.progress import (
     MIN_ROWS_FOR_ETA,
@@ -99,11 +101,79 @@ def test_a_legal_family_never_executed_fails_integrity() -> None:
 
 
 def test_family_absent_from_train_is_distinct_from_a_coverage_failure() -> None:
-    """Zero legal instances is a fact about TRAIN, not an implementation bug."""
+    """Zero legal instances is a fact about TRAIN, not an implementation bug.
+
+    "Surfaced by a catalogue and never legal" is the dataset fact. "Never
+    surfaced at all" is a wiring failure and is tested separately below.
+    """
     policy = TrainCollectionPolicy()
     policy.note_families(["CANDIDATE_FREE_RECALL"])
+    policy.coverage.note_surfaced("CANDIDATE_FREE_RECALL")
     assert "CANDIDATE_FREE_RECALL" in policy.coverage.families_absent_from_train
     assert policy.coverage.integrity_ok()
+
+
+def test_a_required_family_never_offered_fails_integrity() -> None:
+    """Audit 0041 F-10: this used to read as PASS because the family was
+    simply absent from the ledger."""
+    policy = TrainCollectionPolicy()
+    policy.note_families(["REVERSE_CHECK", "SPECIALIST_VERIFY"])
+    policy.select(_catalogue(("a1", "SPECIALIST_VERIFY")))
+    policy.coverage.note_executed("SPECIALIST_VERIFY", succeeded=True)
+
+    assert policy.coverage.never_surfaced_families == ("REVERSE_CHECK",)
+    assert not policy.coverage.integrity_ok()
+    assert policy.coverage.families["REVERSE_CHECK"].status is (
+        FamilyStatus.NEVER_SURFACED)
+
+
+def test_the_four_coverage_states_are_distinguished() -> None:
+    policy = TrainCollectionPolicy()
+    policy.note_families(["REVERSE_CHECK"])                      # never surfaced
+    policy.coverage.note_surfaced("COUNTERFACTUAL_VERIFY")        # absent from TRAIN
+    policy.coverage.note_legal("CANDIDATE_FREE_RECALL")           # legal, unexecuted
+    policy.coverage.note_legal("SPECIALIST_VERIFY")
+    policy.coverage.note_executed("SPECIALIST_VERIFY", succeeded=True)   # observed
+
+    states = {f: c.status for f, c in policy.coverage.families.items()}
+    assert states == {
+        "REVERSE_CHECK": FamilyStatus.NEVER_SURFACED,
+        "COUNTERFACTUAL_VERIFY": FamilyStatus.ABSENT_FROM_TRAIN,
+        "CANDIDATE_FREE_RECALL": FamilyStatus.LEGAL_BUT_UNEXECUTED,
+        "SPECIALIST_VERIFY": FamilyStatus.OBSERVED,
+    }
+
+
+def test_the_family_vocabulary_comes_from_layer_6_not_a_string_list() -> None:
+    from cover_kbc.control.planner_types import ActionFamily
+
+    families = required_families(("m17", "m18"))
+    assert set(families) <= {member.value for member in ActionFamily}
+    assert "SPECIALIST_VERIFY" in families and "REVERSE_CHECK" in families
+
+
+def test_the_round_robin_position_survives_the_controller_re_asking() -> None:
+    """One action executes per round, so a restarting rotation starves a family."""
+    policy = TrainCollectionPolicy()
+    catalogue = _catalogue(
+        ("c1", "COUNTERFACTUAL_VERIFY"), ("c2", "COUNTERFACTUAL_VERIFY"),
+        ("c3", "COUNTERFACTUAL_VERIFY"), ("r1", "REVERSE_CHECK"),
+    )
+    policy.begin_query()
+    heads = []
+    remaining = list(catalogue)
+    for _ in range(2):
+        chosen = policy.select(tuple(remaining))
+        heads.append(family_of(chosen[0]))
+        remaining = [a for a in remaining if a is not chosen[0]]
+    assert heads == ["COUNTERFACTUAL_VERIFY", "REVERSE_CHECK"]
+
+
+def test_begin_query_resets_only_the_rotation_not_the_coverage() -> None:
+    policy = TrainCollectionPolicy()
+    policy.select(_catalogue(("a1", "REVERSE_CHECK")))
+    policy.begin_query()
+    assert policy.coverage.families["REVERSE_CHECK"].legal_opportunities == 1
 
 
 def test_outcomes_split_success_and_failure() -> None:

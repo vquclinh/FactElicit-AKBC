@@ -909,10 +909,11 @@ def test_layer_6_mutates_nothing_upstream(upstream):
 
 
 def test_module_7_and_module_8_are_unchanged_by_layer_6():
-    assert subprocess.run(
-        ["git", "status", "--porcelain", "src/cover_kbc/controller.py",
-         "src/cover_kbc/types.py", "src/cover_kbc/selection.py"],
-        capture_output=True, text=True, check=True).stdout == ""
+    """Layer 6 references no Module 7 or Module 8 concept.
+
+    Asserted over Layer 6's own source rather than over ``git status``, which
+    reported a deliberate change anywhere in the tree as a Layer-6 violation.
+    """
     source = "\n".join(
         (Path("src/cover_kbc/control") / n).read_text() for n in LAYER6_MODULES)
     for forbidden in ("ProgramState", "Budget.charge", "finalize", "Prediction"):
@@ -1115,24 +1116,24 @@ def _stock_cross_family_result(*, eligible=True, trigger=None, executed=False,
 
 
 def _stock_counterfactual(counterfactual_class, *, kind="COUNTERFACTUAL"):
-    class _Target:
-        target_id = "example exchange"
-        display = "Example Exchange"
+    """A real ``EligibleCheck``, not a stand-in.
 
-        def to_json(self):
-            return {}
+    Module 18 publishes the canonical check identity the catalogue namespaces
+    into ``action_id``, so a hand-rolled stub with the right attribute names
+    but no ``check_id`` would be testing a parallel object rather than the
+    contract (Audit 0043 C-01).
+    """
+    from cover_kbc.verification.bidirectional_types import (
+        BidirectionalCheckKind, CheckTarget, CheckTargetKind, EligibleCheck)
 
-    class _Check:
-        check_kind = type("K", (), {"value": kind, "shows_candidate": True})()
-        target = _Target()
-        eligible = True
-        ineligible_reason = None
-        counterfactual_class = ""
-        requested_by = None
-
-    check = _Check()
-    check.counterfactual_class = counterfactual_class
-    return check
+    return EligibleCheck(
+        check_kind=BidirectionalCheckKind(kind),
+        target=CheckTarget(
+            relation=STOCK, subject=SUBJECTS[STOCK], row_index=5,
+            kind=CheckTargetKind.ENTITY_CANDIDATE,
+            target_id="example exchange", display="Example Exchange"),
+        counterfactual_class=counterfactual_class,
+    )
 
 
 def _cross_family_state(result):

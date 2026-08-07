@@ -240,11 +240,25 @@ class EvidenceGraph:
         The edge is marked ``SHOWN_CANDIDATE``: the verifier was handed this
         name and asked to judge it. That is weaker than independently recalling
         it, and the scorer treats the two differently.
+
+        **The edge is attached before the verdict is recorded**, so a duplicate
+        is refused *whole*. ``_attach`` raises before it mutates anything, and
+        appending first meant a re-integrated verdict was rejected as an edge
+        and kept as a reading: ``candidate.verifications`` then grew by one
+        identical copy every time Layer 4 was rebuilt. Scoring reads only the
+        latest verdict, so predictions never moved - but the per-action
+        candidate diff saw a "new" INVALID on every subsequent action and
+        reported candidates as contradicted by actions that had not touched
+        them. Bounded multi-round collection re-integrates after every action,
+        which is what made a latent ordering bug a measurable one.
+
+        Raises:
+            ValueError: if this verdict is already attached. The caller decides
+                whether that is an error or the ordinary re-integration case.
         """
         candidate = self.candidates.get(result.candidate_key)
         if candidate is None:
             return None
-        candidate.verifications.append(result)
         self._attach(
             candidate,
             Evidence(
@@ -262,6 +276,7 @@ class EvidenceGraph:
                 unknown_prob=result.unknown_prob,
             ),
         )
+        candidate.verifications.append(result)
         return candidate
 
     def reject(self, key: str, reason: str) -> None:

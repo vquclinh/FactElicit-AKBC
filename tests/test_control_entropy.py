@@ -81,10 +81,10 @@ def test_delta_h_is_a_reduction_and_therefore_positive() -> None:
         schema_version=TELEMETRY_SCHEMA_VERSION, run_id="r", row_index=0,
         subject=SUBJECT, relation=RELATION, program_type="SMALL_SET",
         round_index=1, operation_id="op", action_family="F",
-        selected=True, executed=True,
+        action_id="M18:REVERSE:t1", selected=True, executed=True,
         pre_state=ControlStateFeatures(entropy=0.9),
         post_state=ControlStateFeatures(entropy=0.4),
-        outcome=ActionOutcome(physical_calls=1),
+        outcome=ActionOutcome(physical_calls=1, verifier_calls=1),
     )
     assert record.delta_entropy == pytest.approx(0.5)
 
@@ -178,4 +178,7 @@ def test_the_runner_contains_no_entropy_mathematics() -> None:
     source = (Path(__file__).resolve().parents[1]
               / "scripts" / "run_train_calibration_collection.py").read_text()
     assert "math.log" not in source
-    assert "control_entropy" in source          # delegates to the owner
+    assert "entropy=" not in source, "the runner assembled an entropy of its own"
+    # It transcribes the control state the seam captured, and never builds one.
+    assert "record[\"state_before\"]" in source
+    assert "ControlStateFeatures(" not in source
