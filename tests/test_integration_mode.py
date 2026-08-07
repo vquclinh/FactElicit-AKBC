@@ -10,14 +10,17 @@ from __future__ import annotations
 import pytest
 
 from cover_kbc.integration_mode import (
+    CALIBRATION_SPLIT,
     IntegrationMode,
     IntegrationModeError,
     parse_mode,
+    require_split,
 )
 
 
-def test_exactly_two_modes_exist() -> None:
-    assert [mode.value for mode in IntegrationMode] == ["shadow", "production"]
+def test_exactly_three_modes_exist() -> None:
+    assert [mode.value for mode in IntegrationMode] == [
+        "shadow", "production", "train_calibration_collection_only"]
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -69,3 +72,33 @@ def test_permissions_never_overlap() -> None:
     for mode in IntegrationMode:
         assert mode.may_mutate_production_state is not mode.is_shadow
         assert mode.charges_production_budget is not mode.is_shadow
+
+
+def test_collection_runs_the_real_seams() -> None:
+    """Collection must reach production state, or it observes the wrong system."""
+    mode = IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY
+    assert mode.is_collection and not mode.is_production and not mode.is_shadow
+    assert mode.may_mutate_production_state
+    assert mode.charges_production_budget
+
+
+def test_only_collection_is_split_restricted() -> None:
+    assert IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY.train_split_only
+    assert not IntegrationMode.SHADOW.train_split_only
+    assert not IntegrationMode.PRODUCTION.train_split_only
+
+
+def test_collection_accepts_train() -> None:
+    require_split(IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY, CALIBRATION_SPLIT)
+
+
+@pytest.mark.parametrize("split", ["val", "test", "validation", ""])
+def test_collection_refuses_every_other_split(split: str) -> None:
+    with pytest.raises(IntegrationModeError, match="may only run on"):
+        require_split(IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY, split)
+
+
+@pytest.mark.parametrize("mode", [IntegrationMode.SHADOW, IntegrationMode.PRODUCTION])
+@pytest.mark.parametrize("split", ["train", "val", "test"])
+def test_other_modes_are_unrestricted_by_split(mode, split) -> None:
+    require_split(mode, split)

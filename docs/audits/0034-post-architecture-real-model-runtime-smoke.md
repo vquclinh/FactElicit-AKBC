@@ -19,6 +19,7 @@ chat-template paths work, does label scoring produce usable logits, does Module
 accounted, does the shadow stack leave production output untouched.
 
 **It answers no factual question.** No accuracy, precision, recall, F1 or
+
 leaderboard number appears here, and none was computed. A semantically wrong
 answer is still a runtime PASS provided every contract executed correctly.
 

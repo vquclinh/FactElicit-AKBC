@@ -46,6 +46,11 @@ class IntegrationMode(str, Enum):
 
     SHADOW = "shadow"
     PRODUCTION = "production"
+    #: Runs the real production seams so that TRAIN observes the same action
+    #: families VALIDATION will, but exists solely to collect the outcomes
+    #: Modules 20 and 21 are calibrated from. It is not a planner: action
+    #: choice comes from a fixed deterministic policy, never from utility.
+    TRAIN_CALIBRATION_COLLECTION_ONLY = "train_calibration_collection_only"
 
     @property
     def is_production(self) -> bool:
@@ -56,14 +61,32 @@ class IntegrationMode(str, Enum):
         return self is IntegrationMode.SHADOW
 
     @property
+    def is_collection(self) -> bool:
+        return self is IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY
+
+    @property
+    def train_split_only(self) -> bool:
+        """Whether this mode may only ever be pointed at TRAIN.
+
+        Collection executes actions chosen by a fixed policy rather than by
+        calibrated utility. Pointing it at VALIDATION would produce a
+        leaderboard number for a system that does not exist, and pointing it at
+        TEST would spend the blind split on diagnostics.
+        """
+        return self is IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY
+
+    @property
     def may_mutate_production_state(self) -> bool:
         """Whether a typed integration may apply this module's evidence.
 
         Consulted by the integration layer, never by the producing module: a
         module deciding for itself that it is allowed to write is precisely the
         bypass this design forbids.
+
+        Collection mutates production state too - that is the entire point of
+        collecting on the real seams rather than on a mock.
         """
-        return self is IntegrationMode.PRODUCTION
+        return self is not IntegrationMode.SHADOW
 
     @property
     def charges_production_budget(self) -> bool:
@@ -73,7 +96,7 @@ class IntegrationMode(str, Enum):
         two must never be summed into one number, because a shadow call did not
         buy any production evidence.
         """
-        return self is IntegrationMode.PRODUCTION
+        return self is not IntegrationMode.SHADOW
 
 
 def parse_mode(value: object, *, module: str) -> IntegrationMode:
@@ -105,4 +128,30 @@ def parse_mode(value: object, *, module: str) -> IntegrationMode:
         ) from None
 
 
-__all__ = ["IntegrationMode", "IntegrationModeError", "parse_mode"]
+#: The only split calibration collection may ever read.
+CALIBRATION_SPLIT = "train"
+
+
+def require_split(mode: IntegrationMode, split: str) -> None:
+    """Refuse a mode/split pairing that would misuse a split.
+
+    Raises:
+        IntegrationModeError: when collection is pointed anywhere but TRAIN.
+            The check lives here rather than in each script so that a new
+            entry point cannot forget it.
+    """
+    if mode.train_split_only and split != CALIBRATION_SPLIT:
+        raise IntegrationModeError(
+            f"{mode.value} may only run on {CALIBRATION_SPLIT!r}, not {split!r}; "
+            "its actions are chosen by a fixed collection policy, so results on "
+            "any other split would describe a system that does not exist"
+        )
+
+
+__all__ = [
+    "CALIBRATION_SPLIT",
+    "IntegrationMode",
+    "IntegrationModeError",
+    "parse_mode",
+    "require_split",
+]

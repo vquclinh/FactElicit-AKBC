@@ -52,7 +52,10 @@ from cover_kbc.evidence.consensus_adapters import applicable_specialist
 from cover_kbc.evidence.consensus_types import ConsensusError, QueryConsensusResult
 from cover_kbc.coverage_gap.facet_coverage import discovery_origins, facet_executions
 from cover_kbc.coverage_gap.gap_types import CoverageGapState
-from cover_kbc.control.budget_types import RelationBudgetResult
+from cover_kbc.control.budget_types import (
+    BudgetSchedulerError,
+    RelationBudgetResult,
+)
 from cover_kbc.control.layer6_integration import (
     Layer6ControlState,
     Layer6Integrator,
@@ -66,6 +69,11 @@ from cover_kbc.control.planner_types import (
 from cover_kbc.control.relation_budget import RelationBudgetScheduler
 from cover_kbc.coverage_gap.missingness import CoverageGapEstimator
 from cover_kbc.evidence.layer4 import Layer4EvidenceIntegrator, prior_family_map
+from cover_kbc.evidence.production_bridge import (
+    BridgeReport,
+    ProductionEvidenceBridge,
+)
+from cover_kbc.integration_mode import IntegrationMode, parse_mode
 from cover_kbc.evidence.layer4_types import Layer4EvidenceState
 from cover_kbc.verification.bidirectional_types import QueryBidirectionalResult
 from cover_kbc.verification.bidirectional_verifier import BidirectionalVerifier
@@ -132,6 +140,16 @@ GATE_QUESTIONS: dict[str, str] = {
         "parent or a subsidiary is listed."
     ),
 }
+
+
+def _program_type_value(contract: Any) -> str:
+    """The contract's ProgramType as its canonical value.
+
+    ``str(enum)`` yields ``"ProgramType.SMALL_SET"``, which does not match the
+    risk profile's ``"SMALL_SET"`` and makes Module 20 reject every schedule.
+    """
+    program_type = getattr(contract, "program_type", "")
+    return str(getattr(program_type, "value", program_type))
 
 
 class ExecutionMode(str, Enum):
@@ -325,6 +343,8 @@ class CoverPipeline:
         relation_budget_scheduler: "RelationBudgetScheduler | None" = None,
         micro_planner: "MicroPlanner | None" = None,
         layer6_integrator: "Layer6Integrator | None" = None,
+        integration_mode: "IntegrationMode | str" = IntegrationMode.SHADOW,
+        action_selector: "Callable[[str, Sequence[Any]], Sequence[Any]] | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -485,7 +505,28 @@ class CoverPipeline:
             )
         self.layer6_integrator = layer6_integrator
         self.layer6_results: list[Layer6ControlState] = []
+        # Normalised exactly once, here at the pipeline boundary, so no module
+        # downstream ever parses a raw mode string again.
+        self.integration_mode = parse_mode(integration_mode, module="pipeline")
+        self.production_bridge = ProductionEvidenceBridge(self.integration_mode)
+        self.bridge_reports: list[BridgeReport] = []
+        #: One entry per action considered, with its own measured cost and
+        #: pre/post state. The runner turns these into telemetry.
+        self.action_records: list[dict[str, Any]] = []
+        #: One Module 20 ledger per query, so caps actually bind.
+        self._budget_ledgers: dict[tuple[str, str, int], Any] = {}
+        # Chooses which *legal* catalogue entries execute. Deliberately
+        # injected rather than decided here: in collection it will be the
+        # TrainCollectionPolicy, in production it belongs to Modules 20/21, and
+        # neither of those is the pipeline's judgement to make. ``None`` means
+        # nothing is selected - fail-closed, so an uncalibrated production run
+        # spends nothing rather than verifying everything it can see.
+        self.action_selector = action_selector
         self.shadow_calls = 0
+        #: Physical calls made by upgraded modules in a mode that charges
+        #: production. Kept apart from ``shadow_calls`` because summing the two
+        #: would claim shadow diagnostics bought production evidence.
+        self.production_calls = 0
         self.shadow_generated_tokens = 0
         # Falling back to the enumerator keeps the interface usable with one
         # model, but then no *cross-model* evidence is claimed anywhere.
@@ -925,7 +966,7 @@ class CoverPipeline:
         """
         result = self.retriever.retrieve(query, program, self.runtime)
         self.retrieval_results.append(result)
-        self.shadow_calls += result.total_calls
+        self._charge_calls(result.total_calls)
         self.shadow_generated_tokens += result.total_generated_tokens
         return result
 
@@ -942,7 +983,7 @@ class CoverPipeline:
             query, program, contract, self.runtime, retrieval
         )
         self.numeric_results.append(result)
-        self.shadow_calls += result.calls
+        self._charge_calls(result.calls)
         self.shadow_generated_tokens += result.generated_tokens
 
     def _run_large_set_specialist(self, query, program, contract, retrieval) -> None:
@@ -958,7 +999,7 @@ class CoverPipeline:
             query, program, contract, self.runtime, retrieval
         )
         self.large_set_results.append(result)
-        self.shadow_calls += result.calls
+        self._charge_calls(result.calls)
         self.shadow_generated_tokens += result.generated_tokens
 
     def _run_null_temporal_specialist(self, query, program, contract, retrieval) -> None:
@@ -982,7 +1023,7 @@ class CoverPipeline:
             cross_family_available=distinct,
         )
         self.null_temporal_results.append(result)
-        self.shadow_calls += result.calls
+        self._charge_calls(result.calls)
         self.shadow_generated_tokens += result.generated_tokens
 
     def _run_small_set_specialist(self, query, program, contract, retrieval) -> None:
@@ -1002,7 +1043,7 @@ class CoverPipeline:
             cross_family_available=distinct,
         )
         self.small_set_results.append(result)
-        self.shadow_calls += result.calls
+        self._charge_calls(result.calls)
         self.shadow_generated_tokens += result.generated_tokens
 
     def enumerate_query(self, query: Query) -> EvidenceGraph:
@@ -1624,12 +1665,436 @@ class CoverPipeline:
             self._catalogue_specialist_targets(result)
         if self.bidirectional_verifier is not None:
             self._catalogue_bidirectional_checks(result)
+
+        # Establish the round-zero control state *before* any selection, so
+        # Module 21 plans over real Layer-4/19 state rather than over nothing.
+        # Appendix C gives the planner the full state and forbids it
+        # reconstructing a missing layer, so the layer has to exist first.
         if self.layer4_integrator is not None:
             self._integrate_layer4(result, graph)
+            self.bridge_reports.append(
+                self.production_bridge.apply(graph, self.layer4_results[-1]))
+            if self.coverage_gap_estimator is not None:
+                self._estimate_coverage_gap(result, graph.contract)
+
+        # Each action re-integrates and refreshes, so round t+1 plans over what
+        # round t changed.
+        self.action_records.extend(
+            self._execute_selected_verifications(result, graph))
+
+        if self.layer4_integrator is not None:
+            self._integrate_layer4(result, graph)
+            # The single production seam. In shadow it is still called and
+            # still writes nothing, so the call site cannot drift between
+            # modes and the isolation is proven on the same path it protects.
+            self.bridge_reports.append(
+                self.production_bridge.apply(graph, self.layer4_results[-1]))
             if self.coverage_gap_estimator is not None:
                 self._estimate_coverage_gap(result, graph.contract)
                 if self.micro_planner is not None:
                     self._plan_micro_action(result, graph.contract)
+
+    def _plan_next_action(
+        self, kind: str, catalogue: "Sequence[Any]",
+        consensus: QueryConsensusResult, graph: EvidenceGraph,
+    ) -> "Sequence[Any]":
+        """Module 21 chooses at most one action from the legal catalogue.
+
+        The planner is handed the *current* state - rebuilt from this round's
+        Layer-4 result, Module 19 residual and Module 20 ledger - so a second
+        round sees what the first round's action changed. It returns a decision
+        and executes nothing; mapping that decision back to the owner's own
+        catalogue entry is done here, and ``execute_action`` does the work.
+        """
+        from cover_kbc.control.action_catalog import m17_actions, m18_actions
+
+        if not catalogue or self.micro_planner is None:
+            return ()
+        query = graph.query
+        if kind == "m17":
+            candidates, _ = m17_actions(
+                tuple(catalogue), subject=query.subject, relation=query.relation,
+                row_index=query.row_index,
+                verifier_config=getattr(self.specialist_verifier, "config", None))
+        else:
+            candidates, _ = m18_actions(
+                tuple(catalogue), subject=query.subject, relation=query.relation,
+                row_index=query.row_index)
+        if not candidates:
+            return ()
+        # Several catalogue entries can project to one action identity. The
+        # planner refuses to be offered the same action twice, and rightly so:
+        # ranking one action as two would double its apparent value. Keep the
+        # first occurrence, which preserves the catalogue's own order.
+        unique: list = []
+        paired: list = []
+        seen: set = set()
+        for candidate, entry in zip(candidates, catalogue):
+            if candidate.action_id in seen:
+                continue
+            seen.add(candidate.action_id)
+            unique.append(candidate)
+            paired.append(entry)
+        candidates, catalogue = unique, paired
+
+        ledger = self._budget_ledger_for(graph)
+        state = PlannerStateSnapshot(
+            subject=query.subject, relation=query.relation,
+            row_index=query.row_index,
+            program_type=_program_type_value(graph.contract),
+            risk_profile=self._profile_for(graph),
+            layer4=self.layer4_results[-1] if self.layer4_results else None,
+            coverage_gap=(self.coverage_gap_results[-1]
+                          if self.coverage_gap_results else None),
+            # Appendix C requires the *full* state: the planner may not
+            # reconstruct a layer it was not given, so the plan travels with
+            # the ledger it came from.
+            budget_plan=(ledger.plan if ledger is not None else None),
+            budget_ledger=ledger,
+        )
+        decision = self.micro_planner.plan(
+            state, [c.to_planner_action() for c in candidates])
+        self.micro_planner_results.append(decision)
+        if getattr(decision.kind, "value", decision.kind) != "ACTION":
+            return ()                       # STOP: nothing executes this round
+
+        # Map the chosen action id back to the owner's catalogue entry. The
+        # projection preserves input order, so identity is positional.
+        for candidate, entry in zip(candidates, catalogue):
+            if candidate.action_id == decision.selected_action:
+                return (entry,)
+        return ()
+
+    def _select_actions(
+        self, kind: str, catalogue: "Sequence[Any]",
+        consensus: QueryConsensusResult | None = None,
+        graph: EvidenceGraph | None = None,
+    ) -> "Sequence[Any]":
+        """Ask the injected selector which legal entries to execute.
+
+        The catalogue is the eligibility authority; the selector may only
+        return a subset of it. A selector that invented an entry would be
+        forcing eligibility, so that is refused rather than trusted.
+        """
+        if not catalogue:
+            return ()
+        if not self.integration_mode.may_mutate_production_state:
+            return ()
+        if (self.integration_mode.is_production
+                and self.micro_planner is not None
+                and consensus is not None and graph is not None):
+            # Module 21 owns choice in calibrated production. Collection never
+            # reaches here: using an uncalibrated planner to gather the very
+            # bins it needs would be circular.
+            return self._plan_next_action(kind, catalogue, consensus, graph)
+        if self.action_selector is None:
+            return ()
+        chosen = tuple(self.action_selector(kind, tuple(catalogue)) or ())
+        legal = {id(entry) for entry in catalogue}
+        for entry in chosen:
+            if id(entry) not in legal:
+                raise UnsupportedAction(
+                    f"{kind}: selector returned an entry that is not in the "
+                    "catalogue; legality is the catalogue's to declare"
+                )
+        return chosen
+
+    def execute_action(
+        self, kind: str, action: Any, consensus: QueryConsensusResult,
+        graph: EvidenceGraph, *, round_index: int = 1,
+    ) -> dict[str, Any]:
+        """The canonical seam: execute exactly one already-legal action.
+
+        Both callers land here - Module 21 in production, the collection policy
+        during TRAIN collection - so TRAIN measures the same execution and
+        integration semantics production will later invoke. Selection differs;
+        everything downstream of selection does not.
+
+        Module 7 keeps execution ownership: this routes to the module that owns
+        the action and never verifies or checks anything itself. Module 21, when
+        it is the caller, has already returned; it never touches a runtime.
+
+        Returns:
+            A record with the pre/post physical snapshots and the measured cost
+            of *this* action, which is what per-action telemetry needs.
+        """
+        before = self.physical_snapshot()
+        entropy_before = self.control_entropy(graph)
+        admitted, refusal = self._precharge(kind, action, graph)
+        if not admitted:
+            # A refused action must cost nothing: no generate, no score_labels,
+            # no counter movement. Asserted by returning before touching a
+            # runtime rather than by cleaning up afterwards.
+            return {
+                "kind": kind, "round_index": round_index, "executed": False,
+                "admitted": False, "refusal": refusal,
+                "pre": before, "post": before,
+                "entropy_before": entropy_before, "entropy_after": None,
+                "cost": self.physical_delta(before, before),
+            }
+
+        if kind == "m17":
+            self.verify_specialist_targets(consensus, (action,))
+        elif kind == "m18":
+            request = self.bidirectional_verifier.build_request(action)
+            self.execute_bidirectional_checks(consensus, (request,))
+        else:
+            raise UnsupportedAction(f"no executor for action kind {kind!r}")
+
+        # Integrate, then refresh: Module 19 must describe the state that
+        # exists after this action, not the one before it.
+        self._integrate_layer4(consensus, graph)
+        self.bridge_reports.append(
+            self.production_bridge.apply(graph, self.layer4_results[-1]))
+        if self.coverage_gap_estimator is not None:
+            self._estimate_coverage_gap(consensus, graph.contract)
+
+        after = self.physical_snapshot()
+        # Read *after* integration, bridge and the Module 19 refresh, so it
+        # describes the state the next planner round will actually see.
+        entropy_after = self.control_entropy(graph)
+        return {
+            "kind": kind, "round_index": round_index, "executed": True,
+            "admitted": True, "refusal": "",
+            "pre": before, "post": after,
+            "entropy_before": entropy_before, "entropy_after": entropy_after,
+            #: Reduction in uncertainty is positive, matching §17's +γ·ΔĤ and
+            #: ``historical_bins``' "reduction in uncertainty" definition.
+            "delta_entropy": entropy_before - entropy_after,
+            "cost": self.physical_delta(before, after),
+        }
+
+    def _budget_ledger_for(self, graph: EvidenceGraph):
+        """Module 20's ledger for this query, built through its real contract.
+
+        ``RelationBudgetScheduler.schedule`` plans the envelopes; ``BudgetLedger``
+        is what actually holds reservations. Built once per query and cached, so
+        every action in a query precharges against the same remaining budget -
+        a fresh ledger per action would make every reserve succeed and the caps
+        meaningless.
+        """
+        if self.relation_budget_scheduler is None:
+            return None
+        key = (graph.query.subject, graph.query.relation, graph.query.row_index)
+        cached = self._budget_ledgers.get(key)
+        if cached is not None:
+            return cached
+        from cover_kbc.control.budget_accounting import BudgetLedger
+
+        result = self.relation_budget_scheduler.schedule(
+            subject=graph.query.subject, relation=graph.query.relation,
+            row_index=graph.query.row_index,
+            program_type=_program_type_value(graph.contract),
+            profile=self._profile_for(graph),
+            budget=self.config.budget(graph.contract),
+        )
+        ledger = BudgetLedger(result.plan)
+        self._budget_ledgers[key] = ledger
+        self.relation_budget_results.append(result)
+        return ledger
+
+    def _action_descriptor(self, kind: str, action: Any, graph: EvidenceGraph):
+        """The owner's own budget descriptor for one action.
+
+        Built by the same ``action_catalog`` projections Layer 6 uses, so the
+        spend class, reserve purpose and sub-call plan are the owner's
+        declaration rather than this call site's opinion.
+        """
+        from cover_kbc.control.action_catalog import m17_actions, m18_actions
+
+        query = graph.query
+        if kind == "m17":
+            projected = m17_actions(
+                (action,), subject=query.subject, relation=query.relation,
+                row_index=query.row_index,
+                verifier_config=getattr(self.specialist_verifier, "config", None))
+        elif kind == "m18":
+            projected = m18_actions(
+                (action,), subject=query.subject, relation=query.relation,
+                row_index=query.row_index)
+        else:
+            raise UnsupportedAction(f"no budget projection for kind {kind!r}")
+        # Both projections return ``(candidates, exclusions)``. An action the
+        # owner excluded yields no candidate and therefore no descriptor.
+        candidates, _exclusions = projected
+        return candidates[0].budget_descriptor if candidates else None
+
+    def _precharge(
+        self, kind: str, action: Any, graph: EvidenceGraph
+    ) -> tuple[bool, str]:
+        """Reserve this action's whole call plan with Module 20. **Before execution.**
+
+        Collection runs before any TRAIN-calibrated artifact exists, so Module
+        20 has nothing to schedule and the bounded collection policy is the only
+        ceiling. That bound is the policy's own and is never serialised as a
+        ``RelationBudgetCalibration``. Ordinary production without a real
+        artifact has no scheduler at all and stays fail-closed upstream.
+        """
+        if self.integration_mode.is_collection:
+            return True, ""
+        ledger = self._budget_ledger_for(graph)
+        if ledger is None:
+            return True, ""
+        try:
+            descriptor = self._action_descriptor(kind, action, graph)
+            if descriptor is None:
+                return True, ""
+            outcome = ledger.reserve(descriptor)
+        except BudgetSchedulerError as error:
+            return False, f"Module 20 refused {kind}: {error}"
+        if hasattr(outcome, "reason"):
+            # A resource denial: the action cannot be funded. It says nothing
+            # about whether the action was worth doing - that is Module 21's.
+            return False, (f"Module 20 denied {kind}: "
+                           f"{getattr(outcome.reason, 'value', outcome.reason)}")
+        return True, ""
+
+    def _execute_selected_verifications(
+        self, consensus: QueryConsensusResult, graph: EvidenceGraph
+    ) -> list[dict[str, Any]]:
+        """Run one action per round through the canonical seam. **Real calls.**
+
+        Iterative rather than batched, because each execution changes the graph
+        and therefore the state the next decision should be made against. A
+        batched sweep would price every action against one stale snapshot,
+        which is exactly what made the previous telemetry unusable for Module
+        21's per-action estimates.
+
+        Returns:
+            One record per action considered, executed or not, in execution
+            order. The runner turns these into telemetry; the pipeline itself
+            keeps no opinion about how they are logged.
+        """
+        records: list[dict[str, Any]] = []
+        if not self.integration_mode.may_mutate_production_state:
+            return records
+
+        round_index = 0
+        for kind, source, available in (
+            ("m17", self._catalogued_targets, self.specialist_verifier),
+            ("m18", self._catalogued_checks, self.bidirectional_verifier),
+        ):
+            if available is None:
+                continue
+            # Re-read the catalogue between actions: a stale one would offer
+            # targets the previous action already resolved.
+            remaining = list(source(consensus))
+            executed_ids: set[int] = set()
+            while True:
+                pending = [a for a in remaining if id(a) not in executed_ids]
+                chosen = self._select_actions(
+                    kind, tuple(pending), consensus, graph)
+                if not chosen:
+                    break
+                action = chosen[0]          # exactly one action per round
+                round_index += 1
+                record = self.execute_action(
+                    kind, action, consensus, graph, round_index=round_index)
+                record["action"] = action
+                records.append(record)
+                executed_ids.add(id(action))
+                for other in pending:
+                    if id(other) is not id(action) and other is not action:
+                        records.append({
+                            "kind": kind, "round_index": round_index,
+                            "action": other, "executed": False, "admitted": True,
+                            "refusal": "", "legal_not_selected": True,
+                            "pre": record["pre"], "post": None,
+                            "entropy_before": record.get("entropy_before"),
+                            "entropy_after": None,
+                            "cost": self.physical_delta(record["pre"], record["pre"]),
+                        })
+                break                        # one action per catalogue per query
+        return records
+
+    def _catalogued_targets(self, consensus: QueryConsensusResult) -> tuple:
+        for entry in self.specialist_verifications:
+            if self._same_query(entry, consensus):
+                return tuple(entry.catalogue)
+        return ()
+
+    def _catalogued_checks(self, consensus: QueryConsensusResult) -> tuple:
+        for entry in self.bidirectional_results:
+            if self._same_query(entry, consensus):
+                return tuple(entry.catalogue)
+        return ()
+
+    def control_entropy(self, graph: EvidenceGraph) -> float:
+        """The canonical control-state uncertainty ``H``, from its owner.
+
+        This is Module 5's ``mean_inclusion_uncertainty`` - the mean of
+        ``H_inc(o) = -q log q - (1-q) log(1-q)`` over active candidates,
+        already normalised to ``[0, 1]`` by its owner. No entropy is computed
+        here and none is computed in the collection runner: ``historical_bins``
+        states that Module 21 never recomputes an entropy of its own, and two
+        definitions of ``H`` would make ``ΔĤ`` mean different things in the
+        planner and in the telemetry it was derived from.
+        """
+        from cover_kbc.coverage import mean_inclusion_uncertainty
+
+        return float(mean_inclusion_uncertainty(
+            graph.active_candidates(), graph.contract))
+
+    def physical_snapshot(self) -> dict[str, int]:
+        """Ground-truth physical counters, read from the runtimes themselves.
+
+        The role partition is *measured*, never inferred: Modules 14 and 15 use
+        the enumerator and the verifier in one operation, so no call site can
+        say which role a given ``result.calls`` belonged to. The runtimes know,
+        because they counted. Differencing this around an action gives that
+        action's true cost, which is what Module 21's ``Ĉost`` has to be built
+        from.
+        """
+        single_role = self.verifier_runtime is self.runtime
+        enumerator = int(getattr(self.runtime, "calls", 0))
+        verifier = 0 if single_role else int(
+            getattr(self.verifier_runtime, "calls", 0))
+        generated = int(getattr(self.runtime, "generated_tokens", 0))
+        if not single_role:
+            generated += int(getattr(self.verifier_runtime, "generated_tokens", 0))
+        return {
+            "enumerator_calls": enumerator,
+            "verifier_calls": verifier,
+            "physical_calls": enumerator + verifier,
+            "generated_tokens": generated,
+            "single_role_profile": single_role,
+        }
+
+    @staticmethod
+    def physical_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+        """Cost of whatever happened between two snapshots.
+
+        Raises:
+            ValueError: if a counter moved backwards, which would mean a
+                counter was reset mid-action and the delta is meaningless.
+        """
+        delta = {}
+        for key in ("enumerator_calls", "verifier_calls", "physical_calls",
+                    "generated_tokens"):
+            moved = int(after.get(key, 0)) - int(before.get(key, 0))
+            if moved < 0:
+                raise ValueError(
+                    f"physical counter {key} moved backwards ({moved}); an "
+                    "action's cost cannot be measured across a counter reset"
+                )
+            delta[key] = moved
+        if delta["enumerator_calls"] + delta["verifier_calls"] != delta["physical_calls"]:
+            raise ValueError(
+                "role partition does not sum to the physical call total; a "
+                "neural call was attributed to no role or to two"
+            )
+        return delta
+
+    def _charge_calls(self, calls: int) -> None:
+        """Bill physical calls to whichever ledger this mode owns.
+
+        Never both: shadow work is real work, but it bought no production
+        evidence, and summing the two would claim otherwise.
+        """
+        if self.integration_mode.charges_production_budget:
+            self.production_calls += calls
+        else:
+            self.shadow_calls += calls
 
     def _estimate_coverage_gap(
         self, consensus: QueryConsensusResult, contract: RelationContract
@@ -1642,16 +2107,23 @@ class CoverPipeline:
         """
         layer4 = self.layer4_results[-1]
         specialist = self._specialist_result_or_none(consensus)
-        self.coverage_gap_results.append(
-            self.coverage_gap_estimator.estimate_coverage_gap(
-                layer4,
-                program_type=contract.program_type.value,
-                facet_executions=facet_executions(consensus.relation, specialist),
-                discovery_origins=discovery_origins(
-                    consensus.relation, specialist, layer4
-                ),
-            )
+        # One residual per query, always the latest. M19 is recomputed after
+        # every executed action, and keeping superseded snapshots would turn
+        # this from the control state into a history of it.
+        estimated = self.coverage_gap_estimator.estimate_coverage_gap(
+            layer4,
+            program_type=contract.program_type.value,
+            facet_executions=facet_executions(consensus.relation, specialist),
+            discovery_origins=discovery_origins(
+                consensus.relation, specialist, layer4
+            ),
         )
+        for index, existing in enumerate(self.coverage_gap_results):
+            if self._same_query(existing, consensus):
+                self.coverage_gap_results[index] = estimated
+                break
+        else:
+            self.coverage_gap_results.append(estimated)
 
     def _plan_micro_action(
         self, consensus: QueryConsensusResult, contract: RelationContract
@@ -1790,7 +2262,11 @@ class CoverPipeline:
         executed to fill a gap, and a query with no verification simply has an
         overlay that says so.
         """
-        self.layer4_results.append(self.layer4_integrator.integrate(
+        # One Layer-4 result per query, always the latest: the state is
+        # re-integrated after every executed action, and keeping the
+        # superseded snapshots would make ``layer4_results`` a history rather
+        # than the state, breaking every "one artefact per query" invariant.
+        integrated = self.layer4_integrator.integrate(
             consensus,
             verifications=[
                 result
@@ -1807,7 +2283,13 @@ class CoverPipeline:
             # Module 16's persisted state carries candidate keys but not the
             # families behind them, so the only defensible source is Module 3.
             prior_families=prior_family_map(graph),
-        ))
+        )
+        for index, existing in enumerate(self.layer4_results):
+            if self._same_query(existing, consensus):
+                self.layer4_results[index] = integrated
+                break
+        else:
+            self.layer4_results.append(integrated)
 
     @staticmethod
     def _same_query(result: Any, consensus: QueryConsensusResult) -> bool:
@@ -1877,7 +2359,7 @@ class CoverPipeline:
                 break
         else:
             self.bidirectional_results.append(result)
-        self.shadow_calls += result.calls
+        self._charge_calls(result.calls)
         return result
 
     def _catalogue_specialist_targets(self, consensus: QueryConsensusResult) -> None:
@@ -1931,7 +2413,7 @@ class CoverPipeline:
                 break
         else:
             self.specialist_verifications.append(result)
-        self.shadow_calls += result.calls
+        self._charge_calls(result.calls)
         return result
 
     def decide_graph(self, graph: EvidenceGraph) -> Prediction:
