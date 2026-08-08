@@ -7,12 +7,12 @@
   "eta": 0.143625,
   "gamma": 0.0,
   "kappa": 1.0,
-  "lookahead_depth": 2,
+  "lookahead_depth": 1,
   "provenance": {
     "binning_spec_version": "m21-state-binning-v1",
     "collection_policy_version": "collect-v1",
     "collection_repo_sha": "264c980361a513078903526440c72adc6e10edaf",
-    "derivation_repo_sha": "b1804646dec3d2343dcf2cf8b277529071b89485",
+    "derivation_repo_sha": "78ad89d3cd8a321f500807b11477fce2f8579e32",
     "derivation_schema_version": "train-calibration-v1",
     "derivation_settings": {
       "budget_quantile": 0.95,

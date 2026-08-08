@@ -9,10 +9,10 @@ Skipped wholesale when the artifacts are absent: a developer checkout without
 them is a legitimate state, and a test that silently passed on missing files
 would be worse than no test.
 
-One blocker is currently open and is recorded here as a strict ``xfail`` rather
-than a comment - see ``test_the_real_artifacts_reach_full_validation_ready``.
-When it is resolved the strict marker turns the unexpected pass into a failure,
-which is the point: the expectation has to be updated deliberately.
+These are the **final** artifacts: derived at ``78ad89d3`` after the corrected
+package-wide lookahead rule (Audit 0052) and activated in Audit 0059. The
+package they describe supports depth-1 planning, which is what it honestly
+observed, and the readiness gate now passes on them with zero blockers.
 """
 
 from __future__ import annotations
@@ -43,15 +43,24 @@ VAL_CONFIG = REPO_ROOT / "configs" / "experiments" / "cover_kbc_v2_validation.ya
 #: a different calibration, whatever it is named.
 EXPECTED_SHA256 = {
     "m20_relation_budget.json":
-        "8ef1f07e61c42dfee6a99bfc8a5afb62fb2ff992bef65b93010a6f9e01fd7070",
+        "8110fccb4c3e85a942f5fc89a50f680bea72e8b6d1e83b1fa2c47d670ec15c68",
     "m21_historical_bins.json":
-        "8c6f9c067130f56ce13d05347742d375fa27c94e3fad47ddc3f8b242832d7aa5",
+        "d6d19493b0b82299e5c73bd0f37e2b3758c4a80894b6b1bdf9fa57139fbcd071",
     "m21_planner_calibration.json":
-        "a8ceac7186242dc71df751e4b99fed0adc797488586eb035b8431b4a8ebfcade",
+        "36315cd72a2c31bcbc61bb1ada9f2e74d8980baa575f6221d92bf8b144f9ce05",
 }
 COLLECTION_SHA = "264c980361a513078903526440c72adc6e10edaf"
-DERIVATION_SHA = "b1804646dec3d2343dcf2cf8b277529071b89485"
+DERIVATION_SHA = "78ad89d3cd8a321f500807b11477fce2f8579e32"
 EXPECTED_BINS = 64
+
+#: §17's six coefficients as the real derivation measured them. Pinned exactly,
+#: not by range: these are the numbers a leaderboard run will price actions
+#: with, and a silent change to any of them is a different system.
+EXPECTED_COEFFICIENTS = {
+    "alpha": 1.0, "beta": 10.084164, "gamma": 0.0, "delta": 0.069917,
+    "eta": 0.143625, "kappa": 1.0, "tau_continue": 0.0,
+}
+EXPECTED_LOOKAHEAD_DEPTH = 1
 
 pytestmark = pytest.mark.skipif(
     not (CALIBRATION / "m20_relation_budget.json").is_file(),
@@ -138,8 +147,9 @@ def test_the_history_is_the_real_sixty_four_bin_package(loaded) -> None:
 def test_the_planner_calibration_is_the_real_one(loaded) -> None:
     planner = loaded["planner"]
     assert planner.source is EstimateSource.TRAIN_CALIBRATED
-    assert planner.alpha == 1.0 and planner.kappa == 1.0
-    assert planner.tau_continue == 0.0
+    for name, value in EXPECTED_COEFFICIENTS.items():
+        assert getattr(planner, name) == value, name
+    assert planner.lookahead_depth == EXPECTED_LOOKAHEAD_DEPTH
     for name in ("alpha", "beta", "gamma", "delta", "eta", "kappa"):
         assert getattr(planner, name) >= 0.0
 
@@ -223,12 +233,16 @@ def test_the_artifacts_are_small_enough_to_be_statistics() -> None:
 
 
 # --------------------------------------------------------------------------
-# P2-A — the open blocker
+# P2-A — the five terminal bins, and why the depth is 1
 # --------------------------------------------------------------------------
 
 
 def test_the_real_history_has_bins_without_successor_statistics(loaded) -> None:
     """The measured state of the shipped package. Five of sixty-four.
+
+    These are the bins the corrected package-wide rule reads to decide the
+    lookahead depth: because they exist, depth 2 is unsupportable and the real
+    derivation wrote 1. They are a fact about the collection, not a defect.
 
     Not sparse noise: these bins carry 31-67 observations each. They have no
     successor because the action was the **last** one in every chain that
@@ -261,34 +275,72 @@ def test_a_starved_bin_is_reachable_through_the_fallback(loaded) -> None:
     assert entry.successors == ()
 
 
-def test_the_loader_refuses_the_real_package_for_depth_two(loaded) -> None:
-    """Refused at load, so it cannot fail at an arbitrary row hours into a run."""
+def test_the_real_package_is_accepted_because_it_asks_for_depth_one(loaded) -> None:
+    """The five terminal bins are why the depth is 1, and 1 is loadable.
+
+    Until Audit 0058 this test asserted the opposite - the shipped artifact
+    declared depth 2 over the same five successor-less bins and the loader
+    refused it. The re-derivation at ``78ad89d3`` applied the corrected
+    package-wide rule and produced depth 1, so the same history now loads. The
+    guard that did the refusing is unchanged and still armed; the test below
+    proves it.
+    """
+    from cover_kbc.controller_calibration.production import (
+        load_production_calibration,
+    )
+
+    assert loaded["planner"].lookahead_depth == 1
+    config = yaml.safe_load(VAL_CONFIG.read_text())
+    provenance = config["calibration_provenance"]
+    calibration = load_production_calibration(
+        config, base_dir=VAL_CONFIG.parent,
+        expected_collection_repo_sha=provenance["collection_repo_sha"],
+        expected_derivation_repo_sha=provenance["derivation_repo_sha"])
+    assert calibration.planner.lookahead_depth == 1
+    assert len(calibration.history.bins) == EXPECTED_BINS
+    assert len(calibration.budgets) == len(CONTRACTS)
+
+
+def test_the_depth_two_guard_is_still_armed_over_this_history(tmp_path) -> None:
+    """The safety property the previous test used to carry, kept alive.
+
+    Depth 2 over a history whose bins record no successor is a package that
+    raises mid-run, and the loader must refuse it at load time rather than at
+    an arbitrary row hours in. Exercised by pairing the **real** history with a
+    planner calibration that asks for depth 2 - nothing in the shipped bytes is
+    modified, and the refusal must still name the missing successors.
+    """
     from cover_kbc.controller_calibration.production import (
         ProductionCalibrationError,
         load_production_calibration,
     )
 
-    assert loaded["planner"].lookahead_depth == 2
+    payload = _payload("m21_planner_calibration.json")
+    assert payload["lookahead_depth"] == 1
+    payload["lookahead_depth"] = 2
+    forged = tmp_path / "m21_planner_calibration.json"
+    forged.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                      encoding="utf-8")
+
     config = yaml.safe_load(VAL_CONFIG.read_text())
+    config["micro_planner"]["planner_calibration"] = str(forged)
+    config["micro_planner"]["planner_calibration_sha256"] = hashlib.sha256(
+        forged.read_bytes()).hexdigest()
     with pytest.raises(ProductionCalibrationError, match="no successor"):
         load_production_calibration(config, base_dir=VAL_CONFIG.parent)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "P2-A: the real planner calibration declares lookahead_depth 2 while "
-        "five of the sixty-four shipped bins record no successor statistics. "
-        "Module 21 raises when it ranks an action from one of them, so the "
-        "package cannot drive a production run. The derivation rule that "
-        "produced the 2 is fixed as of audit 0052 and now yields 1 for this "
-        "package, but the shipped artifact still carries the old value: it was "
-        "derived under the old rule and only a real re-derivation may change "
-        "it. When that re-derivation lands this xfail turns into an unexpected "
-        "pass and must be removed deliberately."),
-)
 def test_the_real_artifacts_reach_full_validation_ready() -> None:
-    """The end state this milestone exists to reach."""
+    """The end state this milestone exists to reach.
+
+    Held as a strict ``xfail`` from Audit 0052 to Audit 0058, because the
+    shipped planner artifact still declared ``lookahead_depth 2`` while five of
+    its sixty-four bins recorded no successor statistics - a package that would
+    raise mid-run. The corrected derivation rule (Audit 0052) yields 1 for this
+    history, and the real re-derivation at ``78ad89d3`` produced an artifact
+    that says so. The xfail was removed deliberately when those bytes landed
+    (Audit 0059); the assertions below are unchanged.
+    """
     config = yaml.safe_load(VAL_CONFIG.read_text())
     provenance = config["calibration_provenance"]
     report = evaluate_validation_readiness(
@@ -298,17 +350,24 @@ def test_the_real_artifacts_reach_full_validation_ready() -> None:
     assert report.state is ReadinessState.FULL_VALIDATION_READY, report.blockers
 
 
-def test_everything_except_depth_two_already_satisfies_the_gate() -> None:
-    """So the one open blocker is visible rather than buried in a list."""
+def test_the_gate_reports_no_blockers_at_all() -> None:
+    """Zero, not "few". A single surviving blocker is a refusal.
+
+    The list of *satisfied* conditions is asserted alongside, because a gate
+    that returned an empty blocker list by checking nothing would also pass an
+    emptiness test.
+    """
     config = yaml.safe_load(VAL_CONFIG.read_text())
     provenance = config["calibration_provenance"]
     report = evaluate_validation_readiness(
         config, base_dir=VAL_CONFIG.parent, split=config["experiment"]["split"],
         expected_collection_repo_sha=provenance["collection_repo_sha"],
         expected_derivation_repo_sha=provenance["derivation_repo_sha"])
-    assert len(report.blockers) == 1, report.blockers
-    assert "successor" in report.blockers[0]
+    assert list(report.blockers) == [], report.blockers
+    assert report.may_run_validation is True
     satisfied = " | ".join(report.satisfied)
     assert "6 TRAIN_CALIBRATED relation budgets" in satisfied
     assert "split: val" in satisfied
     assert "production mode" in satisfied
+    assert "64 historical bin(s)" in satisfied
+    assert "all six relations budgeted" in satisfied

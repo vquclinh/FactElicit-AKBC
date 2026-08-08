@@ -63,7 +63,7 @@ from cover_kbc.paths import REPO_ROOT
 
 VAL_CONFIG = REPO_ROOT / "configs" / "experiments" / "cover_kbc_v2_validation.yaml"
 COLLECTION_SHA = "264c980361a513078903526440c72adc6e10edaf"
-DERIVATION_SHA = "b1804646dec3d2343dcf2cf8b277529071b89485"
+DERIVATION_SHA = "78ad89d3cd8a321f500807b11477fce2f8579e32"
 
 
 # --------------------------------------------------------------------------
