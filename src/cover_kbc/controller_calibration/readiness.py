@@ -28,6 +28,12 @@ class ReadinessState(str, Enum):
     CALIBRATION_COLLECTION_READY = "CALIBRATION_COLLECTION_READY"
     #: Real TRAIN-derived controller artifacts are present and consistent.
     FULL_VALIDATION_READY = "FULL_VALIDATION_READY"
+    #: The same production system, cleared for the blind official TEST split.
+    #: A separate state from ``FULL_VALIDATION_READY`` on purpose: TEST has
+    #: requirements validation does not - the split is blind, no evaluator may
+    #: run, and the dataset's exact identity has to be the one the config
+    #: declares - so a val-ready profile must not read as test-ready.
+    FULL_TEST_READY = "FULL_TEST_READY"
     #: Neither - the profile is incomplete or inconsistent.
     NOT_READY = "NOT_READY"
 
@@ -46,6 +52,16 @@ class ReadinessReport:
         return self.state is ReadinessState.FULL_VALIDATION_READY
 
     @property
+    def may_run_test(self) -> bool:
+        """Cleared for the blind official split, and only by the TEST gate.
+
+        Deliberately not satisfied by ``FULL_VALIDATION_READY``: a val-ready
+        profile has not been checked against the test dataset's identity and
+        has not been shown to be free of evaluator and gold dependencies.
+        """
+        return self.state is ReadinessState.FULL_TEST_READY
+
+    @property
     def may_run_collection(self) -> bool:
         return self.state in (
             ReadinessState.CALIBRATION_COLLECTION_READY,
@@ -57,6 +73,7 @@ class ReadinessReport:
             "state": self.state.value,
             "may_run_collection": self.may_run_collection,
             "may_run_validation": self.may_run_validation,
+            "may_run_test": self.may_run_test,
             "blockers": list(self.blockers),
             "satisfied": list(self.satisfied),
             "details": dict(self.details),
@@ -305,32 +322,23 @@ REQUIRED_VALIDATION_MODULES: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
-def evaluate_validation_readiness(
-    config: Mapping[str, Any], *, base_dir: str | Path = ".",
-    split: str | None = None,
-    expected_collection_repo_sha: str | None = None,
-    expected_derivation_repo_sha: str | None = None,
-) -> ReadinessReport:
-    """May this profile start a full production VALIDATION run?
+def _evaluate_production_readiness(
+    config: Mapping[str, Any], *, base_dir: str | Path,
+    split: str | None, expected_split: str, run_kind: str,
+    expected_collection_repo_sha: str | None,
+    expected_derivation_repo_sha: str | None,
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    """Everything a production run needs, whichever split it reads.
 
-    Composed from :func:`evaluate_readiness` - which already refuses an absent,
-    unreadable or non-``TRAIN_CALIBRATED`` artifact - plus what only a
-    validation run needs:
-
-    * the split is ``val``, not train and not test;
-    * **both** Module 20 and Module 21 declare ``mode: production``, because a
-      production run in which one of them is in shadow is a system nobody
-      designed;
-    * every upgraded module M9-M21 and Layer 6 is enabled;
-    * the three artifacts actually load through their canonical owners, agree
-      on provenance, and match the expected collection/derivation commits;
-    * the frozen model profile resolves.
-
-    A config that merely parses is not ready. This loads the artifacts.
+    Extracted from ``evaluate_validation_readiness`` unchanged so the VAL and
+    TEST gates cannot drift: the same artifacts, the same module list, the same
+    production-mode requirement and the same model-profile resolution decide
+    both. Only the expected split name differs here; each wrapper adds what is
+    genuinely specific to its split on top.
 
     Returns:
-        A report whose default is refusal. ``FULL_VALIDATION_READY`` only when
-        every one of the above holds.
+        ``(blockers, satisfied, details)`` for the caller to extend and turn
+        into a verdict. Never raises on a bad profile.
     """
     from cover_kbc.contracts.registry import CONTRACTS
     from cover_kbc.controller_calibration.production import (
@@ -347,12 +355,12 @@ def evaluate_validation_readiness(
     declared = split if split is not None else str(
         (config.get("experiment") or {}).get("split", ""))
     details["split"] = declared
-    if declared != "val":
+    if declared != expected_split:
         blockers.append(
-            f"split: a validation run may only read 'val', this profile "
-            f"declares {declared!r}")
+            f"split: a {run_kind} run may only read {expected_split!r}, this "
+            f"profile declares {declared!r}")
     else:
-        satisfied.append("split: val")
+        satisfied.append(f"split: {expected_split}")
 
     for path, label in REQUIRED_VALIDATION_MODULES:
         if not _block(config, path).get("enabled", False):
@@ -407,6 +415,41 @@ def evaluate_validation_readiness(
         else:
             satisfied.append("calibration: all six relations budgeted")
 
+    return blockers, satisfied, details
+
+
+def evaluate_validation_readiness(
+    config: Mapping[str, Any], *, base_dir: str | Path = ".",
+    split: str | None = None,
+    expected_collection_repo_sha: str | None = None,
+    expected_derivation_repo_sha: str | None = None,
+) -> ReadinessReport:
+    """May this profile start a full production VALIDATION run?
+
+    Composed from :func:`evaluate_readiness` - which already refuses an absent,
+    unreadable or non-``TRAIN_CALIBRATED`` artifact - plus what only a
+    validation run needs:
+
+    * the split is ``val``, not train and not test;
+    * **both** Module 20 and Module 21 declare ``mode: production``, because a
+      production run in which one of them is in shadow is a system nobody
+      designed;
+    * every upgraded module M9-M21 and Layer 6 is enabled;
+    * the three artifacts actually load through their canonical owners, agree
+      on provenance, and match the expected collection/derivation commits;
+    * the frozen model profile resolves.
+
+    A config that merely parses is not ready. This loads the artifacts.
+
+    Returns:
+        A report whose default is refusal. ``FULL_VALIDATION_READY`` only when
+        every one of the above holds.
+    """
+    blockers, satisfied, details = _evaluate_production_readiness(
+        config, base_dir=base_dir, split=split, expected_split="val",
+        run_kind="validation",
+        expected_collection_repo_sha=expected_collection_repo_sha,
+        expected_derivation_repo_sha=expected_derivation_repo_sha)
     if blockers:
         return ReadinessReport(
             ReadinessState.NOT_READY, tuple(blockers), tuple(satisfied), details)
@@ -414,10 +457,187 @@ def evaluate_validation_readiness(
         ReadinessState.FULL_VALIDATION_READY, (), tuple(satisfied), details)
 
 
+def evaluate_test_readiness(
+    config: Mapping[str, Any], *, base_dir: str | Path = ".",
+    split: str | None = None,
+    expected_collection_repo_sha: str | None = None,
+    expected_derivation_repo_sha: str | None = None,
+    data_dir: str | Path | None = None,
+) -> ReadinessReport:
+    """May this profile start the official blind TEST run?
+
+    Everything :func:`evaluate_validation_readiness` requires - the same
+    artifacts, the same modules, the same production modes, the same frozen
+    profile - plus what only the blind split needs, and the reason each is here
+    rather than there:
+
+    * ``pipeline.mode`` is the one the calibration was measured under. TEST has
+      no second chance to notice it ran a different system.
+    * the parameter budget is legal by the profile's own declared totals, since
+      a TEST submission is what the rule is actually enforced against.
+    * the test dataset **exists**, and its row count, SHA256 and ordered
+      ``SubjectEntity``/``Relation`` identity are exactly the ones the config
+      records. A submission built against a different file is invalid however
+      good its answers are.
+    * the dataset is genuinely **blind** - no row carries objects - so this run
+      cannot consume gold even by accident.
+
+    Nothing here relaxes a validation check; ``split`` must be ``test``, so a
+    val-ready profile is refused and a test-ready one is not mistaken for it.
+
+    Args:
+        data_dir: optional override for where ``test.jsonl`` is looked up.
+            Tests use it; production leaves it unset and gets the official path.
+
+    Returns:
+        A report whose default is refusal. ``FULL_TEST_READY`` only when every
+        one of the above holds.
+    """
+    import hashlib
+
+    blockers, satisfied, details = _evaluate_production_readiness(
+        config, base_dir=base_dir, split=split, expected_split="test",
+        run_kind="test",
+        expected_collection_repo_sha=expected_collection_repo_sha,
+        expected_derivation_repo_sha=expected_derivation_repo_sha)
+
+    pipeline = config.get("pipeline") or {}
+    mode = str(pipeline.get("mode", ""))
+    details["pipeline_mode"] = mode
+    if mode != "interleaved":
+        blockers.append(
+            f"pipeline.mode is {mode!r}; the calibration was measured under "
+            "'interleaved' and TEST must run the system it describes")
+    else:
+        satisfied.append("pipeline.mode: interleaved")
+
+    assertion = config.get("budget_assertion") or {}
+    total = int(assertion.get("total_published_parameters", 0) or 0)
+    limit = int(assertion.get("limit", 0) or 0)
+    details["published_parameters"] = total
+    details["parameter_limit"] = limit
+    if not total or not limit:
+        blockers.append(
+            "budget_assertion: the profile declares no published parameter "
+            "total or no limit; the 32B rule is enforced against TEST")
+    elif total > limit:
+        blockers.append(
+            f"budget_assertion: {total} published parameters exceeds the "
+            f"{limit} limit")
+    else:
+        satisfied.append(f"parameter budget: {total} <= {limit}")
+
+    # -- the dataset itself ------------------------------------------------
+    expected = config.get("test_dataset") or {}
+    root = Path(data_dir) if data_dir is not None else None
+    if root is None:
+        from cover_kbc.paths import SPLIT_FILES
+        path = SPLIT_FILES.get("test")
+    else:
+        path = root / "test.jsonl"
+    details["test_dataset_path"] = str(path) if path else ""
+
+    if path is None or not Path(path).is_file():
+        blockers.append(f"test dataset: not found at {path}")
+        return _test_verdict(blockers, satisfied, details)
+
+    raw = Path(path).read_bytes()
+    actual_sha = hashlib.sha256(raw).hexdigest()
+    lines = [line for line in raw.decode("utf-8").splitlines() if line.strip()]
+    details["test_rows"] = len(lines)
+    details["test_sha256"] = actual_sha
+
+    declared_sha = str(expected.get("sha256", ""))
+    declared_rows = expected.get("rows")
+    if not declared_sha or declared_rows is None:
+        blockers.append(
+            "test_dataset: the config must record the exact rows and sha256 of "
+            "the split it will answer; an unrecorded dataset cannot be shown "
+            "to be the official one")
+    else:
+        if actual_sha != declared_sha:
+            blockers.append(
+                f"test dataset: sha256 is {actual_sha}, the config expects "
+                f"{declared_sha}")
+        else:
+            satisfied.append(f"test dataset: sha256 {actual_sha[:12]}...")
+        if len(lines) != int(declared_rows):
+            blockers.append(
+                f"test dataset: {len(lines)} rows, the config expects "
+                f"{declared_rows}")
+        else:
+            satisfied.append(f"test dataset: {len(lines)} rows")
+
+    try:
+        rows = [json.loads(line) for line in lines]
+    except json.JSONDecodeError as error:
+        blockers.append(f"test dataset: malformed JSONL ({error})")
+        return _test_verdict(blockers, satisfied, details)
+
+    identity = ordered_identity_digest(
+        (str(r.get("SubjectEntity", "")), str(r.get("Relation", "")))
+        for r in rows)
+    details["test_identity_sha256"] = identity
+    declared_identity = str(expected.get("identity_sha256", ""))
+    if not declared_identity:
+        blockers.append(
+            "test_dataset: the config must record identity_sha256, the digest "
+            "of the ordered SubjectEntity/Relation pairs the submission must "
+            "reproduce exactly")
+    elif identity != declared_identity:
+        blockers.append(
+            f"test dataset: ordered identity digest is {identity}, the config "
+            f"expects {declared_identity}")
+    else:
+        satisfied.append(f"test dataset: ordered identity {identity[:12]}...")
+
+    # Blind means blind. An objects field that is present but non-empty would
+    # make gold reachable from the inference path, so it is a blocker even
+    # though nothing here would read it.
+    with_objects = [
+        f"{r.get('SubjectEntity','')}/{r.get('Relation','')}"
+        for r in rows if r.get("ObjectEntities")]
+    details["test_rows_with_objects"] = len(with_objects)
+    if with_objects:
+        blockers.append(
+            f"test dataset: {len(with_objects)} row(s) carry ObjectEntities, "
+            f"e.g. {with_objects[:3]}; the official test split is blind and a "
+            "run that could read them is not a blind run")
+    else:
+        satisfied.append("test dataset: blind (no row carries objects)")
+
+    return _test_verdict(blockers, satisfied, details)
+
+
+def _test_verdict(blockers: list[str], satisfied: list[str],
+                  details: dict[str, Any]) -> ReadinessReport:
+    if blockers:
+        return ReadinessReport(
+            ReadinessState.NOT_READY, tuple(blockers), tuple(satisfied), details)
+    return ReadinessReport(
+        ReadinessState.FULL_TEST_READY, (), tuple(satisfied), details)
+
+
+def ordered_identity_digest(pairs: "Any") -> str:
+    """SHA256 over the ordered ``SubjectEntity\\tRelation`` lines.
+
+    One number that pins row count, per-row identity **and** order at once, so
+    a submission that answers the right questions in the wrong sequence is as
+    detectable as one that answers the wrong questions. Shared by the readiness
+    gate and the packager so they cannot disagree about what identity means.
+    """
+    import hashlib
+
+    joined = "\n".join(f"{subject}\t{relation}" for subject, relation in pairs)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
 __all__ = [
     "FORBIDDEN_COLLECTION_MODULES",
     "REQUIRED_VALIDATION_MODULES",
+    "evaluate_test_readiness",
     "evaluate_validation_readiness",
+    "ordered_identity_digest",
     "REQUIRED_COLLECTION_MODULES",
     "ReadinessReport",
     "ReadinessState",

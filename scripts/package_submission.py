@@ -22,12 +22,40 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from _bootstrap import ensure_src_on_path
+
+ensure_src_on_path()
+
+from cover_kbc.controller_calibration.readiness import ordered_identity_digest
+
 #: The three fields the official format defines. Anything else - a residual
 #: score, a trace id, a confidence - is a diagnostic that must not ship.
 OFFICIAL_FIELDS = ("SubjectEntity", "Relation", "ObjectEntities")
 
 #: The single member name inside the archive.
 ARCHIVE_MEMBER = "predictions.jsonl"
+
+#: The official blind split, pinned. The packager is the last thing between a
+#: run and the leaderboard, so it knows which file a TEST submission may be
+#: built against rather than trusting whatever ``--input`` names. Kept in step
+#: with `configs/experiments/cover_kbc_v2_test.yaml` by test.
+OFFICIAL_TEST = {
+    "name": "test.jsonl",
+    "rows": 477,
+    "sha256": "849f565d6fcf53f60b74e53503d1ac119933e823f191030b34befe0df044fc1f",
+    "identity_sha256":
+        "1bce6d40f843f7c743af6d896f2a390c4e210eac32d95f64d2887e5373fc2609",
+}
+
+#: The splits this packager will build a submission for.
+SPLITS = ("val", "test")
+
+
+def _identity(rows: list[dict[str, Any]]) -> str:
+    """Ordered identity digest of a row list. The gate's function, reused."""
+    return ordered_identity_digest(
+        (str(r.get("SubjectEntity", "")), str(r.get("Relation", "")))
+        for r in rows)
 
 
 class SubmissionError(RuntimeError):
@@ -57,22 +85,71 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def validate(predictions_path: Path, input_path: Path) -> dict[str, Any]:
+def validate(predictions_path: Path, input_path: Path, *,
+             split: str = "val") -> dict[str, Any]:
     """Check predictions against the official input split they answer.
 
     ``input_path`` supplies the authoritative row identities and order. Only its
     ``SubjectEntity``/``Relation`` columns are read; any gold objects it happens
     to carry are never inspected, so validating against a labelled split cannot
-    leak label information into the submission.
+    leak label information into the submission. That is **identity-only**
+    validation, and it is what makes packaging the blind split safe: the test
+    input's ``ObjectEntities`` are empty and would be ignored even if they were
+    not.
+
+    Args:
+        split: which official phase this submission is for. ``val`` keeps the
+            long-standing behaviour exactly, including refusing ``test.jsonl``.
+            ``test`` requires the official blind split and additionally pins its
+            byte hash and ordered identity, so a submission built against the
+            wrong file - or VAL predictions handed over as TEST - is refused
+            with a specific reason rather than a row-count mismatch.
     """
-    if input_path.name == "test.jsonl":
+    if split not in SPLITS:
         raise SubmissionError(
-            "refusing to package against test.jsonl; this task submits the "
-            "validation split and TEST is out of scope"
-        )
+            f"unknown split {split!r}; expected one of {list(SPLITS)}")
+
+    if split == "val":
+        if input_path.name == "test.jsonl":
+            raise SubmissionError(
+                "refusing to package test.jsonl as a validation submission; "
+                "pass --split test to build the official TEST archive"
+            )
+    else:
+        if input_path.name != OFFICIAL_TEST["name"]:
+            raise SubmissionError(
+                f"a TEST submission must be validated against "
+                f"{OFFICIAL_TEST['name']}, not {input_path.name!r}"
+            )
+        actual_sha = _sha256(input_path)
+        if actual_sha != OFFICIAL_TEST["sha256"]:
+            raise SubmissionError(
+                f"{input_path} is not the official test split: sha256 "
+                f"{actual_sha}, expected {OFFICIAL_TEST['sha256']}"
+            )
 
     expected = _read_jsonl(input_path)
     actual = _read_jsonl(predictions_path)
+
+    if split == "test":
+        if len(expected) != OFFICIAL_TEST["rows"]:
+            raise SubmissionError(
+                f"{input_path} holds {len(expected)} rows, the official test "
+                f"split has {OFFICIAL_TEST['rows']}")
+        if _identity(expected) != OFFICIAL_TEST["identity_sha256"]:
+            raise SubmissionError(
+                f"{input_path} does not carry the official test identities")
+        submitted = _identity(actual)
+        if submitted != OFFICIAL_TEST["identity_sha256"]:
+            # The common accident: a VAL predictions file handed to the TEST
+            # packager. Named here so the reason is the real one rather than
+            # whichever row happens to differ first.
+            raise SubmissionError(
+                f"{predictions_path} does not answer the official test split "
+                f"(ordered identity {submitted[:16]}..., expected "
+                f"{OFFICIAL_TEST['identity_sha256'][:16]}...); these look like "
+                "predictions for a different split"
+            )
 
     if len(actual) != len(expected):
         raise SubmissionError(
@@ -131,10 +208,12 @@ def validate(predictions_path: Path, input_path: Path) -> dict[str, Any]:
         relations[got["Relation"]] = relations.get(got["Relation"], 0) + 1
 
     return {
+        "split": split,
         "rows": len(actual),
         "empty_rows": empty_rows,
         "rows_with_objects": len(actual) - empty_rows,
         "relations": dict(sorted(relations.items())),
+        "identity_sha256": _identity(actual),
     }
 
 
@@ -146,9 +225,11 @@ def main() -> int:
                         help="the official split the predictions answer")
     parser.add_argument("--out", type=Path, default=Path("submission.zip"),
                         help="path of the archive to write")
+    parser.add_argument("--split", choices=SPLITS, default="val",
+                        help="which official phase this submission is for")
     args = parser.parse_args()
 
-    summary = validate(args.predictions, args.input)
+    summary = validate(args.predictions, args.input, split=args.split)
 
     archive = args.out
     archive.parent.mkdir(parents=True, exist_ok=True)
@@ -175,8 +256,12 @@ def main() -> int:
     archive.with_suffix(".manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8")
 
+    print(f"split              : {summary['split']}")
     print(f"predictions path   : {args.predictions}")
+    print(f"dataset path       : {args.input}")
+    print(f"dataset sha256     : {manifest['input_sha256']}")
     print(f"row count          : {summary['rows']}")
+    print(f"ordered identity   : {summary['identity_sha256']}")
     print(f"predictions sha256 : {manifest['predictions_sha256']}")
     print(f"zip path           : {archive}")
     print(f"zip sha256         : {manifest['archive_sha256']}")

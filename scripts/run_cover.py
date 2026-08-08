@@ -24,7 +24,7 @@ ensure_src_on_path()
 import yaml
 
 from cover_kbc.contracts.router import check_router_consistency
-from cover_kbc.data.loader import load_dataset
+from cover_kbc.data.loader import BLIND_SPLITS, load_dataset
 from cover_kbc.data.writer import write_predictions, write_trace
 from cover_kbc.elicitation.library import check_library_covers_contracts
 from cover_kbc.evaluation.harness import evaluate_predictions, write_report
@@ -40,6 +40,7 @@ from cover_kbc.controller_calibration.production import (
 )
 from cover_kbc.controller_calibration.readiness import (
     ReadinessState,
+    evaluate_test_readiness,
     evaluate_validation_readiness,
 )
 from cover_kbc.integration_mode import IntegrationMode
@@ -115,6 +116,16 @@ def _wants_production(config: dict) -> bool:
         str((config.get(block) or {}).get("mode", "")) == "production"
         for block in ("relation_budget_scheduler", "micro_planner")
     )
+
+
+#: Which readiness gate governs which split, and the one state that clears it.
+#: A split absent from this table has no production path at all - stated as a
+#: table rather than an if/else so adding one is a deliberate edit and
+#: `--split test` cannot quietly inherit the validation gate.
+PRODUCTION_GATES = {
+    "val": (evaluate_validation_readiness, ReadinessState.FULL_VALIDATION_READY),
+    "test": (evaluate_test_readiness, ReadinessState.FULL_TEST_READY),
+}
 
 
 #: Written instead of a manifest when physical accounting breaks. Named so it
@@ -251,18 +262,28 @@ def main() -> int:
     calibration = None
     if production:
         provenance = dict(config.get("calibration_provenance") or {})
-        readiness = evaluate_validation_readiness(
+        # One production stack, two splits, two gates. The split selects which
+        # gate runs, and an unknown split selects neither: `--split test` must
+        # never be a way around the validation gate, and a val-ready profile is
+        # not by itself cleared for the blind official split.
+        gate, required = PRODUCTION_GATES.get(split, (None, None))
+        if gate is None:
+            raise SystemExit(
+                f"{args.config} declares production mode for split {split!r}; "
+                f"a production run is defined only for "
+                f"{sorted(PRODUCTION_GATES)}")
+        readiness = gate(
             config, base_dir=args.config.parent, split=split,
             expected_collection_repo_sha=provenance.get("collection_repo_sha"),
             expected_derivation_repo_sha=provenance.get("derivation_repo_sha"),
         )
-        if readiness.state is not ReadinessState.FULL_VALIDATION_READY:
-            print("validation readiness: REFUSED")
+        if readiness.state is not required:
+            print(f"{split} readiness: REFUSED")
             for blocker in readiness.blockers:
                 print(f"  - {blocker}")
             raise SystemExit(
                 f"{args.config} declares production mode but is not "
-                f"FULL_VALIDATION_READY ({readiness.state.value})")
+                f"{required.value} ({readiness.state.value})")
         calibration = load_production_calibration(
             config, base_dir=args.config.parent,
             expected_collection_repo_sha=provenance.get("collection_repo_sha"),
@@ -478,7 +499,12 @@ def main() -> int:
         (out_dir / "errors.json").write_text(json.dumps(result.errors, indent=2))
         print(f"errors      : {len(result.errors)} (see errors.json)")
 
-    if not args.no_eval and not dataset.is_blind:
+    # `test` never scores, and the reason is named rather than left to follow
+    # from the split happening to be blind: the official test answers are not
+    # in this repository, so a metrics number for them could only come from
+    # gold that leaked. The evaluator is not called and no metrics.json exists.
+    scoreable = split not in BLIND_SPLITS and not dataset.is_blind
+    if not args.no_eval and scoreable:
         gold = [
             row.to_official_row()
             for row in dataset.rows
@@ -491,8 +517,8 @@ def main() -> int:
         write_report(report, out_dir / "metrics.json")
         print()
         print(report.to_table())
-    elif dataset.is_blind:
-        print("\nsplit is blind (no gold objects); skipping evaluation.")
+    elif not scoreable:
+        print(f"\nsplit {split!r} is blind; no evaluation and no metrics.json.")
 
     manifest.write(out_dir / "manifest.json")
     print(f"\nmanifest    : {out_dir / 'manifest.json'}")

@@ -105,11 +105,15 @@ def test_refuses_a_non_list_object_field(good: Path, split: Path, tmp_path: Path
         validate(scalar, split)
 
 
-def test_refuses_the_test_split(good: Path, tmp_path: Path) -> None:
+def test_refuses_the_test_split_as_a_validation_submission(
+        good: Path, tmp_path: Path) -> None:
+    """Still refused by default - now with the TEST route named, not denied."""
     blind = _write(tmp_path / "test.jsonl", [
         {"SubjectEntity": "France", "Relation": "countryLandBordersCountry"}])
-    with pytest.raises(SubmissionError, match="TEST is out of scope"):
+    with pytest.raises(SubmissionError, match="pass --split test"):
         validate(good, blind)
+    with pytest.raises(SubmissionError, match="pass --split test"):
+        validate(good, blind, split="val")
 
 
 def test_archive_holds_exactly_the_official_member(
