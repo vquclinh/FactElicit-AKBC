@@ -1,0 +1,302 @@
+# COVER-KBC v2 - full production VALIDATION.
+#
+# THE canonical config for a calibrated leaderboard run. It is the frozen target
+# profile with Layer 6 switched on: Modules 20 and 21 in `mode: production`,
+# reading the three TRAIN-derived calibration artifacts, with Module 21 actually
+# choosing actions and Module 20 actually holding reservations.
+#
+# Derived from `cover_kbc_v2_train_collection.yaml`. The model profile, prompts,
+# decoding, scoring, selection and controller settings are **byte-identical** to
+# the profile the collection measured: a calibration derived from one system and
+# applied to another is not a calibration. What differs is exactly four things:
+#
+#   1. `experiment.split: val`      - 478 rows, the official validation split.
+#   2. M20 and M21 are ENABLED and in `mode: production`, pointing at the three
+#      real artifacts. During collection they were off, because collection is
+#      what produced them.
+#   3. `layer6_integration.enabled: true` - Module 21 needs an owner-declared
+#      legal-action surface, and Layer 6 is what supplies it. Without it the
+#      planner can only answer STOP/NO_LEGAL_ACTION.
+#   4. `pipeline.mode: interleaved` - the mode the calibration was actually
+#      measured under. The collection ran interleaved, so the bins and
+#      envelopes describe an interleaved system; running validation staged
+#      would apply them to a system they never observed. The runner honours
+#      this value rather than overriding it (Audit 0052).
+#
+#   ENUMERATOR : mistralai/Mistral-Small-3.2-24B-Instruct-2506   24,011,361,280
+#   VERIFIER   : Qwen/Qwen3.5-4B                                  4,659,865,088
+#   ------------------------------------------------------------------------
+#   TOTAL published parameters                                   28,671,226,368
+#   Official inference-time limit                                32,000,000,000
+#   Legal                                                        true (3.33B spare)
+#
+# The three calibration artifacts are the **only** TRAIN-derived input this run
+# needs. It does not read TRAIN gold, TRAIN telemetry, TRAIN predictions or the
+# collection manifest, and there is no code path by which it could: the loader
+# opens exactly the three files named below.
+#
+# Quality is never traded for memory. If the profile does not fit, the run fails
+# loudly - no automatic quantization change, no dropped view, no reduced
+# specialist coverage, no shortened context.
+
+experiment:
+  name: cover_kbc_v2_validation
+  split: val
+  seed: 42
+  notes: >-
+    Full production validation on the official VAL split with the calibrated
+    Layer-6 control loop active. Requires a GPU runtime; intended for Colab/A100.
+
+# Which collection and which derivation these artifacts must come from. The
+# readiness gate and the calibration loader both refuse a mismatch, so an
+# artifact from a different run cannot silently answer these 478 rows.
+calibration_provenance:
+  collection_repo_sha: 264c980361a513078903526440c72adc6e10edaf
+  derivation_repo_sha: b1804646dec3d2343dcf2cf8b277529071b89485
+  train_sha256: cb344aa3f153b30f4179f3c912ccfca19ae4e71288993292a093585d068a2c74
+  val_sha256: 90e4f2475e7e69caf9316ffd3b2e0bc4fe2cd428a99027f2abf08c9f88c18d02
+  val_rows: 478
+
+model_profile:
+  enumerator:
+    backend: huggingface
+    model_id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    revision: "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+    family: mistral
+    role: enumerator
+    license: apache-2.0
+    published_checkpoint_parameters: 24011361280
+    budget_count_parameters: 24011361280
+    published_total_parameters: 24011361280
+    parameter_source: "https://huggingface.co/api/models/mistralai/Mistral-Small-3.2-24B-Instruct-2506 (safetensors.total)"
+    parameter_source_verified: true
+    # Tekken tokenizer; AutoTokenizer converts it lossily and the enumerator
+    # then emits byte-BPE debris. Declared explicitly, exactly as in the target.
+    tokenizer_backend: mistral_common
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+  verifier:
+    backend: huggingface
+    model_id: "Qwen/Qwen3.5-4B"
+    revision: "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    family: qwen
+    role: verifier
+    license: apache-2.0
+    published_checkpoint_parameters: 4659865088
+    budget_count_parameters: 4659865088
+    published_total_parameters: 4659865088
+    parameter_source: "https://huggingface.co/api/models/Qwen/Qwen3.5-4B (safetensors.total)"
+    parameter_source_verified: true
+    tokenizer_backend: huggingface
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+budget_assertion:
+  total_published_parameters: 28671226368
+  limit: 32000000000
+  legal: true
+
+pipeline:
+  mode: interleaved
+  enable_active_controller: true
+  max_steps_per_query: 12
+  max_calls_per_query: 12
+  max_generated_tokens_per_query: 6000
+
+  # The same explicit per-query action bound the collection ran under. Module
+  # 21's bins were derived from action chains of at most this length; planning
+  # deeper would price actions against states the history never observed.
+  max_control_rounds_per_catalogue: 3
+
+  enable_calibrated_gate: true
+  gate_min_margin: 1.0
+  gate_min_prob: 0.5
+
+  enable_verifier: true
+  use_calibration: true
+  max_verifications_per_query: 6
+  enable_prompt_disagreement: true
+
+  enable_cross_model_recall: true
+  cross_model_view: ""      # empty = the relation's first mandatory view
+
+  scoring:
+    alpha_support: 1.0
+    beta_logit: 0.6
+    gamma_cross_model: 0.5
+    delta_contradiction: 1.5
+    eta_disagreement: 1.0
+    auto_accept_support: 3
+    verify_max_support: 2
+    adversarial_disagreement: 0.15
+    accept_score: 0.2
+    min_valid_prob: 0.40
+    drop_on_unknown: true
+    logit_clip: 3.0
+    logit_epsilon: 1.0e-6
+
+  selection:
+    capacity_support_ratio: 1.0
+    capacity_trust_verified: true
+
+  controller:
+    alpha_yield: 1.0
+    beta_gap: 1.0
+    gamma_uncertainty: 0.8
+    lambda_cost: 0.15
+    rho_redundancy: 1.0
+    residual_stop: 0.25
+    saturation_patience: 2
+    stability_threshold: 1.0
+    verify_first_unresolved: 0.5
+    rcse:
+      saturation_window: 3
+      w_yield: 1.0
+      w_saturation: 1.0
+      w_unresolved: 0.8
+      w_facet_gap: 1.0
+      w_disagreement: 0.6
+      w_instability: 0.8
+      stop_threshold: 0.25
+
+# Layer 1 - query intelligence.
+query_intelligence:
+  profiler:
+    enabled: true
+    mode: shadow
+    profile_version: m9-v1
+  prompt_compiler:
+    enabled: true
+    mode: shadow
+    compiler_version: m10-v1
+  # §7.2's three probe families. Not RAG: no retriever, corpus, index or cache,
+  # and the only factual source is the frozen model's own weights.
+  parametric_retrieval:
+    enabled: true
+    mode: shadow
+    retrieval_version: m11-v1
+    operations:
+      - pseudo_memory
+      - self_ask
+      - query_rewrite
+    samples_per_operation: 1
+
+# Layer 2 - the four relation-family specialists.
+specialists:
+  numeric:
+    enabled: true
+    mode: shadow
+    specialist_version: m12-v1
+    mine_parametric_memory: true
+
+  large_open_set:
+    enabled: true
+    mode: shadow
+    specialist_version: m13-v1
+    mine_parametric_memory: true
+
+  null_temporal:
+    enabled: true
+    mode: shadow
+    specialist_version: m14-v1
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    mine_parametric_memory: true
+
+  small_set_closure:
+    enabled: true
+    mode: shadow
+    specialist_version: m15-v1
+    enable_facets: []
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    candidate_explosion_threshold: 0
+    mine_parametric_memory: true
+
+# Layer 3 - Module 16.
+consensus:
+  enabled: true
+  mode: shadow
+  consensus_version: m16-v1
+  include_parametric_origins: true
+  include_query_events: true
+
+# Layer 4 - Module 17.
+specialist_verifier:
+  enabled: true
+  mode: shadow
+  verification_version: m17-v1
+  templates:
+    - m17_statement_v1
+    - m17_question_v1
+  bias_controls:
+    label_orders:
+      - ABC
+      - BAC
+  use_calibration: true
+
+# Layer 4 - Module 18. All four §14 mechanisms.
+bidirectional_verification:
+  enabled: true
+  mode: shadow
+  check_version: m18-v1
+  supported_checks:
+    - REVERSE
+    - KEY_CONDITION
+    - COUNTERFACTUAL
+    - CANDIDATE_FREE_RECALL
+
+# Layer 4 boundary.
+layer4_integration:
+  enabled: true
+  mode: shadow
+  integration_version: layer4-v1
+
+# Layer 5 - Module 19.
+coverage_gap:
+  enabled: true
+  mode: shadow
+  estimator_version: m19-v1
+  weights:
+    novelty_rate: 1
+    singleton_ratio: 1
+    facet_gap: 1
+    disagreement: 1
+    unresolved_mass: 1
+
+# ---------------------------------------------------------------------------
+# Layer 6 - LIVE. This is what makes the run a production run.
+#
+# The three artifacts below were derived offline from the real 477-row frozen
+# collection (Audit 0047/0049). Their numeric contents are not edited here and
+# must not be: they are measurements, and hand-tuning them against a leaderboard
+# score would turn a calibration into an overfit.
+#
+# The declared SHA256s are checked at load time. A different file - even a
+# re-derived one - stops the run.
+# ---------------------------------------------------------------------------
+relation_budget_scheduler:
+  enabled: true
+  mode: production
+  scheduler_version: m20-v1
+  calibration_file: ../calibration/m20_relation_budget.json
+  calibration_sha256: 8ef1f07e61c42dfee6a99bfc8a5afb62fb2ff992bef65b93010a6f9e01fd7070
+
+micro_planner:
+  enabled: true
+  mode: production
+  planner_version: m21-v1
+  historical_bins: ../calibration/m21_historical_bins.json
+  historical_bins_sha256: 8c6f9c067130f56ce13d05347742d375fa27c94e3fad47ddc3f8b242832d7aa5
+  planner_calibration: ../calibration/m21_planner_calibration.json
+  planner_calibration_sha256: a8ceac7186242dc71df751e4b99fed0adc797488586eb035b8431b4a8ebfcade
+
+layer6_integration:
+  enabled: true
+  mode: shadow
+  integration_version: layer6-v1

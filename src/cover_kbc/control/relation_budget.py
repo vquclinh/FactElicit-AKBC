@@ -207,21 +207,36 @@ def risk_demand(profile: Any, *, subject: str, relation: str, row_index: int,
 # --------------------------------------------------------------------------
 
 
-def _intersect_ceiling(relation: str, requested: int, core: int, what: str,
-                       notes: list[str]) -> int:
-    """A relation may restrict a global ceiling and may never raise it.
+def _note_envelope(relation: str, calibrated: int, core: int, what: str,
+                   notes: list[str]) -> int:
+    """The calibrated envelope, kept whole, with the core ceiling recorded.
 
-    The conservative resource-ceiling principle the core already applies: a
-    subordinate policy narrows, never widens. Recorded rather than silently
-    applied, so an over-generous calibration is visible in the artefact.
+    Module 20 owns the budget for the upgraded Layer-4 action space (§16), and
+    Module 7's ``max_calls`` governs the core controller phase. They are two
+    ceilings over two phases, not one ceiling applied twice.
+
+    This used to return ``min(calibrated, core)``, which silently replaced the
+    TRAIN-derived envelope with the core one. The consequence was measured on
+    the real artifacts (Audit 0051): a calibrated 22-44 call envelope collapsed
+    to 4-12, one Module 17 action costs four non-cacheable readings, and Module
+    21 answered ``NO_AFFORDABLE_ACTION`` on four of six relations. It also left
+    ``awardWonBy`` with a §9.3 protected floor of 14 inside a ceiling of 12 -
+    an envelope no reservation could satisfy.
+
+    The calibration was measured with Layer-4 precharge non-enforcing, so the
+    envelope describes spend that happened *outside* the core ceiling. Applying
+    the core ceiling to it compares two different quantities.
+
+    The core ceiling is still recorded in the plan's notes, because a reader
+    comparing the two later should not have to reconstruct it.
     """
-    if requested > core:
+    if calibrated > core:
         notes.append(
-            f"{relation}: calibrated {what} {requested} exceeds the caller's "
-            f"hard ceiling {core}; the global ceiling wins"
+            f"{relation}: calibrated {what} {calibrated} exceeds Module 7's "
+            f"core-phase ceiling {core}; the calibrated envelope governs the "
+            "Layer-4 action space and the core ceiling governs the core phase"
         )
-        return core
-    return requested
+    return calibrated
 
 
 def build_plan(
@@ -274,9 +289,10 @@ def build_plan(
                 f"Table 6 does not declare for this relation"
             )
 
-    hard_calls = _intersect_ceiling(
-        relation, calibration.hard_calls, core_budget.max_calls, "hard_calls", notes)
-    hard_tokens = _intersect_ceiling(
+    hard_calls = _note_envelope(
+        relation, calibration.hard_calls, core_budget.max_calls, "hard_calls",
+        notes)
+    hard_tokens = _note_envelope(
         relation, calibration.hard_generated_tokens,
         core_budget.max_generated_tokens, "hard_generated_tokens", notes)
 
@@ -324,7 +340,15 @@ def build_plan(
 # --------------------------------------------------------------------------
 
 
-_ALLOWED_KEYS = {"enabled", "mode", "scheduler_version", "calibration_file"}
+_ALLOWED_KEYS = {"enabled", "mode", "scheduler_version", "calibration_file",
+                 "calibration_sha256"}
+
+#: The two modes this module implements. ``shadow`` plans and records without
+#: governing anything; ``production`` holds real reservations against a
+#: TRAIN-calibrated envelope. There is deliberately no third: a "degraded" or
+#: "compatibility" mode would be a budget that governs some calls and not
+#: others, which is the same as no budget.
+_MODES = ("shadow", "production")
 
 
 class RelationBudgetConfig:
@@ -337,11 +361,12 @@ class RelationBudgetConfig:
 
     def __init__(self, *, enabled: bool = False, mode: str = "shadow",
                  scheduler_version: str = SCHEDULER_VERSION,
-                 calibration_file: str | None = None) -> None:
-        if mode != "shadow":
+                 calibration_file: str | None = None,
+                 calibration_sha256: str | None = None) -> None:
+        if mode not in _MODES:
             raise ValueError(
-                f"unsupported relation_budget_scheduler mode {mode!r}; only "
-                "shadow exists in this milestone"
+                f"unsupported relation_budget_scheduler mode {mode!r}; this "
+                f"build implements {list(_MODES)}"
             )
         if scheduler_version != SCHEDULER_VERSION:
             raise ValueError(
@@ -352,12 +377,26 @@ class RelationBudgetConfig:
             raise ValueError(
                 "relation_budget_scheduler.enabled is true but no "
                 "calibration_file is supplied; proposal §16 states concrete "
-                "budget values are calibrated on TRAIN, and none exist yet"
+                "budget values are calibrated on TRAIN"
+            )
+        if mode == "production" and not enabled:
+            raise ValueError(
+                "relation_budget_scheduler.mode is 'production' but the module "
+                "is disabled; a production run without Module 20 has no budget "
+                "governing it at all"
             )
         self.enabled = enabled
         self.mode = mode
         self.scheduler_version = scheduler_version
         self.calibration_file = calibration_file
+        #: Optional integrity binding for the artifact this config names.
+        #: Checked at the loading boundary, not here: this object holds the
+        #: declaration, and the loader is what has the bytes.
+        self.calibration_sha256 = calibration_sha256
+
+    @property
+    def is_production(self) -> bool:
+        return self.mode == "production"
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any] | None) -> "RelationBudgetConfig":
@@ -374,6 +413,7 @@ class RelationBudgetConfig:
             scheduler_version=str(
                 payload.get("scheduler_version", SCHEDULER_VERSION)),
             calibration_file=payload.get("calibration_file") or None,
+            calibration_sha256=payload.get("calibration_sha256") or None,
         )
 
 

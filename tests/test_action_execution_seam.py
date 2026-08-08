@@ -330,7 +330,7 @@ def test_a_refused_action_makes_no_runtime_call() -> None:
     consensus = pipeline.consensus_results[-1]
     before = pipeline.physical_snapshot()
 
-    pipeline._precharge = lambda kind, action, g: (False, "denied by test")
+    pipeline._precharge = lambda kind, action, g: (False, "denied by test", None)
     catalogue = pipeline._catalogued_checks(consensus)
     if not catalogue:
         pytest.skip("no M18 catalogue in fixture")

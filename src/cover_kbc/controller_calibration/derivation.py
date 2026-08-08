@@ -756,6 +756,63 @@ def derive_m21(
 # --------------------------------------------------------------------------
 
 
+def supports_depth_two(
+    package: HistoricalBinPackage,
+) -> tuple[bool, tuple[str, ...]]:
+    """Can **every** bin this package ships be planned two steps from?
+
+    ``lookahead_depth`` is a property of the whole package, not of one bin, so
+    it may only be 2 when depth-2 planning is safe wherever the planner can
+    land. ``MicroPlanner._lookahead`` looks the root bin up for each ranked
+    action and raises when it records no successors; ``lookup`` routes any
+    unmatched state to the declared fallback, so *any* shipped bin can become
+    that root. Every shipped bin therefore has to carry successors.
+
+    The previous rule was ``2 if any bin has successors``. One bin with a
+    transition made the whole package advertise depth 2, and the real 64-bin
+    package then crashed on its first borders query because five well-supported
+    **terminal-action** bins have nothing after them to observe (Audit 0051).
+
+    Nothing here fabricates or infers a successor: it reports what the package
+    can support so the derivation can choose the depth truthfully.
+
+    Returns:
+        ``(ok, reasons)``. ``reasons`` names each bin that blocks depth 2, in a
+        deterministic order, and is empty when ``ok``.
+    """
+    reasons = [
+        f"{entry.relation}/{entry.state_bin_key}/{entry.action_family.value}"
+        f" (support {entry.support_count}) records no successor statistics"
+        for entry in package.bins if not entry.successors
+    ]
+    if not reasons:
+        # Second raise site: a successor branch names a state bin that must
+        # itself resolve for every family the relation ships, or the lookahead
+        # raises "no historical bin matches" one level down. The fallback
+        # contract covers it only when a fallback bin exists for that family.
+        by_relation: dict[tuple[str, str], set[str]] = {}
+        keys: set[tuple[str, str, str, str]] = set()
+        for entry in package.bins:
+            by_relation.setdefault(
+                (entry.relation, entry.program_type), set()).add(
+                    entry.action_family.value)
+            keys.add((entry.relation, entry.program_type, entry.state_bin_key,
+                      entry.action_family.value))
+        for entry in package.bins:
+            group = (entry.relation, entry.program_type)
+            for successor in entry.successors:
+                for family in sorted(by_relation[group]):
+                    exact = (*group, successor.successor_state_bin, family)
+                    fallback = (*group, package.fallback_state_bin, family)
+                    if exact not in keys and fallback not in keys:
+                        reasons.append(
+                            f"{entry.relation}/{entry.state_bin_key}/"
+                            f"{entry.action_family.value} names successor bin "
+                            f"{successor.successor_state_bin!r}, which does not "
+                            f"resolve for family {family}")
+    return (not reasons), tuple(sorted(set(reasons)))
+
+
 def derive_planner_calibration(
     package: HistoricalBinPackage,
     records: Sequence[ActionTelemetryRecord],
@@ -844,6 +901,8 @@ def derive_planner_calibration(
             )
         return numerator / denominator
 
+    depth_two, depth_reasons = supports_depth_two(package)
+
     beta = rate(gain_total, delta_r_total, "beta", "the residual")
     gamma = rate(gain_total, delta_h_total, "gamma", "H")
     # These two denominators are counts, not movements: a physical call and an
@@ -862,7 +921,11 @@ def derive_planner_calibration(
         eta=_round(eta),
         kappa=1.0,
         tau_continue=0.0,
-        lookahead_depth=2 if any(b.successors for b in package.bins) else 1,
+        # Package-wide and truthful: depth 2 only when every shipped bin can
+        # be planned two steps from. §17 permits "1-2 step micro-lookahead", so
+        # depth 1 is fully compliant and is what a package with a terminal-
+        # action bin honestly supports.
+        lookahead_depth=2 if depth_two else 1,
     )
     diagnostics = {
         "verified_gain_total": _round(gain_total),
@@ -874,6 +937,8 @@ def derive_planner_calibration(
         "gamma_is_inert_because_delta_h_never_moved": delta_h_total == 0.0,
         "beta_denominator_supported": delta_r_total >= floor,
         "gamma_denominator_supported": delta_h_total >= floor,
+        "lookahead_depth_two_supported": depth_two,
+        "lookahead_depth_blockers": list(depth_reasons),
         "beta_estimable": delta_r_total > 0,
         "delta_estimable": call_total > 0,
         "lookahead_depth": calibration.lookahead_depth,
@@ -1164,6 +1229,7 @@ __all__ = [
     "derive_planner_calibration",
     "observe_relation_spend",
     "offline_state_bin_key",
+    "supports_depth_two",
     "resolve_derivation_source",
     "telemetry_numeric_feature",
 ]

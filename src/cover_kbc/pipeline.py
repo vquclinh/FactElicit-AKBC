@@ -1866,7 +1866,7 @@ class CoverPipeline:
         # components are part of what an action changes.
         state_before = self.control_state(graph)
         evidence_before = self._candidate_evidence_signature(graph)
-        admitted, refusal = self._precharge(kind, action, graph)
+        admitted, refusal, hold = self._precharge(kind, action, graph)
         base = {
             "kind": kind, "round_index": round_index, "action": action,
             "projection": projection,
@@ -1892,26 +1892,43 @@ class CoverPipeline:
         # relations §8 exists for.
         owner_reading = {"verifier_outcome": "", "structural_outcome": "",
                          "errors": ()}
-        if kind == "m17":
-            executed = self.verify_specialist_targets(consensus, (action,))
-            owner_reading.update(
-                self._m17_reading(executed, getattr(projection, "target", "")))
-        elif kind == "m18":
-            request = self.bidirectional_verifier.build_request(action)
-            executed = self.execute_bidirectional_checks(consensus, (request,))
-            owner_reading.update(self._m18_reading(executed, request))
-        else:
-            raise UnsupportedAction(f"no executor for action kind {kind!r}")
+        # Everything that can spend a physical call lives inside this block, so
+        # the precharge is closed on every exit from it - returned, raised, or
+        # otherwise. A reservation released only on the happy path is a
+        # reservation that leaks on exactly the runs that matter.
+        try:
+            if kind == "m17":
+                executed = self.verify_specialist_targets(consensus, (action,))
+                owner_reading.update(
+                    self._m17_reading(executed, getattr(projection, "target", "")))
+            elif kind == "m18":
+                request = self.bidirectional_verifier.build_request(action)
+                executed = self.execute_bidirectional_checks(consensus, (request,))
+                owner_reading.update(self._m18_reading(executed, request))
+            else:
+                raise UnsupportedAction(f"no executor for action kind {kind!r}")
 
-        # Integrate, then refresh: Module 19 must describe the state that
-        # exists after this action, not the one before it.
-        self._integrate_layer4(consensus, graph)
-        report = self.production_bridge.apply(graph, self.layer4_results[-1])
-        self.bridge_reports.append(report)
-        if self.coverage_gap_estimator is not None:
-            self._estimate_coverage_gap(consensus, graph.contract)
+            # Integrate, then refresh: Module 19 must describe the state that
+            # exists after this action, not the one before it. None of the
+            # three is neural, so the snapshot below is still this action's
+            # own cost - which is why it can also be the settled amount.
+            self._integrate_layer4(consensus, graph)
+            report = self.production_bridge.apply(graph, self.layer4_results[-1])
+            self.bridge_reports.append(report)
+            if self.coverage_gap_estimator is not None:
+                self._estimate_coverage_gap(consensus, graph.contract)
 
-        after = self.physical_snapshot()
+            after = self.physical_snapshot()
+        except BaseException:
+            # Measured, not assumed: an action that failed mid-way may already
+            # have spent real calls, and refunding those would put the run over
+            # the hard cap. `_release_hold` settles what was spent and cancels
+            # only a hold that bought nothing. The original failure is what
+            # propagates - settlement is bookkeeping, not an outcome.
+            self._release_hold(hold, before, self.physical_snapshot(),
+                               executed=False)
+            raise
+        self._release_hold(hold, before, after, executed=True)
         # Read *after* integration, bridge and the Module 19 refresh, so it
         # describes the state the next planner round will actually see - and is
         # therefore literally the next action's pre-state.
@@ -2049,7 +2066,8 @@ class CoverPipeline:
             candidates, _ = m17_actions(
                 (action,), subject=query.subject, relation=query.relation,
                 row_index=query.row_index,
-                verifier_config=getattr(self.specialist_verifier, "config", None))
+                verifier_config=getattr(self.specialist_verifier, "config", None),
+                control_calls_needed=self._m17_control_calls_needed(action, graph))
         elif kind == "m18":
             candidates, _ = m18_actions(
                 (action,), subject=query.subject, relation=query.relation,
@@ -2057,6 +2075,44 @@ class CoverPipeline:
         else:
             raise UnsupportedAction(f"no budget projection for kind {kind!r}")
         return candidates[0] if candidates else None
+
+    def _m17_control_calls_needed(self, target: Any, graph: EvidenceGraph) -> int:
+        """Contextual controls this Module 17 target would pay for, right now.
+
+        The precharge has to be a **safe upper bound** or settlement cannot
+        reconcile against it: §16 requires the whole plan to be held before the
+        first neural call, and ``BudgetLedger.settle`` refuses an actual spend
+        larger than the hold, because that means a call happened outside the
+        precharge. A constant zero here would claim every control is already
+        cached, which is true only after the first Module 17 action of the run
+        for that relation and template.
+
+        Module 17 answers from its own calibrator cache, with no neural call.
+        When it cannot be asked - no verifier, no runtime, or a target it will
+        not build a request for - the **cold** plan is reserved instead:
+        budget_accounting's own rule is that an unknown cache state is reserved
+        as a miss, because the mistake is only discovered after the call.
+        """
+        from cover_kbc.control.action_catalog import m17_call_plan
+        from cover_kbc.verification.specialist_verifier import (
+            SpecialistVerifierError,
+        )
+
+        verifier = self.specialist_verifier
+        config = getattr(verifier, "config", None)
+        if config is None:
+            return 0
+        _, controls_total = m17_call_plan(config)
+        runtime = self.verifier_runtime
+        if runtime is None or getattr(runtime, "spec", None) is None:
+            return controls_total
+        try:
+            request = verifier.build_request(target)
+            return verifier.control_calls_needed(request, graph.contract, runtime)
+        except SpecialistVerifierError:
+            # Module 17 will refuse this target too, so it will never run and
+            # the number is moot; the cold bound keeps it safe either way.
+            return controls_total
 
     def _budget_ledger_for(self, graph: EvidenceGraph):
         """Module 20's ledger for this query, built through its real contract.
@@ -2082,7 +2138,19 @@ class CoverPipeline:
             profile=self._profile_for(graph),
             budget=self.config.budget(graph.contract),
         )
-        ledger = BudgetLedger(result.plan)
+        # §16's envelope is whole-query, so the acquisition phase's physical
+        # spend belongs inside it. It is read from the query-scoped counter the
+        # pipeline already keeps - the runtimes' own totals differenced against
+        # this query's baseline - so there is one physical-call counter in the
+        # system, not a second one for Module 20.
+        #
+        # Read exactly once: this ledger is cached per query and built before
+        # any Layer-4 action runs, so acquisition is charged here and every
+        # later call is charged through `reserve`. Neither is charged twice.
+        spent = self.query_physical_cost(graph)
+        ledger = BudgetLedger(
+            result.plan, prior_calls=spent["physical_calls"],
+            prior_tokens=spent["generated_tokens"])
         self._budget_ledgers[key] = ledger
         self.relation_budget_results.append(result)
         return ledger
@@ -2100,7 +2168,7 @@ class CoverPipeline:
 
     def _precharge(
         self, kind: str, action: Any, graph: EvidenceGraph
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, Any]:
         """Reserve this action's whole call plan with Module 20. **Before execution.**
 
         Collection runs before any TRAIN-calibrated artifact exists, so Module
@@ -2108,25 +2176,87 @@ class CoverPipeline:
         ceiling. That bound is the policy's own and is never serialised as a
         ``RelationBudgetCalibration``. Ordinary production without a real
         artifact has no scheduler at all and stays fail-closed upstream.
+
+        Returns:
+            ``(admitted, refusal, hold)``. ``hold`` is the ``(ledger,
+            reservation)`` pair this precharge actually created, or ``None``
+            when nothing was reserved - collection, no scheduler, no descriptor,
+            or a denial. The caller **must** pass the hold to
+            ``_release_hold``: a reservation nobody settles or cancels stays
+            outstanding for the rest of the query and permanently withholds its
+            conservative over-reservation from every later action.
+
+            The concrete ``BudgetReservation`` travels back rather than its id,
+            so settlement addresses the object this precharge produced instead
+            of reconstructing an identity and hoping it matches.
         """
         if self.integration_mode.is_collection:
-            return True, ""
+            return True, "", None
         ledger = self._budget_ledger_for(graph)
         if ledger is None:
-            return True, ""
+            return True, "", None
         try:
             descriptor = self._action_descriptor(kind, action, graph)
             if descriptor is None:
-                return True, ""
+                return True, "", None
             outcome = ledger.reserve(descriptor)
         except BudgetSchedulerError as error:
-            return False, f"Module 20 refused {kind}: {error}"
+            return False, f"Module 20 refused {kind}: {error}", None
         if hasattr(outcome, "reason"):
             # A resource denial: the action cannot be funded. It says nothing
             # about whether the action was worth doing - that is Module 21's.
+            # `reserve` holds nothing on a denial, so there is no hold to
+            # release and none is returned.
             return False, (f"Module 20 denied {kind}: "
-                           f"{getattr(outcome.reason, 'value', outcome.reason)}")
-        return True, ""
+                           f"{getattr(outcome.reason, 'value', outcome.reason)}"), None
+        return True, "", (ledger, outcome)
+
+    def _release_hold(
+        self, hold: Any, before: dict[str, int], after: dict[str, int], *,
+        executed: bool,
+    ) -> None:
+        """Close a precharge against what the action actually spent.
+
+        Completes §16's precharge cycle. The hold is a conservative upper
+        bound; this is where the difference goes back so the next action in the
+        query can see it. Exactly one of ``settle`` or ``cancel`` runs, and the
+        ledger itself refuses a second call on the same reservation.
+
+        * The action ran: **settle** at the measured cost, even when that cost
+          is zero. A fully cache-warm action is a real execution that cost
+          nothing, and the settlement record says so.
+        * The action failed having spent nothing: **cancel**. Nothing happened,
+          so nothing should stay held.
+        * The action failed *after* spending: **settle** the measured spend.
+          Physical calls that really happened are never refunded because the
+          action later threw - that would put the run over the hard cap with
+          the ledger reporting it was under.
+
+        Raises:
+            AccountingInvariantError: if the measured spend exceeds the hold.
+                That means a neural call was made outside the precharge, which
+                is the one thing §16's precharge exists to prevent, so it fails
+                closed rather than being absorbed. The hard cap is not widened
+                and nothing is borrowed to cover it.
+        """
+        if hold is None:
+            return
+        ledger, reservation = hold
+        spent = self.physical_delta(before, after)
+        calls = spent["physical_calls"]
+        tokens = spent["generated_tokens"]
+        identity = reservation.reservation_id
+        if not executed and calls == 0 and tokens == 0:
+            ledger.cancel(identity)
+            return
+        try:
+            ledger.settle(identity, actual_calls=calls,
+                          actual_generated_tokens=tokens)
+        except BudgetSchedulerError as error:
+            raise AccountingInvariantError(
+                f"Module 20 could not settle {reservation.descriptor.action_id!r}: "
+                f"{error}"
+            ) from error
 
     def _execute_selected_verifications(
         self, consensus: QueryConsensusResult, graph: EvidenceGraph
@@ -2927,7 +3057,27 @@ class CoverPipeline:
         return result
 
     def run(self, queries: Iterable[Query], *, progress: bool = False) -> PipelineResult:
-        """Run every query end to end, in order."""
+        """Run every query end to end, in order.
+
+        One query must not kill the run, so an ordinary failure is contained as
+        a ``PIPELINE_ERROR`` row and the next query proceeds. The boundary is
+        the same one the TRAIN collection runner draws in its ``FATAL_ERRORS``
+        table: *would the next row still be measured correctly?*
+
+        For :class:`AccountingInvariantError` the answer is no, so it is not
+        contained. It means the runtimes observed physical spend that Module
+        20's precharged envelope cannot represent - a neural call happened
+        outside the precharge - and the ledger correctly refused to record an
+        impossible settlement. Continuing would run later rows against a ledger
+        holding an unclosable reservation, and every later cost estimate would
+        inherit the error. It is process-fatal (§16: no action may exceed the
+        hard cap), so the run stops here.
+
+        Raises:
+            AccountingInvariantError: re-raised untouched, so its chain - the
+                ledger's ``BudgetSchedulerError`` and, where there was one, the
+                original action failure underneath it - survives for diagnosis.
+        """
         result = PipelineResult()
         queries = list(queries)
         for index, query in enumerate(queries):
@@ -2935,6 +3085,13 @@ class CoverPipeline:
                 graph = self.enumerate_query(query)
                 self.verify_graph(graph)
                 prediction = self.decide_graph(graph)
+            except AccountingInvariantError:
+                # Fail-stop. Deliberately before the generic handler below: a
+                # broken accounting invariant is not a row-local data problem
+                # and must never become a PIPELINE_ERROR prediction. No row
+                # after this one is attempted and no partial result is
+                # returned, so no caller can mistake this for a finished run.
+                raise
             except Exception as exc:  # noqa: BLE001 - one query must not kill the run
                 result.errors.append(
                     {

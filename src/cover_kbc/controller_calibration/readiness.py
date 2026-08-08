@@ -293,8 +293,131 @@ def evaluate_collection_readiness(
         artifacts.blockers, tuple(satisfied) + artifacts.satisfied, details)
 
 
+#: Everything a production validation run needs wired. The collection list plus
+#: Layer 6: a validation run without Modules 20 and 21 is the shadow system
+#: wearing a production label.
+REQUIRED_VALIDATION_MODULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    REQUIRED_COLLECTION_MODULES + (
+        (("relation_budget_scheduler",), "M20 relation budget scheduler"),
+        (("micro_planner",), "M21 expected-value micro-planner"),
+        (("layer6_integration",), "Layer-6 control integration"),
+    )
+)
+
+
+def evaluate_validation_readiness(
+    config: Mapping[str, Any], *, base_dir: str | Path = ".",
+    split: str | None = None,
+    expected_collection_repo_sha: str | None = None,
+    expected_derivation_repo_sha: str | None = None,
+) -> ReadinessReport:
+    """May this profile start a full production VALIDATION run?
+
+    Composed from :func:`evaluate_readiness` - which already refuses an absent,
+    unreadable or non-``TRAIN_CALIBRATED`` artifact - plus what only a
+    validation run needs:
+
+    * the split is ``val``, not train and not test;
+    * **both** Module 20 and Module 21 declare ``mode: production``, because a
+      production run in which one of them is in shadow is a system nobody
+      designed;
+    * every upgraded module M9-M21 and Layer 6 is enabled;
+    * the three artifacts actually load through their canonical owners, agree
+      on provenance, and match the expected collection/derivation commits;
+    * the frozen model profile resolves.
+
+    A config that merely parses is not ready. This loads the artifacts.
+
+    Returns:
+        A report whose default is refusal. ``FULL_VALIDATION_READY`` only when
+        every one of the above holds.
+    """
+    from cover_kbc.contracts.registry import CONTRACTS
+    from cover_kbc.controller_calibration.production import (
+        ProductionCalibrationError,
+        load_production_calibration,
+    )
+    from cover_kbc.models.registry import model_blocks
+
+    artifacts = evaluate_readiness(config, base_dir=base_dir)
+    blockers: list[str] = list(artifacts.blockers)
+    satisfied: list[str] = list(artifacts.satisfied)
+    details: dict[str, Any] = dict(artifacts.details)
+
+    declared = split if split is not None else str(
+        (config.get("experiment") or {}).get("split", ""))
+    details["split"] = declared
+    if declared != "val":
+        blockers.append(
+            f"split: a validation run may only read 'val', this profile "
+            f"declares {declared!r}")
+    else:
+        satisfied.append("split: val")
+
+    for path, label in REQUIRED_VALIDATION_MODULES:
+        if not _block(config, path).get("enabled", False):
+            blockers.append(
+                f"{label}: {'.'.join(path)}.enabled is false; the production "
+                "path needs the whole upgraded stack")
+
+    for path, label in ((("relation_budget_scheduler",), "M20"),
+                        (("micro_planner",), "M21")):
+        mode = str(_block(config, path).get("mode", ""))
+        if mode != "production":
+            blockers.append(
+                f"{label}: {'.'.join(path)}.mode is {mode!r}, not 'production'; "
+                "a shadow module cannot govern a production run")
+    if not any("not 'production'" in b for b in blockers):
+        satisfied.append("M20 and M21 both declare production mode")
+
+    try:
+        enumerator, verifier = model_blocks(config)
+    except Exception as error:                                  # noqa: BLE001
+        enumerator, verifier = {}, {}
+        blockers.append(f"model profile: unreadable ({error})")
+    for role, block in (("enumerator", enumerator), ("verifier", verifier)):
+        if not block.get("model_id"):
+            blockers.append(f"model profile: {role} declares no model_id")
+    details["enumerator_model_id"] = enumerator.get("model_id", "")
+    details["verifier_model_id"] = verifier.get("model_id", "")
+
+    # The decisive step: the artifacts must actually load. A configured path
+    # that does not resolve, a fixture source, a hash mismatch or three files
+    # from different derivations all fail here rather than at row 1 of 478.
+    try:
+        calibration = load_production_calibration(
+            config, base_dir=base_dir,
+            expected_collection_repo_sha=expected_collection_repo_sha,
+            expected_derivation_repo_sha=expected_derivation_repo_sha)
+    except ProductionCalibrationError as error:
+        blockers.append(f"calibration: {error}")
+    except Exception as error:                                  # noqa: BLE001
+        blockers.append(f"calibration: unreadable ({error})")
+    else:
+        details["calibration"] = calibration.to_json()
+        satisfied.append(
+            f"calibration: {len(calibration.budgets)} relation budget(s), "
+            f"{len(calibration.history.bins)} historical bin(s), "
+            f"tau_continue={calibration.planner.tau_continue}")
+        missing = sorted(set(CONTRACTS) - set(calibration.budgets))
+        if missing:
+            blockers.append(
+                f"calibration: no budget for relation(s) {missing}; every "
+                "relation the router can route to needs one")
+        else:
+            satisfied.append("calibration: all six relations budgeted")
+
+    if blockers:
+        return ReadinessReport(
+            ReadinessState.NOT_READY, tuple(blockers), tuple(satisfied), details)
+    return ReadinessReport(
+        ReadinessState.FULL_VALIDATION_READY, (), tuple(satisfied), details)
+
+
 __all__ = [
     "FORBIDDEN_COLLECTION_MODULES",
+    "REQUIRED_VALIDATION_MODULES",
+    "evaluate_validation_readiness",
     "REQUIRED_COLLECTION_MODULES",
     "ReadinessReport",
     "ReadinessState",

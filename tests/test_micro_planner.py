@@ -401,8 +401,17 @@ def test_enabling_without_history_or_calibration_fails():
             {"enabled": True, "historical_bins": "h.json"})
     with pytest.raises(ValueError, match="unknown micro_planner key"):
         MicroPlannerConfig.from_mapping({"alpha": 1.0})
+    # `production` is now a supported mode, but only with the module enabled
+    # and only with both artifacts named. An unknown mode is still refused.
     with pytest.raises(ValueError, match="unsupported micro_planner mode"):
+        MicroPlannerConfig.from_mapping({"mode": "degraded"})
+    with pytest.raises(ValueError, match="but the module is disabled"):
         MicroPlannerConfig.from_mapping({"mode": "production"})
+    with pytest.raises(ValueError, match="historical bins on TRAIN"):
+        MicroPlannerConfig.from_mapping({"enabled": True, "mode": "production"})
+    assert MicroPlannerConfig.from_mapping({
+        "enabled": True, "mode": "production", "historical_bins": "h.json",
+        "planner_calibration": "c.json"}).is_production
     with pytest.raises(ValueError, match="unsupported planner_version"):
         MicroPlannerConfig.from_mapping({"planner_version": "m21-v9"})
     assert build_micro_planner(None) is None

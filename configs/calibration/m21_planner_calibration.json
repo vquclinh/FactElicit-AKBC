@@ -1,0 +1,62 @@
+{
+  "alpha": 1.0,
+  "artifact": "m21-planner-calibration",
+  "beta": 10.084164,
+  "calibration_version": "m21-derivation-v1",
+  "delta": 0.069917,
+  "eta": 0.143625,
+  "gamma": 0.0,
+  "kappa": 1.0,
+  "lookahead_depth": 2,
+  "provenance": {
+    "binning_spec_version": "m21-state-binning-v1",
+    "collection_policy_version": "collect-v1",
+    "collection_repo_sha": "264c980361a513078903526440c72adc6e10edaf",
+    "derivation_repo_sha": "b1804646dec3d2343dcf2cf8b277529071b89485",
+    "derivation_schema_version": "train-calibration-v1",
+    "derivation_settings": {
+      "budget_quantile": 0.95,
+      "float_precision": 6,
+      "minimum_bin_support": 8,
+      "minimum_denominator": 1.0,
+      "state_categorical_features": [
+        "program_type"
+      ],
+      "state_numeric_features": [
+        "residual",
+        "unresolved_mass"
+      ],
+      "state_quantiles": [
+        0.3333333333333333,
+        0.6666666666666666
+      ]
+    },
+    "evaluator_sha256": "2d592ae177c7b230922bb959da7a8ee1c4c662bf72a99d4dbd0cf62170ff9e22",
+    "experiment_config_sha256": "a6792c95407fec6a3133485790520d33481f8481c41990aaba56ad771a92a211",
+    "m20_derivation_version": "m20-derivation-v1",
+    "m21_derivation_version": "m21-derivation-v1",
+    "manifest_sha256": "54f8eb423d01601c736dd358ccfb2825c02b0a2fd696fc79db8a2ad27e22777c",
+    "predictions_sha256": "1fe0ac17787af0fb68036b248f01b4e625350f359e02fe6459039034a9b276aa",
+    "relation_catalogue": [
+      "awardWonBy",
+      "companyTradesAtStockExchange",
+      "countryLandBordersCountry",
+      "hasArea",
+      "hasCapacity",
+      "personHasCityOfDeath"
+    ],
+    "support_counts": {
+      "considered_actions": 86074,
+      "executed_actions": 2047,
+      "historical_bins": 64,
+      "observed_transitions": 1570,
+      "queries": 477
+    },
+    "telemetry_schema_version": "train-telemetry-v3",
+    "telemetry_sha256": "fa95b30762a93537f7e03c87143ff6b7cfd71ff48eab80194d21089493b2b9ed",
+    "train_rows": 477,
+    "train_sha256": "cb344aa3f153b30f4179f3c912ccfca19ae4e71288993292a093585d068a2c74"
+  },
+  "source": "TRAIN_CALIBRATED",
+  "tau_continue": 0.0
+}

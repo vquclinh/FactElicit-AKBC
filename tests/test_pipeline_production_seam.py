@@ -45,14 +45,20 @@ def take_everything_legal(kind, catalogue):
     return catalogue
 
 
-def build(mode, selector=take_everything_legal, **kwargs):
+def build(mode, selector=take_everything_legal, *, pipeline_cls=None, **kwargs):
+    """One pipeline over the scripted runtime.
+
+    ``pipeline_cls`` lets a caller substitute a ``CoverPipeline`` subclass -
+    a fault injector, say - while keeping every other wiring decision here, so
+    the thing under test differs from production in exactly one place.
+    """
     # A fallback rather than a keyed script: every acquisition view then yields
     # the same two candidates, so the two are tied on direct recall and the
     # only thing that can separate them is upgraded evidence.
     runtime = ScriptedRuntime(
         {}, model_id="offline/enumerator",
         fallback=lambda request: "Alphaland, Betaland")
-    return CoverPipeline(
+    return (pipeline_cls or CoverPipeline)(
         runtime, PipelineConfig(),
         profiler=QueryProfiler(), prompt_compiler=PromptProgramCompiler(),
         retriever=ParametricRetriever(),

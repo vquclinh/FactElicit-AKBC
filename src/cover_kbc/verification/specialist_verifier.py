@@ -319,6 +319,41 @@ class SpecialistVerifier:
             verification_version=self.verification_version,
         )
 
+    # -- cost introspection --------------------------------------------------
+
+    def control_calls_needed(
+        self,
+        request: SpecialistVerificationRequest,
+        contract: RelationContract,
+        runtime: LMRuntime,
+    ) -> int:
+        """How many *new* contextual controls running this request would cost.
+
+        Module 20 must precharge the whole call plan before the first neural
+        call, and a control is a real ``score_labels`` call whenever its cache
+        is cold. Only Module 17 knows which (phrasing, label order) templates a
+        request will render, and the template id carries the label order - so
+        two orders of one phrasing are two controls, not one. Answering that
+        here keeps the precharge on the owner's own accounting instead of a
+        constant chosen at the call site.
+
+        Reads the calibrator's cache and renders nothing: **no neural call**,
+        no cache mutation. Zero when calibration is off, because then no
+        control is measured at all.
+        """
+        if not self.config.use_calibration:
+            return 0
+        target = request.target
+        specialist = specialist_contract(target.relation)
+        proposition = target.kind is VerificationTargetKind.QUERY_PROPOSITION
+        templates = [
+            specialist_template(specialist, template_id, order,
+                                proposition=proposition)
+            for template_id in request.template_ids
+            for order in request.label_orders
+        ]
+        return self.calibrator.control_calls_needed(runtime, contract, templates)
+
     # -- execution -----------------------------------------------------------
 
     def verify(

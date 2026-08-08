@@ -330,8 +330,17 @@ def test_enabling_without_a_calibration_fails_loudly():
         RelationBudgetConfig.from_mapping({"enabled": True})
     with pytest.raises(ValueError, match="unknown relation_budget_scheduler key"):
         RelationBudgetConfig.from_mapping({"enabled": False, "discovery_calls": 4})
+    # `production` is now a supported mode, but only with the module enabled
+    # and only with a calibration named. An unknown mode is still refused.
     with pytest.raises(ValueError, match="unsupported relation_budget_scheduler mode"):
+        RelationBudgetConfig.from_mapping({"mode": "degraded"})
+    with pytest.raises(ValueError, match="but the module is disabled"):
         RelationBudgetConfig.from_mapping({"mode": "production"})
+    with pytest.raises(ValueError, match="calibrated on TRAIN"):
+        RelationBudgetConfig.from_mapping({"enabled": True, "mode": "production"})
+    assert RelationBudgetConfig.from_mapping({
+        "enabled": True, "mode": "production",
+        "calibration_file": "m20.json"}).is_production
     with pytest.raises(ValueError, match="unsupported scheduler_version"):
         RelationBudgetConfig.from_mapping({"scheduler_version": "m20-v9"})
     assert build_relation_budget_scheduler(None) is None
@@ -425,12 +434,20 @@ def test_temporal_pressure_survives_for_freshness_relations():
 
 
 def test_module_20_reads_no_factual_evidence():
+    import re
+
     blob = _scan_blob()
     for forbidden in ("candidate_key", "verifier", "VALID", "INVALID",
                       "independent_support", "base_group_supports", ".supports",
                       "confidence", "gold", "accepted", "consensus",
-                      "coverage_gap", "residual", "R_t", "r_t"):
+                      "coverage_gap", "residual"):
         assert forbidden not in blob, f"M20 reads evidence via {forbidden}"
+    # §15's residual is only ever spelled as a whole identifier. Matched on
+    # identifier boundaries rather than as a raw substring, which flagged the
+    # `r_t` inside `prior_tokens` - a physical-call counter, not evidence.
+    for forbidden in ("R_t", "r_t"):
+        assert not re.search(rf"(?<![A-Za-z0-9_]){forbidden}(?![A-Za-z0-9_])", blob), (
+            f"M20 reads evidence via {forbidden}")
     for name in M20_MODULES:
         tree = ast.parse((Path("src/cover_kbc/control") / name).read_text())
         for node in ast.walk(tree):
@@ -538,15 +555,50 @@ def test_an_undeclared_purpose_is_refused():
 # ==========================================================================
 
 
-def test_a_relation_can_never_raise_the_global_ceiling():
+def test_the_calibrated_envelope_is_the_ceiling_for_the_layer_4_action_space():
+    """Two ceilings over two phases, not one ceiling applied twice.
+
+    This test previously asserted ``min(calibrated, core)``. That was wrong:
+    Module 7's ``max_calls`` bounds the **core controller phase**, while §16's
+    calibrated ``hard_calls`` is the whole-query envelope Module 20 owns for the
+    upgraded Layer-4 action space. Intersecting them replaced a TRAIN-measured
+    22-44 call envelope with a 4-12 call one and starved Module 17 (Audit 0052).
+
+    Nothing is unbounded: every envelope is still bounded by the calibrated
+    ceiling, and physical accounting stays global.
+    """
     greedy = fixture_calibration(AWARD, hard_calls=100, hard_generated_tokens=99000,
                                  discovery_cap=100, verification_cap=100)
     plan = _plan(AWARD, greedy, snapshot=_snapshot(max_calls=10, max_tokens=1000))
-    assert plan.hard_calls == 10
-    assert plan.hard_generated_tokens == 1000
-    assert plan.envelope("discovery").cap <= 10
-    assert plan.envelope("verification").cap <= 10
-    assert any("global ceiling wins" in note for note in plan.notes)
+    assert plan.hard_calls == 100
+    assert plan.hard_generated_tokens == 99000
+    assert plan.envelope("discovery").cap <= 100
+    assert plan.envelope("verification").cap <= 100
+    # The core ceiling is not silently discarded either - it is recorded.
+    assert any("core-phase ceiling 10" in note for note in plan.notes)
+    assert any("core-phase ceiling 1000" in note for note in plan.notes)
+
+
+def test_no_envelope_may_exceed_the_calibrated_ceiling():
+    """The bound that remains once the core ceiling stops being applied.
+
+    Nothing inside the plan can outgrow the calibrated envelope: the
+    calibration type refuses a cap above it, and every envelope the plan builds
+    is clipped to it.
+    """
+    with pytest.raises(BudgetSchedulerError, match="exceeds the relation's hard"):
+        fixture_calibration(AWARD, hard_calls=6, discovery_cap=100,
+                            verification_cap=100, verification_reserve=0,
+                            special_reserves=())
+
+    legal = fixture_calibration(AWARD, hard_calls=6, discovery_cap=6,
+                                verification_cap=6, verification_reserve=2,
+                                special_reserves=((_P.MISSINGNESS, 2),))
+    plan = _plan(AWARD, legal, snapshot=_snapshot(max_calls=10, max_tokens=1000))
+    assert plan.hard_calls == 6
+    for envelope in plan.envelopes:
+        assert envelope.cap <= 6, envelope.name
+        assert envelope.protected_floor <= 6, envelope.name
 
 
 def test_the_hard_call_cap_is_enforced():

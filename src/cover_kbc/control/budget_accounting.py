@@ -134,11 +134,33 @@ class BudgetLedger:
     against the artefact it produced.
     """
 
-    def __init__(self, plan: RelationBudgetPlan) -> None:
+    def __init__(self, plan: RelationBudgetPlan, *, prior_calls: int = 0,
+                 prior_tokens: int = 0) -> None:
+        """Open a ledger against one query's calibrated envelope.
+
+        Args:
+            plan: the numeric plan. Its ``hard_calls`` is the **calibrated
+                whole-query envelope**, kept whole.
+            prior_calls: physical calls this query already spent before Layer 4
+                began - the acquisition phase. §16's envelope is whole-query, so
+                that spend belongs inside it and the ledger opens with it
+                already committed. Measured from the runtimes' own counters by
+                the caller, never counted here, so there is one physical-call
+                counter in the system and not two.
+            prior_tokens: the same for generated tokens.
+
+        Charged exactly once: the caller builds one ledger per query and caches
+        it, so ``prior_*`` is read before any Layer-4 reservation exists. Every
+        later call is charged through ``reserve``/``settle`` instead.
+        """
         if not plan.is_numeric:
             raise BudgetSchedulerError(
                 "a ledger needs a numeric calibration; the qualitative plan "
                 "alone carries no capacity to reserve against"
+            )
+        if prior_calls < 0 or prior_tokens < 0:
+            raise BudgetSchedulerError(
+                f"prior spend cannot be negative ({prior_calls}, {prior_tokens})"
             )
         self.plan = plan
         self.calibration = plan.calibration
@@ -150,6 +172,11 @@ class BudgetLedger:
         self._reserved_tokens = 0
         self._settled_calls = 0
         self._settled_tokens = 0
+        #: Physical spend the query incurred before Layer 4 began. Held apart
+        #: from reservations and settlements so it can never be released,
+        #: settled or double-charged - it is already spent.
+        self._prior_calls = int(prior_calls)
+        self._prior_tokens = int(prior_tokens)
         self._class_committed: Counter[BudgetSpendClass] = Counter()
         self._purpose_committed: Counter[SpecialReservePurpose] = Counter()
         self._replayed_calls = 0
@@ -157,12 +184,18 @@ class BudgetLedger:
     # -- capacity ---------------------------------------------------------
 
     @property
+    def prior_calls(self) -> int:
+        """Physical calls spent by this query before Layer 4 began."""
+        return self._prior_calls
+
+    @property
     def committed_calls(self) -> int:
-        return self._reserved_calls + self._settled_calls
+        """Everything charged against the whole-query envelope so far."""
+        return self._prior_calls + self._reserved_calls + self._settled_calls
 
     @property
     def committed_tokens(self) -> int:
-        return self._reserved_tokens + self._settled_tokens
+        return self._prior_tokens + self._reserved_tokens + self._settled_tokens
 
     def _protected_pools(self) -> list[tuple[str, int, int]]:
         """(name, size, used) for every protected pool."""

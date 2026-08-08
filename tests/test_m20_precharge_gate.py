@@ -129,8 +129,8 @@ def test_collection_does_not_pretend_to_have_calibration() -> None:
     pipeline = _pipeline(_calibration(),
                          mode=IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY)
     graph = pipeline.enumerate_query(Query(SUBJECT, RELATION, 0))
-    admitted, reason = pipeline._precharge("m18", object(), graph)
-    assert admitted and reason == ""
+    admitted, reason, hold = pipeline._precharge("m18", object(), graph)
+    assert admitted and reason == "" and hold is None
 
 
 def test_module_20_never_touches_object_entities() -> None:

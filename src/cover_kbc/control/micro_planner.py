@@ -453,7 +453,13 @@ class MicroPlanner:
 
 _ALLOWED_KEYS = {
     "enabled", "mode", "planner_version", "historical_bins", "planner_calibration",
+    "historical_bins_sha256", "planner_calibration_sha256",
 }
+
+#: The two modes this module implements. ``shadow`` ranks and records without
+#: choosing; ``production`` is §17's actual selector. No third mode: a planner
+#: that sometimes chooses would make the controller's behaviour unattributable.
+_MODES = ("shadow", "production")
 
 
 class MicroPlannerConfig:
@@ -468,11 +474,13 @@ class MicroPlannerConfig:
     def __init__(self, *, enabled: bool = False, mode: str = "shadow",
                  planner_version: str = PLANNER_VERSION,
                  historical_bins: str | None = None,
-                 planner_calibration: str | None = None) -> None:
-        if mode != "shadow":
+                 planner_calibration: str | None = None,
+                 historical_bins_sha256: str | None = None,
+                 planner_calibration_sha256: str | None = None) -> None:
+        if mode not in _MODES:
             raise ValueError(
-                f"unsupported micro_planner mode {mode!r}; only shadow exists "
-                "in this milestone"
+                f"unsupported micro_planner mode {mode!r}; this build "
+                f"implements {list(_MODES)}"
             )
         if planner_version != PLANNER_VERSION:
             raise ValueError(
@@ -491,11 +499,23 @@ class MicroPlannerConfig:
                 "supplied; §17 names alpha, beta, gamma, delta, eta, kappa and "
                 "tau_continue and gives a value for none of them"
             )
+        if mode == "production" and not enabled:
+            raise ValueError(
+                "micro_planner.mode is 'production' but the module is "
+                "disabled; §17's action choice would then belong to nobody"
+            )
         self.enabled = enabled
         self.mode = mode
         self.planner_version = planner_version
         self.historical_bins = historical_bins
         self.planner_calibration = planner_calibration
+        #: Optional integrity bindings, checked at the loading boundary.
+        self.historical_bins_sha256 = historical_bins_sha256
+        self.planner_calibration_sha256 = planner_calibration_sha256
+
+    @property
+    def is_production(self) -> bool:
+        return self.mode == "production"
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any] | None) -> "MicroPlannerConfig":
@@ -512,6 +532,9 @@ class MicroPlannerConfig:
             planner_version=str(payload.get("planner_version", PLANNER_VERSION)),
             historical_bins=payload.get("historical_bins") or None,
             planner_calibration=payload.get("planner_calibration") or None,
+            historical_bins_sha256=payload.get("historical_bins_sha256") or None,
+            planner_calibration_sha256=(
+                payload.get("planner_calibration_sha256") or None),
         )
 
 

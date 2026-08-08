@@ -1393,7 +1393,28 @@ def test_module_20s_table_6_registry_is_unchanged():
     assert policy.special_reserve_purposes == (_P.FRESHNESS, _P.PARENT_SUBSIDIARY)
     assert policy.discovery_tier.value == "MEDIUM"
     assert policy.verification_tier.value == "MEDIUM"
-    assert subprocess.run(
-        ["git", "status", "--porcelain", "src/cover_kbc/control/relation_budget.py",
-         "src/cover_kbc/control/budget_types.py"],
-        capture_output=True, text=True, check=True).stdout == ""
+    # Table 6 itself, asserted rather than a clean working tree. A
+    # `git status` check fails on any legitimate edit - production mode was
+    # added to this very file - and says nothing about whether the policy
+    # moved, which is the anti-pattern Audits 0042/0044 converted twice before.
+    from cover_kbc.control.relation_budget import RELATION_BUDGET_POLICIES
+
+    expected = {
+        "countryLandBordersCountry": ("LOW", "LOW", (_P.REVERSE_SINGLETON,)),
+        "hasCapacity": ("MEDIUM", "MEDIUM", (_P.CROSS_UNIT, _P.CONTRAST)),
+        "hasArea": ("MEDIUM", "MEDIUM", (_P.CROSS_UNIT, _P.CONTRAST)),
+        "awardWonBy": ("HIGH", "HIGH", (_P.MISSINGNESS, _P.REVERSE)),
+        "personHasCityOfDeath": ("MEDIUM", "MEDIUM_HIGH",
+                                 (_P.FRESHNESS, _P.CANDIDATE_FREE)),
+        "companyTradesAtStockExchange": ("MEDIUM", "MEDIUM",
+                                         (_P.FRESHNESS, _P.PARENT_SUBSIDIARY)),
+    }
+    assert set(RELATION_BUDGET_POLICIES) == set(expected)
+    for relation, (discovery, verification, reserves) in expected.items():
+        entry = RELATION_BUDGET_POLICIES[relation]
+        assert entry.discovery_tier.value == discovery, relation
+        assert entry.verification_tier.value == verification, relation
+        assert entry.special_reserve_purposes == reserves, relation
+    assert RELATION_BUDGET_POLICIES["awardWonBy"].discovery_capped
+    assert RELATION_BUDGET_POLICIES["awardWonBy"].verification_hard_reserved
+    assert RELATION_BUDGET_POLICIES["countryLandBordersCountry"].verification_spot
