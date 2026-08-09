@@ -36,7 +36,7 @@
 {"SubjectEntity": "Lake Champlain", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "New Britain", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Turkmenistan", "Relation": "hasArea", "ObjectEntities": []}
-{"SubjectEntity": "Cabrera", "Relation": "hasArea", "ObjectEntities": []}
+{"SubjectEntity": "Cabrera, Balearic Islands", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Prince Charles Island", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Banaba Island", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Aruba", "Relation": "hasArea", "ObjectEntities": []}
@@ -51,7 +51,7 @@
 {"SubjectEntity": "Vágar", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "North Sentinel Island", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Bhutan", "Relation": "hasArea", "ObjectEntities": []}
-{"SubjectEntity": "Boa Vista", "Relation": "hasArea", "ObjectEntities": []}
+{"SubjectEntity": "Boa Vista, Cape Verde", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "October Revolution Island", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Malaita", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Iona", "Relation": "hasArea", "ObjectEntities": []}
@@ -67,14 +67,14 @@
 {"SubjectEntity": "Rathlin Island", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Vietnam", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Kastellorizo", "Relation": "hasArea", "ObjectEntities": []}
-{"SubjectEntity": "Tortuga", "Relation": "hasArea", "ObjectEntities": []}
+{"SubjectEntity": "Tortuga, Haiti", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Marie-Galante", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Sint Eustatius", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Lemnos", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "South Africa", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Venezuela", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Samos", "Relation": "hasArea", "ObjectEntities": []}
-{"SubjectEntity": "Ireland", "Relation": "hasArea", "ObjectEntities": []}
+{"SubjectEntity": "Republic of Ireland", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Jan Mayen", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Mali", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Kiritimati", "Relation": "hasArea", "ObjectEntities": []}
@@ -85,14 +85,14 @@
 {"SubjectEntity": "Kavaratti", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Henderson Island", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Magerøya", "Relation": "hasArea", "ObjectEntities": []}
-{"SubjectEntity": "Gorgona", "Relation": "hasArea", "ObjectEntities": []}
+{"SubjectEntity": "Gorgona, Italy", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Salamis Island", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Kosrae", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Kahoolawe", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Lake Ohrid", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "ʻEua", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Ibiza", "Relation": "hasArea", "ObjectEntities": []}
-{"SubjectEntity": "Brava", "Relation": "hasArea", "ObjectEntities": []}
+{"SubjectEntity": "Brava, Cape Verde", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Lake Orta", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Nevis", "Relation": "hasArea", "ObjectEntities": []}
 {"SubjectEntity": "Tanegashima", "Relation": "hasArea", "ObjectEntities": []}
@@ -168,7 +168,6 @@
 {"SubjectEntity": "Tianhe Stadium in Tianhe District", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Leonidoff Field in New York", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Plaza de toros Monumental de Maracaibo in Municipio Maracaibo", "Relation": "hasCapacity", "ObjectEntities": []}
-{"SubjectEntity": "Charger Stadium in Texas", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "East Pyongyang Stadium in Pyongyang", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Antiguo canódromo de Carabanchel in Madrid", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Samara Arena in Samara", "Relation": "hasCapacity", "ObjectEntities": []}
@@ -187,7 +186,6 @@
 {"SubjectEntity": "Vila Olímpica do Sesc in Pernambuco", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Chalerm Prakiat Klong 6 Stadium in Pathum Thani", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Estadio Edgar Peña Gutierrez in Santa Cruz de la Sierra", "Relation": "hasCapacity", "ObjectEntities": []}
-{"SubjectEntity": "Cougars Den in Virginia", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Al-Merrikh Stadium in Omdurman", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Smisor Stadium in Kansas", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Estadio José Pérez Colmenares in Maracay", "Relation": "hasCapacity", "ObjectEntities": []}
@@ -200,7 +198,7 @@
 {"SubjectEntity": "Iran Khodro Stadium in Karaj", "Relation": "hasCapacity", "ObjectEntities": []}
 {"SubjectEntity": "Max Planck Medal", "Relation": "awardWonBy", "ObjectEntities": []}
 {"SubjectEntity": "Best Female Tennis Player ESPY Award", "Relation": "awardWonBy", "ObjectEntities": []}
-{"SubjectEntity": "Franklin Medal", "Relation": "awardWonBy", "ObjectEntities": []}
+{"SubjectEntity": "Franklin Medal (Franklin Institute)", "Relation": "awardWonBy", "ObjectEntities": []}
 {"SubjectEntity": "BBC World Sport Star of the Year", "Relation": "awardWonBy", "ObjectEntities": []}
 {"SubjectEntity": "Pulitzer Prize for Biography", "Relation": "awardWonBy", "ObjectEntities": []}
 {"SubjectEntity": "Nobel Prize in Literature", "Relation": "awardWonBy", "ObjectEntities": []}
@@ -282,7 +280,7 @@
 {"SubjectEntity": "A + Z Rišňovský, Halász", "Relation": "companyTradesAtStockExchange", "ObjectEntities": []}
 {"SubjectEntity": "Silicon Image", "Relation": "companyTradesAtStockExchange", "ObjectEntities": []}
 {"SubjectEntity": "Fairchild Semiconductor", "Relation": "companyTradesAtStockExchange", "ObjectEntities": []}
-{"SubjectEntity": "United Aircraft Corporation", "Relation": "companyTradesAtStockExchange", "ObjectEntities": []}
+{"SubjectEntity": "United Aircraft Corporation (Russia)", "Relation": "companyTradesAtStockExchange", "ObjectEntities": []}
 {"SubjectEntity": "Vedanta Limited", "Relation": "companyTradesAtStockExchange", "ObjectEntities": []}
 {"SubjectEntity": "Aersud elicotteri", "Relation": "companyTradesAtStockExchange", "ObjectEntities": []}
 {"SubjectEntity": "AAC Technologies Holdings Inc", "Relation": "companyTradesAtStockExchange", "ObjectEntities": []}
@@ -423,19 +421,19 @@
 {"SubjectEntity": "Yüksel Pazarkaya", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Veronica P. Kruglova", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Anatolii Khunov", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
-{"SubjectEntity": "John Lewis", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
+{"SubjectEntity": "John Lewis (civil rights leader)", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Allen Lee", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Antanas Šurna", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Thelma Schoonmaker", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Oleg Konstantinovitsj Stoekalov", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Alfred Znamierowski", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Kip S. Thorne", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
-{"SubjectEntity": "Petr Hájek", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
+{"SubjectEntity": "Petr Hájek (logician)", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Herbie Hancock", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Brian David Josephson", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Friedel Rausch", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Helga Reidemeister", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
-{"SubjectEntity": "Jim Roberts", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
+{"SubjectEntity": "Jim Roberts (ice hockey, born 1940)", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Alexei Fridman", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Petru Gherghel", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Garth Fagan", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
@@ -449,22 +447,22 @@
 {"SubjectEntity": "Vladimir Zhitlov", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Katalin Sólyom", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Claude Piard", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
-{"SubjectEntity": "Vladimir", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
+{"SubjectEntity": "Vladimir (Ikim)", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Haing S. Ngor", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Helmut Denk", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Don Mischer", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Betty Elizalde", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "J. H. Binford Peay III", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
-{"SubjectEntity": "Peter Cartwright", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
+{"SubjectEntity": "Peter Cartwright (lawyer)", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Jean Ichbiah", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Murali Mohan", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Mária Pozsonec", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Anja Silja", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
-{"SubjectEntity": "William Owens", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
+{"SubjectEntity": "William Owens (admiral)", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Jacob Palis", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Michael Parks", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Angela Carter", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
-{"SubjectEntity": "József Tóth", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
+{"SubjectEntity": "József Tóth (photographer)", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Ted Green", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Gennady Merkulov", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
 {"SubjectEntity": "Bob Mackie", "Relation": "personHasCityOfDeath", "ObjectEntities": []}
