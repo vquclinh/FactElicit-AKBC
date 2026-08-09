@@ -117,6 +117,7 @@ class ProductionEvidenceBridge:
         IntegrationMode.SHADOW,
         IntegrationMode.PRODUCTION,
         IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY,
+        IntegrationMode.DIRECT_UNCALIBRATED,
     })
 
     def __init__(self, mode: IntegrationMode | str) -> None:

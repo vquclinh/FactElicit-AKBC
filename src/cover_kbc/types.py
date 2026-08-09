@@ -91,6 +91,18 @@ class ModelRole(str, Enum):
     #: No model at all - a control action such as STOP.
     NONE = "none"
 
+    # The heterogeneous portfolio splits the enumerator's single job in two,
+    # because recalling a name and reasoning about a relation's shape are
+    # different competences (§18.2: roles need not be fixed). The verifier's
+    # role is renamed, not redefined - it is still one compact calibrated judge
+    # that never sees the generator's reasoning.
+    #: Recall of names from parametric memory.
+    FACTUAL_ENUMERATOR = "factual_enumerator"
+    #: §14's reverse, key-condition and counterfactual reasoning.
+    STRUCTURAL_REASONER = "structural_reasoner"
+    #: Blind verification. Independent of whoever produced the candidate.
+    INDEPENDENT_VERIFIER = "independent_verifier"
+
 
 class EvidenceMode(str, Enum):
     """How a model came to support a candidate.

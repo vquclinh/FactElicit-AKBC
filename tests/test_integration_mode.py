@@ -18,9 +18,30 @@ from cover_kbc.integration_mode import (
 )
 
 
-def test_exactly_three_modes_exist() -> None:
+def test_exactly_four_modes_exist() -> None:
+    """The vocabulary, stated once. A fifth needs a deliberate edit here."""
     assert [mode.value for mode in IntegrationMode] == [
-        "shadow", "production", "train_calibration_collection_only"]
+        "shadow", "production", "train_calibration_collection_only",
+        "direct_uncalibrated"]
+
+
+def test_only_production_is_governed_by_calibration() -> None:
+    """Collection and direct execute the real seams; neither is calibrated."""
+    for mode in IntegrationMode:
+        assert mode.uses_calibrated_controller is (
+            mode is IntegrationMode.PRODUCTION), mode
+        assert mode.production_calibrated is mode.uses_calibrated_controller
+
+
+def test_direct_executes_layer_four_and_shadow_does_not() -> None:
+    assert IntegrationMode.DIRECT_UNCALIBRATED.may_mutate_production_state
+    assert not IntegrationMode.SHADOW.may_mutate_production_state
+
+
+def test_direct_is_not_confined_to_train() -> None:
+    """Unlike collection: measuring a model stack needs an answerable split."""
+    assert not IntegrationMode.DIRECT_UNCALIBRATED.train_split_only
+    assert IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY.train_split_only
 
 
 @pytest.mark.parametrize("value,expected", [

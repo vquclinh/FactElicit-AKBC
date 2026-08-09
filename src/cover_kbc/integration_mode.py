@@ -51,6 +51,23 @@ class IntegrationMode(str, Enum):
     #: Modules 20 and 21 are calibrated from. It is not a planner: action
     #: choice comes from a fixed deterministic policy, never from utility.
     TRAIN_CALIBRATION_COLLECTION_ONLY = "train_calibration_collection_only"
+    #: The same execution-complete seams and the same fixed deterministic
+    #: policy as collection, but pointed at an answer-producing split rather
+    #: than at TRAIN.
+    #:
+    #: It exists to measure a *model stack* on its own: the whole upgraded
+    #: architecture runs and its evidence reaches Module 8, while Modules 20
+    #: and 21 govern nothing because no calibration exists for these
+    #: checkpoints. Borrowing another stack's calibration would answer a
+    #: different question, and inventing one from the split being answered
+    #: would answer no question at all.
+    #:
+    #: Distinct from ``SHADOW``, which does not execute Layer 4 at all, and
+    #: from ``PRODUCTION``, which requires a calibration this run does not
+    #: have. The bound on spend is the architecture's own - Module 7's
+    #: per-query ceilings and the per-catalogue action bound - never a
+    #: TRAIN-derived relation budget.
+    DIRECT_UNCALIBRATED = "direct_uncalibrated"
 
     @property
     def is_production(self) -> bool:
@@ -63,6 +80,30 @@ class IntegrationMode(str, Enum):
     @property
     def is_collection(self) -> bool:
         return self is IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY
+
+    @property
+    def is_direct(self) -> bool:
+        return self is IntegrationMode.DIRECT_UNCALIBRATED
+
+    @property
+    def uses_calibrated_controller(self) -> bool:
+        """Whether Modules 20 and 21 govern this run's action choice.
+
+        Only ``PRODUCTION`` does. Collection and direct both execute the real
+        seams under the fixed deterministic policy, so neither may consult - or
+        be charged against - a calibrated relation budget.
+        """
+        return self is IntegrationMode.PRODUCTION
+
+    @property
+    def production_calibrated(self) -> bool:
+        """Whether this run's controller is backed by real calibration.
+
+        Recorded in the manifest. ``False`` here is a fact about the run, not a
+        warning: a direct run is a legitimate experiment, and calling it
+        calibrated would misattribute its result.
+        """
+        return self.uses_calibrated_controller
 
     @property
     def train_split_only(self) -> bool:
@@ -84,7 +125,9 @@ class IntegrationMode(str, Enum):
         bypass this design forbids.
 
         Collection mutates production state too - that is the entire point of
-        collecting on the real seams rather than on a mock.
+        collecting on the real seams rather than on a mock - and so does a
+        direct uncalibrated run, whose whole purpose is to let the upgraded
+        evidence reach Module 8 under a different model stack.
         """
         return self is not IntegrationMode.SHADOW
 

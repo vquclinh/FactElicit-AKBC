@@ -22,6 +22,12 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+# `scripts/` is on `sys.path` when this file is run as a program, but not when
+# a test loads it by spec. Adding it explicitly makes the import work either
+# way, so the packager can share the readiness gate's identity digest rather
+# than keeping a second copy of it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from _bootstrap import ensure_src_on_path
 
 ensure_src_on_path()

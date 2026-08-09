@@ -362,6 +362,7 @@ class CoverPipeline:
         *,
         tracer: RunTracer | None = None,
         verifier_runtime: LMRuntime | None = None,
+        structural_runtime: LMRuntime | None = None,
         profiler: "QueryProfiler | None" = None,
         prompt_compiler: "PromptProgramCompiler | None" = None,
         retriever: "ParametricRetriever | None" = None,
@@ -568,6 +569,13 @@ class CoverPipeline:
         # Falling back to the enumerator keeps the interface usable with one
         # model, but then no *cross-model* evidence is claimed anywhere.
         self.verifier_runtime = verifier_runtime or runtime
+        # A third physical runtime for §14's structural mechanisms - reverse
+        # direction, key conditions, near-miss contrast - which are reasoning
+        # about a relation's shape rather than recall of a name. Optional and
+        # defaulting to the enumerator, so a two-model profile constructs and
+        # behaves exactly as it always has: `structural_runtime is None` makes
+        # every expression below identical to the pre-existing one.
+        self.structural_runtime = structural_runtime or runtime
         self.verifier_engine = ElicitationEngine(self.verifier_runtime, seed=self.config.seed + 1)
         self.calibrator = ContextualCalibrator()
 
@@ -1091,6 +1099,7 @@ class CoverPipeline:
         self._query_baselines.setdefault(
             (query.subject, query.relation, query.row_index),
             self.physical_snapshot())
+        self._begin_query_for_selector()
         # M0 -> M1 -> M9 -> acquisition. The profile is written to an
         # observability buffer, never to the graph: Module 10 will be its first
         # consumer, and until then nothing below may read it.
@@ -1801,6 +1810,18 @@ class CoverPipeline:
                 return (entry,)
         return ()
 
+    def _begin_query_for_selector(self) -> None:
+        """Tell a stateful selector a new query started, if it wants to know.
+
+        The deterministic collection policy round-robins action families
+        *within* a query; without this its position would carry across queries
+        and the first family would win every time. A plain callable selector -
+        every baseline path - has no such hook and is unaffected.
+        """
+        begin = getattr(self.action_selector, "begin_query", None)
+        if callable(begin):
+            begin()
+
     def _select_actions(
         self, kind: str, catalogue: "Sequence[Any]",
         consensus: QueryConsensusResult | None = None,
@@ -2177,6 +2198,12 @@ class CoverPipeline:
         ``RelationBudgetCalibration``. Ordinary production without a real
         artifact has no scheduler at all and stays fail-closed upstream.
 
+        A **direct uncalibrated** run is the same case for the same reason: no
+        calibration exists for its model stack, so there is no envelope to
+        precharge against and Module 20 governs nothing. Spend is bounded by
+        Module 7's per-query ceilings and the per-catalogue action bound - the
+        architecture's own caps, which are not TRAIN-derived.
+
         Returns:
             ``(admitted, refusal, hold)``. ``hold`` is the ``(ledger,
             reservation)`` pair this precharge actually created, or ``None``
@@ -2190,7 +2217,7 @@ class CoverPipeline:
             so settlement addresses the object this precharge produced instead
             of reconstructing an identity and hoping it matches.
         """
-        if self.integration_mode.is_collection:
+        if self.integration_mode.is_collection or self.integration_mode.is_direct:
             return True, "", None
         ledger = self._budget_ledger_for(graph)
         if ledger is None:
@@ -2390,11 +2417,29 @@ class CoverPipeline:
         second measurement of a number the backend already reported.
         """
         single_role = self.verifier_runtime is self.runtime
-        enumerator = int(getattr(self.runtime, "calls", 0))
+        # The partition is by *verifier / non-verifier role*, and it has always
+        # been two buckets. A third physical checkpoint - the portfolio's
+        # structural reasoner - is a second non-verifier model, so its calls
+        # join the enumerator bucket and the `enumerator + verifier ==
+        # physical` identity that `physical_delta` enforces still holds exactly.
+        # Which model served which operation is recorded per action in the
+        # evidence provenance, where per-model attribution belongs; these
+        # counters exist to make the hard cap and settlement exact, and they
+        # remain exact.
+        #
+        # `is`-identity throughout, and only *distinct* objects are summed, so
+        # a two-model profile - where `structural_runtime is runtime` - reduces
+        # to the original expressions with no change of value.
+        non_verifier = [self.runtime]
+        structural = getattr(self, "structural_runtime", self.runtime)
+        if structural is not self.runtime and structural is not self.verifier_runtime:
+            non_verifier.append(structural)
+        enumerator = sum(int(getattr(r, "calls", 0)) for r in non_verifier)
         verifier = 0 if single_role else int(
             getattr(self.verifier_runtime, "calls", 0))
-        generated = int(getattr(self.runtime, "generated_tokens", 0))
-        prompt = int(getattr(self.runtime, "prompt_tokens", 0))
+        generated = sum(
+            int(getattr(r, "generated_tokens", 0)) for r in non_verifier)
+        prompt = sum(int(getattr(r, "prompt_tokens", 0)) for r in non_verifier)
         if not single_role:
             generated += int(getattr(self.verifier_runtime, "generated_tokens", 0))
             prompt += int(getattr(self.verifier_runtime, "prompt_tokens", 0))
@@ -2799,8 +2844,11 @@ class CoverPipeline:
         _, contract = compile_query(
             consensus.subject, consensus.relation, consensus.row_index
         )
+        # §14's mechanisms go to the structural runtime. Under a two-model
+        # profile that *is* the enumerator, so this is the previous call
+        # unchanged; under the portfolio it is the role-specialised reasoner.
         result = self.bidirectional_verifier.execute_all(
-            consensus, contract, runtime or self.runtime, requests,
+            consensus, contract, runtime or self.structural_runtime, requests,
             primary_model_family=getattr(self.runtime.spec, "family", ""),
         )
         for index, existing in enumerate(self.bidirectional_results):

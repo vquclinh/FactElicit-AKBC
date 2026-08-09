@@ -28,6 +28,12 @@ class ReadinessState(str, Enum):
     CALIBRATION_COLLECTION_READY = "CALIBRATION_COLLECTION_READY"
     #: Real TRAIN-derived controller artifacts are present and consistent.
     FULL_VALIDATION_READY = "FULL_VALIDATION_READY"
+    #: The same models on the blind official TEST split, with Modules 20 and
+    #: 21 governing nothing because no calibration exists for this model stack.
+    #: A separate state from ``FULL_TEST_READY``, which means *production
+    #: calibrated*: conflating them would let an uncalibrated run be reported
+    #: as a calibrated one.
+    FULL_TEST_DIRECT_READY = "FULL_TEST_DIRECT_READY"
     #: The same production system, cleared for the blind official TEST split.
     #: A separate state from ``FULL_VALIDATION_READY`` on purpose: TEST has
     #: requirements validation does not - the split is blind, no evaluator may
@@ -52,6 +58,11 @@ class ReadinessReport:
         return self.state is ReadinessState.FULL_VALIDATION_READY
 
     @property
+    def may_run_test_direct(self) -> bool:
+        """Cleared for an uncalibrated direct TEST run, and only for that."""
+        return self.state is ReadinessState.FULL_TEST_DIRECT_READY
+
+    @property
     def may_run_test(self) -> bool:
         """Cleared for the blind official split, and only by the TEST gate.
 
@@ -74,6 +85,7 @@ class ReadinessReport:
             "may_run_collection": self.may_run_collection,
             "may_run_validation": self.may_run_validation,
             "may_run_test": self.may_run_test,
+            "may_run_test_direct": self.may_run_test_direct,
             "blockers": list(self.blockers),
             "satisfied": list(self.satisfied),
             "details": dict(self.details),
@@ -457,6 +469,239 @@ def evaluate_validation_readiness(
         ReadinessState.FULL_VALIDATION_READY, (), tuple(satisfied), details)
 
 
+def _check_blind_test_dataset(
+    config: Mapping[str, Any], data_dir: "str | Path | None",
+    blockers: list[str], satisfied: list[str], details: dict[str, Any],
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    """The official blind split, checked three ways plus blindness.
+
+    Shared by the calibrated and the direct TEST gates, because a
+    submission built against the wrong file is invalid whichever
+    controller produced it, and two copies of this would drift.
+    """
+    import hashlib
+
+    # -- the dataset itself ------------------------------------------------
+    expected = config.get("test_dataset") or {}
+    root = Path(data_dir) if data_dir is not None else None
+    if root is None:
+        from cover_kbc.paths import SPLIT_FILES
+        path = SPLIT_FILES.get("test")
+    else:
+        path = root / "test.jsonl"
+    details["test_dataset_path"] = str(path) if path else ""
+
+    if path is None or not Path(path).is_file():
+        blockers.append(f"test dataset: not found at {path}")
+        return blockers, satisfied, details
+    raw = Path(path).read_bytes()
+    actual_sha = hashlib.sha256(raw).hexdigest()
+    lines = [line for line in raw.decode("utf-8").splitlines() if line.strip()]
+    details["test_rows"] = len(lines)
+    details["test_sha256"] = actual_sha
+
+    declared_sha = str(expected.get("sha256", ""))
+    declared_rows = expected.get("rows")
+    if not declared_sha or declared_rows is None:
+        blockers.append(
+            "test_dataset: the config must record the exact rows and sha256 of "
+            "the split it will answer; an unrecorded dataset cannot be shown "
+            "to be the official one")
+    else:
+        if actual_sha != declared_sha:
+            blockers.append(
+                f"test dataset: sha256 is {actual_sha}, the config expects "
+                f"{declared_sha}")
+        else:
+            satisfied.append(f"test dataset: sha256 {actual_sha[:12]}...")
+        if len(lines) != int(declared_rows):
+            blockers.append(
+                f"test dataset: {len(lines)} rows, the config expects "
+                f"{declared_rows}")
+        else:
+            satisfied.append(f"test dataset: {len(lines)} rows")
+
+    try:
+        rows = [json.loads(line) for line in lines]
+    except json.JSONDecodeError as error:
+        blockers.append(f"test dataset: malformed JSONL ({error})")
+        return blockers, satisfied, details
+
+    identity = ordered_identity_digest(
+        (str(r.get("SubjectEntity", "")), str(r.get("Relation", "")))
+        for r in rows)
+    details["test_identity_sha256"] = identity
+    declared_identity = str(expected.get("identity_sha256", ""))
+    if not declared_identity:
+        blockers.append(
+            "test_dataset: the config must record identity_sha256, the digest "
+            "of the ordered SubjectEntity/Relation pairs the submission must "
+            "reproduce exactly")
+    elif identity != declared_identity:
+        blockers.append(
+            f"test dataset: ordered identity digest is {identity}, the config "
+            f"expects {declared_identity}")
+    else:
+        satisfied.append(f"test dataset: ordered identity {identity[:12]}...")
+
+    # Blind means blind. An objects field that is present but non-empty would
+    # make gold reachable from the inference path, so it is a blocker even
+    # though nothing here would read it.
+    with_objects = [
+        f"{r.get('SubjectEntity','')}/{r.get('Relation','')}"
+        for r in rows if r.get("ObjectEntities")]
+    details["test_rows_with_objects"] = len(with_objects)
+    if with_objects:
+        blockers.append(
+            f"test dataset: {len(with_objects)} row(s) carry ObjectEntities, "
+            f"e.g. {with_objects[:3]}; the official test split is blind and a "
+            "run that could read them is not a blind run")
+    else:
+        satisfied.append("test dataset: blind (no row carries objects)")
+
+    return blockers, satisfied, details
+
+
+def evaluate_direct_test_readiness(
+    config: Mapping[str, Any], *, base_dir: str | Path = ".",
+    split: str | None = None, data_dir: str | Path | None = None,
+) -> ReadinessReport:
+    """May this profile answer the blind TEST split **without** a calibration?
+
+    The experiment this clears is "does this model stack help?", so everything
+    that makes a TEST run *safe* is required and everything that makes it
+    *calibrated* is deliberately not:
+
+    Required - the same as a calibrated run:
+
+    * the split is ``test``, and the dataset is byte-, row- and order-exact;
+    * the dataset is blind - no row may carry objects;
+    * every upgraded module M9-M21 and Layer 6 is enabled in the config;
+    * ``pipeline.mode`` is the declared execution mode;
+    * every model has an immutable revision and a verified parameter count,
+      and the total is inside the 32B rule.
+
+    Required *because* it is uncalibrated:
+
+    * Modules 20 and 21 must **not** be in production mode. A calibrated
+      controller here would be one of two things - a borrowed calibration
+      measured on other checkpoints, or an invented one - and neither answers
+      the question this run is asking.
+
+    Deliberately not required: any calibration artifact at all. There is none
+    for this stack, and this gate never loads one, so a baseline package
+    cannot be picked up by accident.
+
+    Returns:
+        A report whose default is refusal. ``FULL_TEST_DIRECT_READY`` - never
+        ``FULL_TEST_READY``, which means production calibrated.
+    """
+    from cover_kbc.models.strategy import (
+        ModelStrategyError,
+        declared_strategy,
+        portfolio_governance_blockers,
+        resolve_strategy,
+    )
+
+    blockers: list[str] = []
+    satisfied: list[str] = []
+    details: dict[str, Any] = {}
+
+    declared = split if split is not None else str(
+        (config.get("experiment") or {}).get("split", ""))
+    details["split"] = declared
+    if declared != "test":
+        blockers.append(
+            f"split: a direct test run may only read 'test', this profile "
+            f"declares {declared!r}")
+    else:
+        satisfied.append("split: test")
+
+    # Everything that *produces* evidence still has to be wired - M9 through
+    # M19 - because this run differs from a calibrated one only in who chooses
+    # the actions, not in which modules run.
+    for path, label in REQUIRED_COLLECTION_MODULES:
+        if not _block(config, path).get("enabled", False):
+            blockers.append(
+                f"{label}: {'.'.join(path)}.enabled is false; the direct path "
+                "still runs the whole evidence stack")
+
+    # Modules 20 and 21 are the exception, and their absence is the design.
+    # `build_relation_budget_scheduler` refuses an enabled scheduler with no
+    # TRAIN-derived values rather than inventing any, so `enabled: false` is
+    # both the honest declaration and the only constructible one here.
+    for path, label in ((("relation_budget_scheduler",), "M20"),
+                        (("micro_planner",), "M21")):
+        block = _block(config, path)
+        mode = str(block.get("mode", ""))
+        details[f"{label.lower()}_mode"] = mode
+        details[f"{label.lower()}_enabled"] = bool(block.get("enabled", False))
+        if mode == "production" or block.get("enabled", False):
+            blockers.append(
+                f"{label}: {'.'.join(path)} is enabled or in production mode, "
+                "but no calibration exists for this model stack; a direct run "
+                "must not be governed by another stack's measurements")
+    # ...and it must not be pointed at anyone's artifacts either.
+    for path, key in ((("relation_budget_scheduler",), "calibration_file"),
+                      (("micro_planner",), "historical_bins"),
+                      (("micro_planner",), "planner_calibration")):
+        if _block(config, path).get(key):
+            blockers.append(
+                f"{'.'.join(path)}.{key} names a calibration artifact; a "
+                "direct run loads none, so naming one can only mislead")
+    if not any("must not be governed" in b or "loads none" in b
+               for b in blockers):
+        satisfied.append("M20 and M21 govern nothing (uncalibrated by design)")
+    details["production_calibrated"] = False
+    details["controller_mode"] = str(config.get("controller_mode", ""))
+    details["experiment_variant"] = str(config.get("experiment_variant", ""))
+
+    pipeline = config.get("pipeline") or {}
+    mode = str(pipeline.get("mode", ""))
+    details["pipeline_mode"] = mode
+    if mode not in {"interleaved", "staged"}:
+        blockers.append(
+            f"pipeline.mode is {mode!r}; the runner needs a declared execution "
+            "mode and will not guess one")
+    else:
+        satisfied.append(f"pipeline.mode: {mode}")
+
+    # Model governance is *not* relaxed: an uncalibrated run still answers the
+    # official split with real weights, so the 32B rule and reproducible
+    # revisions apply exactly as they would to a calibrated one.
+    try:
+        profile = resolve_strategy(config, declared_strategy(config))
+        details["model_strategy"] = profile.strategy.value
+        details["model_profile"] = profile.to_json()
+        for blocker in portfolio_governance_blockers(profile):
+            blockers.append(f"model governance: {blocker}")
+        total = sum(
+            int(b.get("budget_count_parameters")
+                or b.get("published_total_parameters") or 0)
+            for b in profile.blocks.values())
+        details["published_parameters"] = total
+        if not total:
+            blockers.append(
+                "model governance: no parameter total could be computed")
+        elif total > 32_000_000_000:
+            blockers.append(
+                f"model governance: {total:,} published parameters exceeds the "
+                "32,000,000,000 limit")
+        else:
+            satisfied.append(f"parameter budget: {total:,} <= 32,000,000,000")
+    except ModelStrategyError as error:
+        blockers.append(f"model strategy: {error}")
+
+    blockers, satisfied, details = _check_blind_test_dataset(
+        config, data_dir, blockers, satisfied, details)
+
+    if blockers:
+        return ReadinessReport(
+            ReadinessState.NOT_READY, tuple(blockers), tuple(satisfied), details)
+    return ReadinessReport(
+        ReadinessState.FULL_TEST_DIRECT_READY, (), tuple(satisfied), details)
+
+
 def evaluate_test_readiness(
     config: Mapping[str, Any], *, base_dir: str | Path = ".",
     split: str | None = None,
@@ -493,8 +738,6 @@ def evaluate_test_readiness(
         A report whose default is refusal. ``FULL_TEST_READY`` only when every
         one of the above holds.
     """
-    import hashlib
-
     blockers, satisfied, details = _evaluate_production_readiness(
         config, base_dir=base_dir, split=split, expected_split="test",
         run_kind="test",
@@ -527,86 +770,11 @@ def evaluate_test_readiness(
     else:
         satisfied.append(f"parameter budget: {total} <= {limit}")
 
-    # -- the dataset itself ------------------------------------------------
-    expected = config.get("test_dataset") or {}
-    root = Path(data_dir) if data_dir is not None else None
-    if root is None:
-        from cover_kbc.paths import SPLIT_FILES
-        path = SPLIT_FILES.get("test")
-    else:
-        path = root / "test.jsonl"
-    details["test_dataset_path"] = str(path) if path else ""
-
-    if path is None or not Path(path).is_file():
-        blockers.append(f"test dataset: not found at {path}")
-        return _test_verdict(blockers, satisfied, details)
-
-    raw = Path(path).read_bytes()
-    actual_sha = hashlib.sha256(raw).hexdigest()
-    lines = [line for line in raw.decode("utf-8").splitlines() if line.strip()]
-    details["test_rows"] = len(lines)
-    details["test_sha256"] = actual_sha
-
-    declared_sha = str(expected.get("sha256", ""))
-    declared_rows = expected.get("rows")
-    if not declared_sha or declared_rows is None:
-        blockers.append(
-            "test_dataset: the config must record the exact rows and sha256 of "
-            "the split it will answer; an unrecorded dataset cannot be shown "
-            "to be the official one")
-    else:
-        if actual_sha != declared_sha:
-            blockers.append(
-                f"test dataset: sha256 is {actual_sha}, the config expects "
-                f"{declared_sha}")
-        else:
-            satisfied.append(f"test dataset: sha256 {actual_sha[:12]}...")
-        if len(lines) != int(declared_rows):
-            blockers.append(
-                f"test dataset: {len(lines)} rows, the config expects "
-                f"{declared_rows}")
-        else:
-            satisfied.append(f"test dataset: {len(lines)} rows")
-
-    try:
-        rows = [json.loads(line) for line in lines]
-    except json.JSONDecodeError as error:
-        blockers.append(f"test dataset: malformed JSONL ({error})")
-        return _test_verdict(blockers, satisfied, details)
-
-    identity = ordered_identity_digest(
-        (str(r.get("SubjectEntity", "")), str(r.get("Relation", "")))
-        for r in rows)
-    details["test_identity_sha256"] = identity
-    declared_identity = str(expected.get("identity_sha256", ""))
-    if not declared_identity:
-        blockers.append(
-            "test_dataset: the config must record identity_sha256, the digest "
-            "of the ordered SubjectEntity/Relation pairs the submission must "
-            "reproduce exactly")
-    elif identity != declared_identity:
-        blockers.append(
-            f"test dataset: ordered identity digest is {identity}, the config "
-            f"expects {declared_identity}")
-    else:
-        satisfied.append(f"test dataset: ordered identity {identity[:12]}...")
-
-    # Blind means blind. An objects field that is present but non-empty would
-    # make gold reachable from the inference path, so it is a blocker even
-    # though nothing here would read it.
-    with_objects = [
-        f"{r.get('SubjectEntity','')}/{r.get('Relation','')}"
-        for r in rows if r.get("ObjectEntities")]
-    details["test_rows_with_objects"] = len(with_objects)
-    if with_objects:
-        blockers.append(
-            f"test dataset: {len(with_objects)} row(s) carry ObjectEntities, "
-            f"e.g. {with_objects[:3]}; the official test split is blind and a "
-            "run that could read them is not a blind run")
-    else:
-        satisfied.append("test dataset: blind (no row carries objects)")
+    blockers, satisfied, details = _check_blind_test_dataset(
+        config, data_dir, blockers, satisfied, details)
 
     return _test_verdict(blockers, satisfied, details)
+
 
 
 def _test_verdict(blockers: list[str], satisfied: list[str],
@@ -635,6 +803,7 @@ def ordered_identity_digest(pairs: "Any") -> str:
 __all__ = [
     "FORBIDDEN_COLLECTION_MODULES",
     "REQUIRED_VALIDATION_MODULES",
+    "evaluate_direct_test_readiness",
     "evaluate_test_readiness",
     "evaluate_validation_readiness",
     "ordered_identity_digest",

@@ -1,0 +1,347 @@
+# COVER-KBC v2 - heterogeneous portfolio, official blind TEST.
+#
+# NOT READY UNTIL PORTFOLIO CALIBRATION EXISTS. The three artifacts named at
+# the bottom of this file do not exist yet; the readiness gate therefore
+# returns NOT_READY, which is the correct and expected state. It becomes
+# FULL_TEST_READY only when the real portfolio TRAIN collection has run, the
+# offline derivation has produced portfolio-specific M20/M21, and those exact
+# bytes are installed and hash-matched. Fixture artifacts are not production
+# artifacts and this config must never be pointed at any.
+#
+# Model profile, prompts, decoding, scoring, selection, controller and action
+# bounds are identical to the portfolio TRAIN collection config, because a
+# calibration derived from one system may not be applied to another.
+#
+# TEST is blind: every row of benchmark/data/test.jsonl ships with an empty
+# ObjectEntities list, the gate refuses the run if any row carries objects, and
+# no evaluator runs on this split. The only genuine TEST score comes from the
+# official leaderboard.
+
+experiment:
+  name: cover_kbc_v2_portfolio_test
+  split: test
+  seed: 42
+  notes: >-
+    Official blind TEST submission run on the heterogeneous portfolio, once
+    portfolio-specific M20/M21 calibration exists. No evaluation is performed
+    on this split.
+
+model_strategy: portfolio
+
+# Resolved from each checkpoint's own Hugging Face metadata, not from its name.
+# `published_total_parameters` is the full instantiated `safetensors.total`.
+#
+# MULTIMODAL ACCOUNTING. Gemma 3 and Qwen3.5 are multimodal checkpoints whose
+# official classes - Gemma3ForConditionalGeneration and
+# Qwen3_5ForConditionalGeneration - instantiate the vision tower whether or not
+# a prompt contains an image. This repository loads those official classes, so
+# the tower is counted. Counting only the language stack would assert a
+# text-only class we do not load. Nemotron is text-only.
+#
+#   google/gemma-3-12b-it              12,187,325,040
+#   nvidia/NVIDIA-Nemotron-Nano-9B-v2   8,888,227,328
+#   Qwen/Qwen3.5-9B                     9,653,104,368
+#   -----------------------------------------------
+#   TOTAL                              30,728,656,736
+#   Limit                              32,000,000,000
+#   Legal                              true (1.27B spare)
+#
+# Quantization is a memory decision. It does not reduce any count above.
+model_portfolio:
+  factual_enumerator:
+    backend: huggingface
+    model_id: "google/gemma-3-12b-it"
+    revision: "96b6f1eccf38110c56df3a15bffe176da04bfd80"
+    family: gemma
+    role: factual_enumerator
+    license: gemma
+    gated: true
+    access_note: >-
+      Gated (manual approval). Accept the Gemma terms on Hugging Face and
+      supply the token through the environment or the HF cache. No credential
+      is recorded in this repository, and there is no fallback: without access
+      the portfolio fails with that reason rather than substituting a model.
+    tokenizer_backend: huggingface
+    processor: AutoProcessor
+    architecture: Gemma3ForConditionalGeneration
+    instantiated_components: "language model + SigLIP vision tower (both loaded)"
+    trust_remote_code: false
+    custom_code_files: []
+    context_length: 128000
+    transformers_requirement: ">=4.50"
+    published_total_parameters: 12187325040
+    budget_count_parameters: 12187325040
+    parameter_source: "https://huggingface.co/api/models/google/gemma-3-12b-it (safetensors.total, BF16 12187325040)"
+    parameter_source_verified: true
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+  structural_reasoner:
+    backend: huggingface
+    model_id: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+    revision: "6533e8de2c68e4536bf7c411d7a3ce5734111476"
+    family: nemotron
+    role: structural_reasoner
+    license: nvidia-open-model-license
+    gated: false
+    tokenizer_backend: huggingface
+    architecture: NemotronHForCausalLM
+    instantiated_components: "hybrid Mamba2-Transformer language model (text only)"
+    # Required: config.json declares an auto_map onto repository-local modules.
+    trust_remote_code: true
+    custom_code_files:
+      - configuration_nemotron_h.py
+      - modeling_nemotron_h.py
+    context_length: 131072
+    transformers_requirement: ">=4.51.3"
+    published_total_parameters: 8888227328
+    budget_count_parameters: 8888227328
+    parameter_source: "https://huggingface.co/api/models/nvidia/NVIDIA-Nemotron-Nano-9B-v2 (safetensors.total, BF16 8888227328)"
+    parameter_source_verified: true
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+  # Qwen3.5-**9B**. The baseline keeps Qwen3.5-4B; these are different models
+  # and the portfolio must never fall back to the smaller one.
+  independent_verifier:
+    backend: huggingface
+    model_id: "Qwen/Qwen3.5-9B"
+    revision: "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    family: qwen
+    role: independent_verifier
+    license: apache-2.0
+    gated: false
+    tokenizer_backend: huggingface
+    processor: AutoProcessor
+    architecture: Qwen3_5ForConditionalGeneration
+    instantiated_components: "language model + vision tower (both loaded; 333 of 775 tensors are vision)"
+    trust_remote_code: false
+    custom_code_files: []
+    context_length: 262144
+    transformers_requirement: ">=4.57"
+    published_total_parameters: 9653104368
+    budget_count_parameters: 9653104368
+    parameter_source: "https://huggingface.co/api/models/Qwen/Qwen3.5-9B (safetensors.total, BF16 9653100528 + F32 3840)"
+    parameter_source_verified: true
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+budget_assertion:
+  total_published_parameters: 30728656736
+  limit: 32000000000
+  legal: true
+
+
+# Which collection and which derivation the portfolio artifacts must come from.
+# PENDING: filled in when the real portfolio collection and derivation run.
+calibration_provenance:
+  model_strategy: portfolio
+  collection_repo_sha: ""       # PENDING
+  derivation_repo_sha: ""       # PENDING
+  train_sha256: cb344aa3f153b30f4179f3c912ccfca19ae4e71288993292a093585d068a2c74
+  train_rows: 477
+
+# The exact official blind split this submission answers.
+test_dataset:
+  path: benchmark/data/test.jsonl
+  rows: 477
+  sha256: 849f565d6fcf53f60b74e53503d1ac119933e823f191030b34befe0df044fc1f
+  identity_sha256: 1bce6d40f843f7c743af6d896f2a390c4e210eac32d95f64d2887e5373fc2609
+  blind: true
+
+# ---------------------------------------------------------------------------
+# Everything below is the frozen baseline profile, unchanged, so the bake-off
+# isolates the model portfolio as the single independent variable.
+# ---------------------------------------------------------------------------
+pipeline:
+  mode: interleaved
+  enable_active_controller: true
+  max_steps_per_query: 12
+  max_calls_per_query: 12
+  max_generated_tokens_per_query: 6000
+  max_control_rounds_per_catalogue: 3
+
+  enable_calibrated_gate: true
+  gate_min_margin: 1.0
+  gate_min_prob: 0.5
+
+  enable_verifier: true
+  use_calibration: true
+  max_verifications_per_query: 6
+  enable_prompt_disagreement: true
+
+  enable_cross_model_recall: true
+  cross_model_view: ""
+
+  scoring:
+    alpha_support: 1.0
+    beta_logit: 0.6
+    gamma_cross_model: 0.5
+    delta_contradiction: 1.5
+    eta_disagreement: 1.0
+    auto_accept_support: 3
+    verify_max_support: 2
+    adversarial_disagreement: 0.15
+    accept_score: 0.2
+    min_valid_prob: 0.40
+    drop_on_unknown: true
+    logit_clip: 3.0
+    logit_epsilon: 1.0e-6
+
+  selection:
+    capacity_support_ratio: 1.0
+    capacity_trust_verified: true
+
+  controller:
+    alpha_yield: 1.0
+    beta_gap: 1.0
+    gamma_uncertainty: 0.8
+    lambda_cost: 0.15
+    rho_redundancy: 1.0
+    residual_stop: 0.25
+    saturation_patience: 2
+    stability_threshold: 1.0
+    verify_first_unresolved: 0.5
+    rcse:
+      saturation_window: 3
+      w_yield: 1.0
+      w_saturation: 1.0
+      w_unresolved: 0.8
+      w_facet_gap: 1.0
+      w_disagreement: 0.6
+      w_instability: 0.8
+      stop_threshold: 0.25
+
+query_intelligence:
+  profiler:
+    enabled: true
+    mode: shadow
+    profile_version: m9-v1
+  prompt_compiler:
+    enabled: true
+    mode: shadow
+    compiler_version: m10-v1
+  parametric_retrieval:
+    enabled: true
+    mode: shadow
+    retrieval_version: m11-v1
+    operations:
+      - pseudo_memory
+      - self_ask
+      - query_rewrite
+    samples_per_operation: 1
+
+specialists:
+  numeric:
+    enabled: true
+    mode: shadow
+    specialist_version: m12-v1
+    mine_parametric_memory: true
+
+  large_open_set:
+    enabled: true
+    mode: shadow
+    specialist_version: m13-v1
+    mine_parametric_memory: true
+
+  null_temporal:
+    enabled: true
+    mode: shadow
+    specialist_version: m14-v1
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    mine_parametric_memory: true
+
+  small_set_closure:
+    enabled: true
+    mode: shadow
+    specialist_version: m15-v1
+    enable_facets: []
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    candidate_explosion_threshold: 0
+    mine_parametric_memory: true
+
+consensus:
+  enabled: true
+  mode: shadow
+  consensus_version: m16-v1
+  include_parametric_origins: true
+  include_query_events: true
+
+specialist_verifier:
+  enabled: true
+  mode: shadow
+  verification_version: m17-v1
+  templates:
+    - m17_statement_v1
+    - m17_question_v1
+  bias_controls:
+    label_orders:
+      - ABC
+      - BAC
+  use_calibration: true
+
+bidirectional_verification:
+  enabled: true
+  mode: shadow
+  check_version: m18-v1
+  supported_checks:
+    - REVERSE
+    - KEY_CONDITION
+    - COUNTERFACTUAL
+    - CANDIDATE_FREE_RECALL
+
+layer4_integration:
+  enabled: true
+  mode: shadow
+  integration_version: layer4-v1
+
+coverage_gap:
+  enabled: true
+  mode: shadow
+  estimator_version: m19-v1
+  weights:
+    novelty_rate: 1
+    singleton_ratio: 1
+    facet_gap: 1
+    disagreement: 1
+    unresolved_mass: 1
+
+# Layer 6 stays in SHADOW. There is no portfolio calibration, and a shadow
+# Module 20/21 plans and governs nothing - which is exactly what a bake-off
+# that must not be steered by another strategy's numbers requires.
+# Layer 6 - LIVE, on PORTFOLIO-OWNED calibration.
+#
+# These three paths do not exist yet. The loader opens exactly the files named
+# here, refuses a hash mismatch, and refuses any artifact whose provenance
+# declares a different model_strategy or a different portfolio fingerprint - so
+# the baseline packages cannot be borrowed even by pointing at them.
+#
+# After the real derivation: install the artifacts, fill in the three SHA256
+# values and the derivation_repo_sha, and confirm FULL_TEST_READY.
+relation_budget_scheduler:
+  enabled: true
+  mode: production
+  scheduler_version: m20-v1
+  calibration_file: ../calibration/portfolio/m20_relation_budget.json
+  calibration_sha256: ""        # PENDING real portfolio derivation
+
+micro_planner:
+  enabled: true
+  mode: production
+  planner_version: m21-v1
+  historical_bins: ../calibration/portfolio/m21_historical_bins.json
+  historical_bins_sha256: ""    # PENDING real portfolio derivation
+  planner_calibration: ../calibration/portfolio/m21_planner_calibration.json
+  planner_calibration_sha256: ""  # PENDING real portfolio derivation
+
+layer6_integration:
+  enabled: true
+  mode: production
+  integration_version: layer6-v1
