@@ -77,26 +77,6 @@ class RunManifest:
     evaluation: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
 
-    # -- model strategy ------------------------------------------------------
-    # Which portfolio of checkpoints answered this run. Requested and effective
-    # are recorded separately and must be equal - there is no fallback between
-    # strategies, so a difference would be a defect, and a paper ablation must
-    # be able to see that rather than infer it.
-    model_strategy: str = "baseline"
-    model_strategy_requested: str = "baseline"
-    model_strategy_status: str = ""
-    model_strategy_profile: dict[str, Any] = field(default_factory=dict)
-
-    # -- controller ----------------------------------------------------------
-    # Whether Modules 20 and 21 governed this run, and on whose measurements.
-    # `production_calibrated: false` with `calibration_owner: null` is the
-    # honest record of a direct run, and it is what keeps experiment B
-    # (uncalibrated portfolio) distinguishable from experiment C (calibrated)
-    # without reconstructing anything from Git history.
-    controller_mode: str = "shadow"
-    production_calibrated: bool = False
-    calibration_owner: str | None = None
-    experiment_variant: str = ""
 
     # -- environment ---------------------------------------------------------
     cover_kbc_version: str = __version__

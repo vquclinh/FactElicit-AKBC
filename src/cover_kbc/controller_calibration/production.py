@@ -26,8 +26,6 @@ Nothing here reads gold, telemetry, predictions or a collection manifest.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import hashlib
 import json
 from dataclasses import dataclass
@@ -57,10 +55,6 @@ SHARED_PROVENANCE_FIELDS = (
     "telemetry_sha256",
     "derivation_schema_version",
 )
-
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from cover_kbc.models.strategy import ModelStrategy
 
 
 class ProductionCalibrationError(RuntimeError):
@@ -139,7 +133,6 @@ def load_production_calibration(
     config: Mapping[str, Any], *, base_dir: str | Path = ".",
     expected_collection_repo_sha: str | None = None,
     expected_derivation_repo_sha: str | None = None,
-    expected_model_strategy: "ModelStrategy | None" = None,
 ) -> ProductionCalibration:
     """Load and cross-check the three artifacts a production run needs.
 
@@ -154,11 +147,6 @@ def load_production_calibration(
             from this collection.
         expected_derivation_repo_sha: refuse unless they were produced by this
             derivation commit.
-        expected_model_strategy: refuse unless the artifacts were derived under
-            this model strategy. Defaults to the config's own declared strategy,
-            which is ``baseline`` for every config that names none - so the
-            shipped packages keep loading exactly as before, and a portfolio run
-            cannot borrow them.
 
     Raises:
         ProductionCalibrationError: on a missing, malformed, mis-hashed,
@@ -232,39 +220,6 @@ def load_production_calibration(
             planner_payload, "M21 planner calibration"),
     }
     reference_label, reference = next(iter(blocks.items()))
-    # Whose measurements are these? Module 20's envelopes and Module 21's bins
-    # describe specific checkpoints answering specific actions, so a package
-    # derived under another strategy is not a conservative approximation of
-    # this one - it is a calibration of a system that never ran.
-    from cover_kbc.models.strategy import (
-        ModelStrategy,
-        check_calibration_portfolio,
-        check_calibration_strategy,
-        declared_strategy,
-        portfolio_fingerprint,
-        resolve_strategy,
-    )
-
-    wanted_strategy = (expected_model_strategy if expected_model_strategy
-                       is not None else declared_strategy(config))
-    fingerprint = ""
-    if wanted_strategy is ModelStrategy.PORTFOLIO:
-        # Which exact portfolio, not merely "a portfolio". Resolved from the
-        # config's own declared checkpoints, so a revision bump invalidates the
-        # calibration rather than silently reusing it.
-        try:
-            fingerprint = portfolio_fingerprint(
-                resolve_strategy(config, ModelStrategy.PORTFOLIO))
-        except Exception:                                         # noqa: BLE001
-            fingerprint = ""
-    for label, block in blocks.items():
-        try:
-            check_calibration_strategy(block, wanted_strategy)
-            if fingerprint:
-                check_calibration_portfolio(block, fingerprint)
-        except Exception as error:                                # noqa: BLE001
-            raise ProductionCalibrationError(f"{label}: {error}") from error
-
     for field in SHARED_PROVENANCE_FIELDS:
         values = {label: block.get(field) for label, block in blocks.items()}
         if len(set(map(str, values.values()))) != 1:

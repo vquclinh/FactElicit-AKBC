@@ -648,6 +648,11 @@ def _drive_main(tmp_path, monkeypatch, mode):
         raise _RuntimeBuilt("main reached build_runtime")
 
     monkeypatch.setattr(runner, "build_runtime", stub)
+    # No real weights are loaded here and this machine has no
+    # transformers, so the environment preflight has nothing to guard.
+    # Its own behaviour is covered in tests/test_runtime_preflight.py.
+    monkeypatch.setattr(runner, "require_huggingface_runtime",
+                        lambda *a, **k: None)
     monkeypatch.setattr(sys, "argv", ["run_cover.py", "--config", str(path)])
     return runner, built, path
 

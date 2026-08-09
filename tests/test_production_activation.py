@@ -1034,6 +1034,11 @@ def test_the_entrypoint_constructs_production_mode(
 
     monkeypatch.setattr(runner, "load_dataset", lambda *_a, **_k: _Dataset())
     monkeypatch.setattr(runner, "build_runtime", _scripted_runtime)
+    # No real weights are loaded here and this machine has no
+    # transformers, so the environment preflight has nothing to guard.
+    # Its own behaviour is covered in tests/test_runtime_preflight.py.
+    monkeypatch.setattr(runner, "require_huggingface_runtime",
+                        lambda *a, **k: None)
     monkeypatch.setattr(runner, "CoverPipeline", _Capturing)
     monkeypatch.setattr(sys, "argv", [
         "run_cover.py", "--config", str(config_path),
@@ -1082,6 +1087,11 @@ def test_the_entrypoint_refuses_a_production_config_that_is_not_ready(
     config_path.write_text(yaml.safe_dump(production_config), encoding="utf-8")
 
     monkeypatch.setattr(runner, "build_runtime", _scripted_runtime)
+    # No real weights are loaded here and this machine has no
+    # transformers, so the environment preflight has nothing to guard.
+    # Its own behaviour is covered in tests/test_runtime_preflight.py.
+    monkeypatch.setattr(runner, "require_huggingface_runtime",
+                        lambda *a, **k: None)
     monkeypatch.setattr(sys, "argv", [
         "run_cover.py", "--config", str(config_path),
         "--output-dir", str(tmp_path / "out"), "--no-eval"])

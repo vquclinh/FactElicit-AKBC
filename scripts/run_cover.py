@@ -30,12 +30,7 @@ from cover_kbc.elicitation.library import check_library_covers_contracts
 from cover_kbc.evaluation.harness import evaluate_predictions, write_report
 from cover_kbc.models.budget import audit_parameter_budget
 from cover_kbc.models.registry import build_runtime, model_blocks
-from cover_kbc.models.strategy import (
-    ModelStrategy,
-    ModelStrategyError,
-    require_portfolio_governance,
-    resolve_strategy,
-)
+from cover_kbc.models.preflight import require_huggingface_runtime
 from cover_kbc.paths import OUTPUTS_DIR
 from cover_kbc.evidence.consensus import build_consensus_engine
 from cover_kbc.control.layer6_integration import Layer6Integrator
@@ -46,7 +41,6 @@ from cover_kbc.controller_calibration.production import (
 )
 from cover_kbc.controller_calibration.readiness import (
     ReadinessState,
-    evaluate_direct_test_readiness,
     evaluate_test_readiness,
     evaluate_validation_readiness,
 )
@@ -110,17 +104,6 @@ def resolve_execution_mode(config: dict) -> ExecutionMode:
             f"pipeline.mode {declared!r} is not a supported execution mode; "
             f"this build implements {supported}"
         ) from None
-
-
-def _wants_direct(config: dict) -> bool:
-    """Whether this experiment declares the uncalibrated direct path.
-
-    Read from an explicit top-level key rather than inferred from "Layer 6 is
-    off", because "off because there is no calibration yet" and "off because
-    this is a shadow observation run" are different intentions and only one of
-    them may answer an official split.
-    """
-    return str(config.get("controller_mode", "")) == "direct_uncalibrated"
 
 
 def _wants_production(config: dict) -> bool:
@@ -229,12 +212,6 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="run only the first N queries")
     parser.add_argument("--output-dir", type=Path, help="override outputs/<run_id>")
     parser.add_argument("--no-eval", action="store_true", help="skip scoring")
-    parser.add_argument(
-        "--model-strategy", choices=[s.value for s in ModelStrategy],
-        default=ModelStrategy.BASELINE.value,
-        help="which portfolio of checkpoints answers this run. The default is "
-             "`baseline` - the frozen Mistral+Qwen system that produced the "
-             "official result - so an existing command keeps its exact meaning.")
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text()) or {}
@@ -251,18 +228,16 @@ def main() -> int:
     # weights. An unsupported execution mode must cost nothing to discover.
     execution_mode = resolve_execution_mode(config)
 
-    # Which checkpoints answer this run. The flag and the config must agree;
-    # neither may silently override the other, so a portfolio flag over a
-    # baseline config is refused rather than quietly loading other models.
+    # Can this machine actually load these checkpoints? The verifier is a
+    # `qwen3_5` architecture and a transformers too old to know it fails at the
+    # moment the model is constructed - minutes into a run, after other weights
+    # have already downloaded. That was observed for real (Audit 0065), and the
+    # answer comes from installed metadata in milliseconds, so it is answered
+    # here. A stub-backed profile needs no transformers and is not asked for one.
     try:
-        strategy = resolve_strategy(config, args.model_strategy)
-        # Governance before weights. Exact instantiated parameter counts,
-        # pinned revisions and a recorded access route for a gated repository
-        # are all cheaper to check than a download, and none of them may be
-        # guessed. Baseline is already audited and this is a no-op for it.
-        require_portfolio_governance(strategy)
-    except ModelStrategyError as error:
-        raise SystemExit(f"model strategy: {error}") from error
+        require_huggingface_runtime(enumerator_cfg, verifier_cfg)
+    except RuntimeError as error:
+        raise SystemExit(f"runtime preflight: {error}") from error
 
     split = args.split or experiment.get("split", "val")
     dataset = load_dataset(split)
@@ -274,28 +249,13 @@ def main() -> int:
     # entry point cannot disagree with `run_staged.py` about which models a
     # config declares - and cannot silently fall back to a stub when handed the
     # frozen target's nested profile.
-    # Baseline keeps its exact two-runtime construction. Portfolio builds one
-    # runtime per logical role; `structural_runtime` stays None for baseline,
-    # and CoverPipeline then falls back to the enumerator exactly as before.
-    structural_runtime = None
-    if strategy.strategy is ModelStrategy.PORTFOLIO:
-        from cover_kbc.types import ModelRole
-
-        runtime = build_runtime(dict(strategy.block(ModelRole.FACTUAL_ENUMERATOR)))
-        structural_runtime = build_runtime(
-            dict(strategy.block(ModelRole.STRUCTURAL_REASONER)))
-        verifier_runtime = build_runtime(
-            dict(strategy.block(ModelRole.INDEPENDENT_VERIFIER)))
-    else:
-        runtime = build_runtime(enumerator_cfg)
-        verifier_runtime = (
-            runtime if verifier_cfg == enumerator_cfg else build_runtime(verifier_cfg)
-        )
+    runtime = build_runtime(enumerator_cfg)
+    verifier_runtime = (
+        runtime if verifier_cfg == enumerator_cfg else build_runtime(verifier_cfg)
+    )
     specs = [runtime.spec]
     if verifier_runtime is not runtime:
         specs.append(verifier_runtime.spec)
-    if structural_runtime is not None and structural_runtime is not runtime:
-        specs.append(structural_runtime.spec)
     audit = audit_parameter_budget(specs)
     if not audit.passed:
         print(audit.summary())
@@ -311,43 +271,8 @@ def main() -> int:
     # synthetic, mis-hashed or provenance-mismatched calibration stops the run
     # here rather than at row 1 of 478.
     production = _wants_production(config)
-    direct = _wants_direct(config)
-    if production and direct:
-        raise SystemExit(
-            f"{args.config} declares controller_mode 'direct_uncalibrated' and "
-            "also puts Modules 20/21 in production mode; a run is one or the "
-            "other")
     calibration = None
-
-    if direct:
-        # Uncalibrated, and gated on its own terms. This never loads a
-        # calibration - not the baseline's, not anyone's - so the refusal that
-        # matters here is about model governance and dataset identity, not
-        # about artifacts.
-        readiness = evaluate_direct_test_readiness(
-            config, base_dir=args.config.parent, split=split)
-        if readiness.state is not ReadinessState.FULL_TEST_DIRECT_READY:
-            print(f"{split} direct readiness: REFUSED")
-            for blocker in readiness.blockers:
-                print(f"  - {blocker}")
-            raise SystemExit(
-                f"{args.config} declares a direct run but is not "
-                f"FULL_TEST_DIRECT_READY ({readiness.state.value})")
-        print(f"readiness   : {readiness.state.value} (uncalibrated)")
-
     if production:
-        # A strategy with no TRAIN-derived M20/M21 of its own may be measured
-        # on TRAIN and nowhere else. Refused here, before any gate, because
-        # "not calibrated for these models" is a stronger objection than any
-        # individual readiness check.
-        # `direct` never reaches here - it is handled above and loads no
-        # calibration - so this refusal is only about a *production* run.
-        if not strategy.may_run_production:
-            raise SystemExit(
-                f"model strategy {strategy.strategy.value!r} is "
-                f"{strategy.status.value}: it has no TRAIN-derived Module "
-                "20/21 calibration of its own, so it may not answer an "
-                "official split. Run the TRAIN bake-off first.")
         provenance = dict(config.get("calibration_provenance") or {})
         # One production stack, two splits, two gates. The split selects which
         # gate runs, and an unknown split selects neither: `--split test` must
@@ -375,7 +300,6 @@ def main() -> int:
             config, base_dir=args.config.parent,
             expected_collection_repo_sha=provenance.get("collection_repo_sha"),
             expected_derivation_repo_sha=provenance.get("derivation_repo_sha"),
-            expected_model_strategy=strategy.strategy,
         )
         print(f"readiness   : {readiness.state.value}")
         print(f"calibration : {len(calibration.budgets)} relation budget(s), "
@@ -401,27 +325,6 @@ def main() -> int:
     manifest.add_model(runtime.spec)
     if verifier_runtime is not runtime:
         manifest.add_model(verifier_runtime.spec)
-    if structural_runtime is not None and structural_runtime is not runtime:
-        manifest.add_model(structural_runtime.spec)
-    # Recoverable without guessing: which strategy was asked for, which one
-    # actually ran, every model id, every immutable revision and the audited
-    # parameter total. A paper ablation reads this, not a filename.
-    manifest.model_strategy_requested = args.model_strategy
-    manifest.model_strategy = strategy.strategy.value
-    manifest.model_strategy_status = strategy.status.value
-    manifest.model_strategy_profile = strategy.to_json()
-    # Which controller answered these rows, and whether it was calibrated.
-    # Recorded as facts, not adjectives: an uncalibrated run is a legitimate
-    # experiment and mislabelling it would misattribute its result.
-    manifest.controller_mode = (
-        "production" if production else "direct_uncalibrated" if direct
-        else "shadow")
-    manifest.production_calibrated = bool(production)
-    manifest.calibration_owner = (
-        strategy.strategy.value if production else None)
-    manifest.experiment_variant = str(
-        config.get("experiment_variant", "")) or (
-        "portfolio_direct" if direct else "")
     if calibration is not None:
         # Which calibration answered these rows is part of the run's identity,
         # not a detail: two runs under different artifacts are different runs.
@@ -431,23 +334,10 @@ def main() -> int:
 
     print(f"run_id      : {run_id}")
     print(f"split       : {split} ({len(queries)} queries of {len(dataset)})")
-    print(f"strategy    : {strategy.strategy.value} ({strategy.status.value})")
-    print(f"controller  : {manifest.controller_mode}  "
-          f"(production_calibrated={manifest.production_calibrated})")
     print(f"model       : {runtime.spec.model_id}")
     print(f"execution   : {execution_mode.value} (from config)")
     print(f"config hash : {manifest.config_hash}")
     print(f"outputs     : {out_dir}")
-
-    action_selector = None
-    if direct:
-        from cover_kbc.controller_calibration.collection_policy import (
-            TrainCollectionPolicy,
-        )
-
-        policy = TrainCollectionPolicy()
-        action_selector = lambda kind, catalogue: policy.select(catalogue)  # noqa: E731
-        action_selector.begin_query = policy.begin_query
 
     with RunTracer(out_dir / "calls.jsonl") as tracer:
         # The canonical config path, so this runner cannot drift from
@@ -477,7 +367,6 @@ def main() -> int:
         )
         pipeline = CoverPipeline(
             runtime, pipeline_config, tracer=tracer, verifier_runtime=verifier_runtime,
-            structural_runtime=structural_runtime,
             # Modules 9 and 10, shadow mode: they profile and compile at the M1
             # seam and feed nothing back into the run.
             profiler=profiler,
@@ -571,15 +460,8 @@ def main() -> int:
             # The mode is what actually turns the upgraded path on: it is what
             # lets the production bridge mutate evidence and what routes action
             # choice to Module 21 (F-24).
-            integration_mode=(
-                IntegrationMode.PRODUCTION if production
-                else IntegrationMode.DIRECT_UNCALIBRATED if direct
-                else IntegrationMode.SHADOW),
-            # A direct run has no Module 21 to choose actions, so it uses the
-            # same fixed deterministic policy the TRAIN collection uses - the
-            # one path in this system that is execution-complete without a
-            # calibration. No new heuristic is introduced.
-            action_selector=action_selector,
+            integration_mode=(IntegrationMode.PRODUCTION if production
+                              else IntegrationMode.SHADOW),
         )
         try:
             result = pipeline.run(queries, progress=True)
