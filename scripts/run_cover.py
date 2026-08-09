@@ -565,6 +565,7 @@ def main() -> int:
         ("M16", "atomic_consensus.jsonl", pipeline.consensus_results),
         ("M17", "specialist_verification.jsonl", pipeline.specialist_verifications),
         ("M18", "bidirectional_verification.jsonl", pipeline.bidirectional_results),
+        ("V3", "v3_hypothesis_graph.jsonl", pipeline.v3_core_results),
         ("L4", "layer4_evidence.jsonl", pipeline.layer4_results),
         ("M19", "coverage_gap.jsonl", pipeline.coverage_gap_results),
         ("M20", "relation_budget.jsonl", pipeline.relation_budget_results),

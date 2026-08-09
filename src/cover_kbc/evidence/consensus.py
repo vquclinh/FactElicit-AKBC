@@ -560,6 +560,9 @@ class AtomicConsensusEngine:
                 explosion=explosion,
             ),
             disagreement_details=(),
+            annotations=tuple(sorted({
+                annotation for e in events for annotation in e.annotations
+            })),
             hard_contract_violation=core is not None and core.rejection_reason is not None,
             rejection_reason=core.rejection_reason if core is not None else None,
             total_support_events=sum(1 for e in events if e.sign is EdgeType.SUPPORT),

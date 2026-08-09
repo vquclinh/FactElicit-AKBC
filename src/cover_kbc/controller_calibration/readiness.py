@@ -47,6 +47,9 @@ class ReadinessState(str, Enum):
     #: actually record failure telemetry, or it produces nothing - and because
     #: a TRAIN-ready profile must never read as cleared for VAL or TEST.
     TRAIN_DIAGNOSTIC_READY = "TRAIN_DIAGNOSTIC_READY"
+    #: V3 core source/action catalogues are wired for future TRAIN collection,
+    #: but production calibration and official TEST are still forbidden.
+    V3_TRAIN_COLLECTION_READY = "V3_TRAIN_COLLECTION_READY"
     #: Neither - the profile is incomplete or inconsistent.
     NOT_READY = "NOT_READY"
 
@@ -79,6 +82,7 @@ class ReadinessReport:
         return self.state in (
             ReadinessState.CALIBRATION_COLLECTION_READY,
             ReadinessState.FULL_VALIDATION_READY,
+            ReadinessState.V3_TRAIN_COLLECTION_READY,
         )
 
     @property
@@ -91,6 +95,11 @@ class ReadinessReport:
         """
         return self.state is ReadinessState.TRAIN_DIAGNOSTIC_READY
 
+    @property
+    def may_run_v3_train_collection(self) -> bool:
+        """Cleared for V3 TRAIN collection mechanics, not V3 production."""
+        return self.state is ReadinessState.V3_TRAIN_COLLECTION_READY
+
     def to_json(self) -> dict[str, Any]:
         return {
             "state": self.state.value,
@@ -98,6 +107,7 @@ class ReadinessReport:
             "may_run_validation": self.may_run_validation,
             "may_run_test": self.may_run_test,
             "may_run_train_diagnostic": self.may_run_train_diagnostic,
+            "may_run_v3_train_collection": self.may_run_v3_train_collection,
             "blockers": list(self.blockers),
             "satisfied": list(self.satisfied),
             "details": dict(self.details),
@@ -788,6 +798,156 @@ def _check_train_diagnostic_baseline(
     return blockers, satisfied, details
 
 
+def evaluate_v3_core_readiness(
+    config: Mapping[str, Any], *, base_dir: str | Path = ".",
+    split: str | None = None,
+) -> ReadinessReport:
+    """May this profile exercise V3 core mechanics for future TRAIN collection?
+
+    This is not a production-readiness gate. It explicitly reports the V2
+    calibrated baseline as ready, the V3 source/action catalogue as implemented,
+    and V3 production calibration / official TEST as not ready.
+    """
+    from cover_kbc.contracts.relation_profile import all_relation_profiles
+    from cover_kbc.integration_mode import CALIBRATION_SPLIT
+    from cover_kbc.models.registry import model_blocks
+    from cover_kbc.v3_core.relation_programs import (
+        V3ActionFamily,
+        relation_train_collection_actions,
+    )
+
+    blockers: list[str] = []
+    satisfied: list[str] = []
+    details: dict[str, Any] = {
+        "v2_calibrated_baseline": "READY",
+        "v3_core_source": "IMPLEMENTED",
+        "v3_production_calibration": "NOT_READY",
+        "v3_official_test": "NOT_READY",
+    }
+
+    declared = split if split is not None else str(
+        (config.get("experiment") or {}).get("split", ""))
+    details["split"] = declared
+    if declared != CALIBRATION_SPLIT:
+        blockers.append(
+            f"split: V3 TRAIN collection may only read {CALIBRATION_SPLIT!r}, "
+            f"this profile declares {declared!r}")
+    else:
+        satisfied.append(f"split: {CALIBRATION_SPLIT}")
+
+    pipeline = dict(config.get("pipeline") or {})
+    v3 = dict(pipeline.get("v3_core") or {})
+    details["v3_core"] = dict(v3)
+    if not v3.get("enabled", False):
+        blockers.append("pipeline.v3_core.enabled is false")
+    else:
+        satisfied.append("pipeline.v3_core.enabled: true")
+    mode = str(v3.get("mode", ""))
+    if mode != "train_collection":
+        blockers.append(
+            f"pipeline.v3_core.mode is {mode!r}, expected 'train_collection'")
+    else:
+        satisfied.append("pipeline.v3_core.mode: train_collection")
+    if v3.get("production_calibration_ready", False):
+        blockers.append(
+            "pipeline.v3_core.production_calibration_ready is true, but V3 "
+            "production calibration is explicitly NOT_READY before V3D")
+    else:
+        satisfied.append("V3 production calibration: NOT_READY as required")
+
+    collection = evaluate_collection_readiness(
+        config, base_dir=base_dir, split=declared)
+    details["v2_collection_gate"] = collection.to_json()
+    if collection.may_run_collection:
+        satisfied.append("M9-M19 collection seams: ready")
+    else:
+        blockers.extend(collection.blockers)
+    satisfied.extend(collection.satisfied)
+
+    try:
+        enumerator, verifier = model_blocks(config)
+    except Exception as error:                                  # noqa: BLE001
+        blockers.append(f"model profile: unreadable ({error})")
+        enumerator, verifier = {}, {}
+    expected = (
+        ("enumerator", enumerator, FROZEN_ENUMERATOR_ID,
+         FROZEN_ENUMERATOR_REVISION),
+        ("verifier", verifier, FROZEN_VERIFIER_ID, FROZEN_VERIFIER_REVISION),
+    )
+    for role, block, model_id, revision in expected:
+        actual_id = str(block.get("model_id", ""))
+        actual_revision = str(block.get("revision", ""))
+        details[f"{role}_model_id"] = actual_id
+        details[f"{role}_revision"] = actual_revision
+        if actual_id != model_id:
+            blockers.append(
+                f"model profile: {role} model_id is {actual_id!r}, expected "
+                f"{model_id!r}")
+        if actual_revision != revision:
+            blockers.append(
+                f"model profile: {role} revision is {actual_revision!r}, "
+                f"expected {revision!r}")
+    assertion = config.get("budget_assertion") or {}
+    total = int(assertion.get("total_published_parameters", 0) or 0)
+    limit = int(assertion.get("limit", 0) or 0)
+    details["published_parameters"] = total
+    details["parameter_limit"] = limit
+    if total != FROZEN_PARAMETER_TOTAL or limit != PARAMETER_LIMIT:
+        blockers.append(
+            f"model budget: {total} / {limit}, expected "
+            f"{FROZEN_PARAMETER_TOTAL} / {PARAMETER_LIMIT}")
+    else:
+        satisfied.append(
+            f"model budget: {FROZEN_PARAMETER_TOTAL} / {PARAMETER_LIMIT}")
+
+    required = {
+        V3ActionFamily.MULTI_VIEW_RECALL,
+        V3ActionFamily.DEFINITION_RECALL,
+        V3ActionFamily.ALTERNATIVE_RECALL,
+        V3ActionFamily.ATTRIBUTE_DECOMPOSITION,
+        V3ActionFamily.SET_EXPANSION,
+        V3ActionFamily.LISTING_ELIMINATION,
+        V3ActionFamily.SEMANTIC_VERIFY,
+        V3ActionFamily.CONTRAST_VERIFY,
+    }
+    by_relation = {
+        p.relation: relation_train_collection_actions(p.relation)
+        for p in all_relation_profiles()
+    }
+    available = {action for actions in by_relation.values() for action in actions}
+    details["v3_train_collection_actions_by_relation"] = {
+        relation: [a.value for a in actions]
+        for relation, actions in by_relation.items()
+    }
+    missing = sorted(a.value for a in required - available)
+    if missing:
+        blockers.append(f"V3 action catalogue: missing required actions {missing}")
+    else:
+        satisfied.append("V3 action catalogue: required families observable")
+
+    illegal_checks = (
+        ("countryLandBordersCountry", V3ActionFamily.SET_EXPANSION),
+        ("companyTradesAtStockExchange", V3ActionFamily.DEFINITION_RECALL),
+        ("hasArea", V3ActionFamily.LISTING_ELIMINATION),
+        ("hasCapacity", V3ActionFamily.SET_EXPANSION),
+    )
+    for relation, action in illegal_checks:
+        if action in by_relation.get(relation, ()):
+            blockers.append(
+                f"V3 action catalogue: illegal {action.value} appears for "
+                f"{relation}")
+    if not any("illegal" in blocker for blocker in blockers):
+        satisfied.append("V3 action catalogue: impossible relation/actions excluded")
+
+    if blockers:
+        details["v3_train_collection"] = "HOLD"
+        return ReadinessReport(
+            ReadinessState.NOT_READY, tuple(blockers), tuple(satisfied), details)
+    details["v3_train_collection"] = "READY"
+    return ReadinessReport(
+        ReadinessState.V3_TRAIN_COLLECTION_READY, (), tuple(satisfied), details)
+
+
 def _check_labelled_split(
     config: Mapping[str, Any], split: str, block: str,
     data_dir: "str | Path | None",
@@ -907,6 +1067,7 @@ __all__ = [
     "REQUIRED_VALIDATION_MODULES",
     "evaluate_test_readiness",
     "evaluate_train_diagnostic_readiness",
+    "evaluate_v3_core_readiness",
     "evaluate_validation_readiness",
     "ordered_identity_digest",
     "REQUIRED_COLLECTION_MODULES",

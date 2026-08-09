@@ -38,6 +38,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import cycle
     from cover_kbc.diagnostics.inference_telemetry import DiagnosticRecorder
 
 from cover_kbc.contracts.base import RelationContract
+from cover_kbc.contracts.relation_profile import get_relation_profile
 from cover_kbc.contracts.router import compile_query
 from cover_kbc.controller import (
     DEFAULT_CONTROLLER,
@@ -83,6 +84,11 @@ from cover_kbc.verification.bidirectional_types import QueryBidirectionalResult
 from cover_kbc.verification.bidirectional_verifier import BidirectionalVerifier
 from cover_kbc.verification.specialist_types import QuerySpecialistVerificationResult
 from cover_kbc.verification.specialist_verifier import SpecialistVerifier
+from cover_kbc.v3_core.config import V3CoreConfig
+from cover_kbc.v3_core.hypothesis import (
+    QueryHypothesisGraph,
+    build_hypothesis_graph,
+)
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
 from cover_kbc.models.base import LMRuntime, LogitsUnavailable
 from cover_kbc.query_intelligence.parametric_retrieval import ParametricRetriever
@@ -256,6 +262,7 @@ class PipelineConfig:
     scoring: ScoringConfig = field(default_factory=lambda: DEFAULT_SCORING)
     selection: SelectionConfig = field(default_factory=lambda: DEFAULT_SELECTION)
     controller: ControllerConfig = field(default_factory=lambda: DEFAULT_CONTROLLER)
+    v3_core: V3CoreConfig = field(default_factory=V3CoreConfig)
 
     def __post_init__(self) -> None:
         """Derive ``m(o)``'s availability rule from the run mode.
@@ -279,6 +286,7 @@ class PipelineConfig:
         config = dict(config or {})
         scoring = ScoringConfig.from_mapping(config.pop("scoring", None))
         controller = ControllerConfig.from_mapping(config.pop("controller", None))
+        v3_core = V3CoreConfig.from_mapping(config.pop("v3_core", None))
         selection_cfg = dict(config.pop("selection", None) or {})
         selection = SelectionConfig(
             scoring=scoring,
@@ -291,11 +299,14 @@ class PipelineConfig:
             config["gate_model_role"] = ModelRole(config["gate_model_role"])
         if "disagreement_template_ids" in config:
             config["disagreement_template_ids"] = tuple(config["disagreement_template_ids"])
-        fields = set(cls.__dataclass_fields__) - {"scoring", "selection", "controller"}
+        fields = set(cls.__dataclass_fields__) - {
+            "scoring", "selection", "controller", "v3_core",
+        }
         return cls(
             scoring=scoring,
             selection=selection,
             controller=controller,
+            v3_core=v3_core,
             **{k: v for k, v in config.items() if k in fields},
         )
 
@@ -467,6 +478,17 @@ class CoverPipeline:
         # half an evidence state.
         self.consensus_engine = consensus_engine
         self.consensus_results: list[QueryConsensusResult] = []
+        if self.config.v3_core.enabled and consensus_engine is None:
+            raise ValueError(
+                "V3 core was enabled without Module 16 consensus; V3 builds a "
+                "hypothesis graph from M16 and must fail closed"
+            )
+        if self.config.v3_core.production_calibration_ready:
+            raise ValueError(
+                "V3 production calibration is not ready in this milestone; "
+                "do not mark v3_core.production_calibration_ready true"
+            )
+        self.v3_core_results: list[QueryHypothesisGraph] = []
         # Module 17, shadow mode. It spends real verifier calls, so the seam
         # below builds only the deterministic *catalogue* of verifiable targets
         # and verifies nothing on its own: choosing which targets are worth a
@@ -2717,6 +2739,53 @@ class CoverPipeline:
             f"{consensus.subject}/{consensus.relation}: no {module} result"
         )
 
+    def _consensus_for_graph(self, graph: EvidenceGraph) -> QueryConsensusResult | None:
+        query = graph.query
+        for result in reversed(self.consensus_results):
+            if (
+                result.relation == query.relation
+                and result.subject == query.subject
+                and result.row_index == query.row_index
+            ):
+                return result
+        return None
+
+    def _specialist_verification_for_graph(
+        self, graph: EvidenceGraph,
+    ) -> QuerySpecialistVerificationResult | None:
+        query = graph.query
+        for result in reversed(self.specialist_verifications):
+            if (
+                result.relation == query.relation
+                and result.subject == query.subject
+                and result.row_index == query.row_index
+            ):
+                return result
+        return None
+
+    def _observe_v3_core(
+        self, graph: EvidenceGraph | None, prediction: Prediction,
+    ) -> None:
+        """Persist V3 graph state after the ordinary prediction is complete."""
+        if not self.config.v3_core.enabled or graph is None:
+            return
+        consensus = self._consensus_for_graph(graph)
+        if consensus is None:
+            raise ConsensusError(
+                f"{prediction.subject}/{prediction.relation}: V3 core enabled "
+                "but no Module 16 consensus result exists"
+            )
+        profile = get_relation_profile(graph.query.relation)
+        self.v3_core_results.append(
+            build_hypothesis_graph(
+                consensus,
+                profile,
+                prediction=prediction,
+                specialist_verification=self._specialist_verification_for_graph(graph),
+                schema_version=self.config.v3_core.schema_version,
+            )
+        )
+
     def _integrate_layer4(
         self, consensus: QueryConsensusResult, graph: EvidenceGraph
     ) -> None:
@@ -3145,6 +3214,7 @@ class CoverPipeline:
         Taken by the caller before the query ran, because the list is
         run-scoped and the records carry no query key of their own.
         """
+        self._observe_v3_core(graph, prediction)
         if self.diagnostics is None:
             return
         action_records = self.action_records[marker:]

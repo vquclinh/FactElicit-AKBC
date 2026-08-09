@@ -512,6 +512,10 @@ class CandidateConsensusState:
     cost: ConsensusCost = field(default_factory=ConsensusCost)
     risk_flags: tuple[RiskFlag, ...] = ()
     disagreement_details: tuple[SemanticDisagreement, ...] = ()
+    #: Typed source annotations promoted from the event ledger, e.g.
+    #: ``mention_kind=TARGET_EXCHANGE`` or ``temporal_status=FORMER_OR_DELISTED``.
+    #: These are provenance labels, not verdicts.
+    annotations: tuple[str, ...] = ()
 
     hard_contract_violation: bool = False
     rejection_reason: str | None = None
@@ -578,6 +582,7 @@ class CandidateConsensusState:
             "risk_flags": [r.value for r in self.risk_flags],
             "disagreement_kinds": list(self.disagreement_kinds),
             "disagreement_details": [d.to_json() for d in self.disagreement_details],
+            "annotations": list(self.annotations),
             "hard_contract_violation": self.hard_contract_violation,
             "rejection_reason": self.rejection_reason,
             "total_support_events": self.total_support_events,
@@ -618,6 +623,7 @@ class CandidateConsensusState:
                 SemanticDisagreement.from_json(d)
                 for d in payload.get("disagreement_details", ())
             ),
+            annotations=tuple(payload.get("annotations", ())),
             hard_contract_violation=bool(payload.get("hard_contract_violation", False)),
             rejection_reason=payload.get("rejection_reason"),
             total_support_events=int(payload.get("total_support_events", 0)),

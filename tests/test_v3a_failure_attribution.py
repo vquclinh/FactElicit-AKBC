@@ -198,10 +198,16 @@ def test_relation_profiles_are_consistent_with_m0_and_zero_neural_calls() -> Non
     assert runtime.calls == 0
 
 
-def test_relation_profiles_are_declarative_only_in_v3a() -> None:
+def test_relation_profiles_are_not_consumed_by_v2_scoring_or_selection() -> None:
     offenders = []
     for path in SRC.rglob("*.py"):
         if "contracts" in path.parts or "diagnostics" in path.parts:
+            continue
+        if "v3_core" in path.parts:
+            continue
+        if path.name == "pipeline.py":
+            # V3 core is opt-in and observed after M8. Baseline V2 scoring and
+            # selection must remain profile-free.
             continue
         text = path.read_text(encoding="utf-8")
         if "get_relation_profile" in text or "route_profile" in text:
