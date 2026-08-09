@@ -182,12 +182,18 @@ def action_region_for_failure_state(
     mapping = {
         FailureSearchState.NO_CANDIDATE: {
             V3ActionFamily.MULTI_VIEW_RECALL,
+            V3ActionFamily.DEFINITION_RECALL,
         },
         FailureSearchState.SINGLE_LOW_SUPPORT: {
             V3ActionFamily.INDEPENDENT_RECALL,
+            V3ActionFamily.DEFINITION_RECALL,
+            V3ActionFamily.ALTERNATIVE_RECALL,
+            V3ActionFamily.ATTRIBUTE_DECOMPOSITION,
+            V3ActionFamily.UNARY_VERIFY,
         },
         FailureSearchState.MULTIPLE_CONFLICTING: {
             V3ActionFamily.CONTRAST_VERIFY,
+            V3ActionFamily.ALTERNATIVE_RECALL,
         },
         FailureSearchState.HIGH_FP_RISK: {
             V3ActionFamily.LISTING_ELIMINATION,
@@ -195,10 +201,12 @@ def action_region_for_failure_state(
         },
         FailureSearchState.SET_GROWING: {
             V3ActionFamily.SET_EXPANSION,
+            V3ActionFamily.UNARY_VERIFY,
         },
         FailureSearchState.SEMANTIC_AMBIGUITY: {
             V3ActionFamily.SEMANTIC_VERIFY,
             V3ActionFamily.ATTRIBUTE_DECOMPOSITION,
+            V3ActionFamily.DEFINITION_RECALL,
         },
         FailureSearchState.NULL_UNRESOLVED: {
             V3ActionFamily.MULTI_VIEW_RECALL,
@@ -226,6 +234,8 @@ def _relation_allowed_actions(relation: str) -> frozenset[V3ActionFamily]:
             V3ActionFamily.INDEPENDENT_RECALL,
             V3ActionFamily.ALTERNATIVE_RECALL,
         })
+    if relation == "hasArea":
+        allowed.add(V3ActionFamily.DEFINITION_RECALL)
     if profile.recall_policy is RecallPolicyClass.MULTI_VIEW_DEFINITION_AWARE:
         allowed.add(V3ActionFamily.DEFINITION_RECALL)
     if profile.recall_policy is RecallPolicyClass.ATTRIBUTE_CONTRAST:

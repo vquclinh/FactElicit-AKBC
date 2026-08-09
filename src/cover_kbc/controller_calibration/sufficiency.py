@@ -113,8 +113,11 @@ def _canonical_program_types() -> set[str]:
 
 def _canonical_families() -> set[str]:
     from cover_kbc.control.planner_types import ActionFamily
+    from cover_kbc.v3_core.relation_programs import V3ActionFamily
 
-    return {member.value for member in ActionFamily}
+    return {member.value for member in ActionFamily} | {
+        member.value for member in V3ActionFamily
+    }
 
 
 def evaluate_sufficiency(
@@ -278,29 +281,37 @@ def evaluate_sufficiency(
             "executed action")
 
     m18_families = {"REVERSE_CHECK", "COUNTERFACTUAL_VERIFY", "CANDIDATE_FREE_RECALL"}
+    v3_verifier_families = {
+        "UNARY_VERIFY", "SEMANTIC_VERIFY", "CONTRAST_VERIFY",
+        "LISTING_ELIMINATION",
+    }
+    v3_structural_families = {
+        "MULTI_VIEW_RECALL", "INDEPENDENT_RECALL", "DEFINITION_RECALL",
+        "ALTERNATIVE_RECALL", "ATTRIBUTE_DECOMPOSITION", "SET_EXPANSION",
+    }
     verdictless = [
         r.operation_id for r in executed
-        if r.action_family == "SPECIALIST_VERIFY"
+        if r.action_family in ({"SPECIALIST_VERIFY"} | v3_verifier_families)
         and not r.outcome.verifier_outcome and not r.outcome.errors
     ]
     if verdictless:
         blockers.append(
-            f"{len(verdictless)} executed Module 17 action(s) recorded neither a "
+            f"{len(verdictless)} executed verifier action(s) recorded neither a "
             "verifier verdict nor an error; the verdict was not instrumented")
     elif executed:
-        satisfied.append("Module 17 verdicts (or their errors) are recorded")
+        satisfied.append("verifier verdicts (or their errors) are recorded")
 
     readingless = [
         r.operation_id for r in executed
-        if r.action_family in m18_families
+        if r.action_family in (m18_families | v3_structural_families)
         and not r.outcome.structural_outcome and not r.outcome.errors
     ]
     if readingless:
         blockers.append(
-            f"{len(readingless)} executed Module 18 action(s) recorded neither a "
+            f"{len(readingless)} executed structural action(s) recorded neither a "
             "structural reading nor an error; the outcome was not instrumented")
     elif executed:
-        satisfied.append("Module 18 structural readings (or their errors) are recorded")
+        satisfied.append("structural readings (or their errors) are recorded")
 
     transitions = successor_transitions(records)
     details["successor_transitions"] = len(transitions)

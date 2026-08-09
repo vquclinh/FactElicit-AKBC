@@ -263,6 +263,124 @@ def _block(config: Mapping[str, Any], path: tuple[str, ...]) -> Mapping[str, Any
     return node if isinstance(node, Mapping) else {}
 
 
+def _resolve_config_path(raw: object, *, base: Path) -> Path | None:
+    if not raw:
+        return None
+    path = Path(str(raw))
+    return path if path.is_absolute() else base / path
+
+
+def _v3_core_block(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _block(config, ("pipeline", "v3_core"))
+
+
+def _v3_artifact_path_blocker(
+    label: str, raw: object, *, base: Path,
+) -> str | None:
+    path = _resolve_config_path(raw, base=base)
+    if path is None:
+        return f"V3 calibration: {label} is not configured"
+    normalized = path.as_posix()
+    if "/calibration/v3/" not in normalized and "configs/calibration/v3/" not in normalized:
+        return (
+            f"V3 calibration: {label} points at {path}; V3 may not reuse the "
+            "historical V2 calibration artifacts"
+        )
+    return None
+
+
+def _check_v3_production_readiness(
+    config: Mapping[str, Any], *, base: Path,
+    calibration: Any | None, blockers: list[str], satisfied: list[str],
+    details: dict[str, Any],
+) -> None:
+    """Additional fail-closed checks when a production config enables V3."""
+    v3 = dict(_v3_core_block(config))
+    if not v3.get("enabled", False):
+        details["v3_calibrated_baseline"] = "V2"
+        return
+
+    details["v3_core"] = dict(v3)
+    details["v2_calibrated_baseline"] = "READY"
+    mode = str(v3.get("mode", ""))
+    if mode != "production":
+        blockers.append(
+            f"V3 production: pipeline.v3_core.mode is {mode!r}, expected "
+            "'production' for validation/test activation"
+        )
+    if not bool(v3.get("production_calibration_ready", False)):
+        blockers.append(
+            "V3 production calibration: NOT_READY; V3 validation/test may not "
+            "run until separate TRAIN-derived V3 M20/M21 artifacts exist"
+        )
+
+    budget_block = dict(config.get("relation_budget_scheduler") or {})
+    planner_block = dict(config.get("micro_planner") or {})
+    path_checks = (
+        ("M20 relation budget", budget_block.get("calibration_file")),
+        ("M21 historical bins", planner_block.get("historical_bins")),
+        ("M21 planner calibration", planner_block.get("planner_calibration")),
+    )
+    for label, raw in path_checks:
+        blocker = _v3_artifact_path_blocker(label, raw, base=base)
+        if blocker:
+            blockers.append(blocker)
+    if not any("V3 calibration:" in blocker for blocker in blockers):
+        satisfied.append("V3 calibration artifacts: separate v3 paths configured")
+
+    if calibration is None:
+        details["v3_production_calibration"] = "NOT_READY"
+        return
+
+    provenance = dict(getattr(calibration, "provenance", {}) or {})
+    required_provenance = {
+        "v3_core_schema_version": str(v3.get("schema_version", "")),
+        "v3_action_effect_schema_version": "v3-action-effect-v1",
+    }
+    for provenance_field, expected in required_provenance.items():
+        actual = str(provenance.get(provenance_field, ""))
+        if actual != expected:
+            blockers.append(
+                f"V3 calibration provenance: {provenance_field} is "
+                f"{actual!r}, expected {expected!r}"
+            )
+    if not str(provenance.get("v3_collection_run_id", "")):
+        blockers.append(
+            "V3 calibration provenance: v3_collection_run_id is missing")
+    if not str(provenance.get("v3_action_effects_sha256", "")):
+        blockers.append(
+            "V3 calibration provenance: v3_action_effects_sha256 is missing")
+
+    from cover_kbc.contracts.relation_profile import all_relation_profiles
+    from cover_kbc.v3_core.relation_programs import relation_train_collection_actions
+
+    required_families = {
+        family.value
+        for profile in all_relation_profiles()
+        for family in relation_train_collection_actions(profile.relation)
+    }
+    observed_families = {
+        str(getattr(entry.action_family, "value", entry.action_family))
+        for entry in calibration.history.bins
+    }
+    missing = sorted(required_families - observed_families)
+    details["v3_required_action_families"] = sorted(required_families)
+    details["v3_calibrated_action_families"] = sorted(observed_families)
+    if missing:
+        blockers.append(
+            f"V3 calibration coverage: missing historical bins for V3 action "
+            f"families {missing}"
+        )
+    else:
+        satisfied.append("V3 calibration coverage: required action families binned")
+
+    if not any(blocker.startswith("V3 ") for blocker in blockers):
+        details["v3_production_calibration"] = "READY"
+        satisfied.append("V3 production calibration: READY")
+    else:
+        details["v3_production_calibration"] = "NOT_READY"
+
+
 def evaluate_collection_readiness(
     config: Mapping[str, Any], *, base_dir: str | Path = ".",
     split: str | None = None,
@@ -381,6 +499,7 @@ def _evaluate_production_readiness(
     )
     from cover_kbc.models.registry import model_blocks
 
+    base = Path(base_dir)
     artifacts = evaluate_readiness(config, base_dir=base_dir)
     blockers: list[str] = list(artifacts.blockers)
     satisfied: list[str] = list(artifacts.satisfied)
@@ -426,6 +545,7 @@ def _evaluate_production_readiness(
     # The decisive step: the artifacts must actually load. A configured path
     # that does not resolve, a fixture source, a hash mismatch or three files
     # from different derivations all fail here rather than at row 1 of 478.
+    calibration = None
     try:
         calibration = load_production_calibration(
             config, base_dir=base_dir,
@@ -448,6 +568,10 @@ def _evaluate_production_readiness(
                 "relation the router can route to needs one")
         else:
             satisfied.append("calibration: all six relations budgeted")
+
+    _check_v3_production_readiness(
+        config, base=base, calibration=calibration, blockers=blockers,
+        satisfied=satisfied, details=details)
 
     return blockers, satisfied, details
 
@@ -900,8 +1024,27 @@ def evaluate_v3_core_readiness(
         satisfied.append(
             f"model budget: {FROZEN_PARAMETER_TOTAL} / {PARAMETER_LIMIT}")
 
+    diagnostics = dict(config.get("diagnostics") or {})
+    details["diagnostics_enabled"] = bool(diagnostics.get("enabled", False))
+    if not diagnostics.get("enabled", False):
+        blockers.append(
+            "diagnostics: V3 TRAIN collection must persist gold-free inference "
+            "telemetry for offline V3A attribution")
+    elif not str(diagnostics.get("telemetry_file", "")):
+        blockers.append(
+            "diagnostics: diagnostics.telemetry_file is not declared")
+    else:
+        satisfied.append(
+            f"diagnostics: enabled, writing "
+            f"{diagnostics.get('telemetry_file')!r}")
+
+    blockers, satisfied, details = _check_labelled_split(
+        config, "train", "train_dataset", None,
+        blockers, satisfied, details)
+
     required = {
         V3ActionFamily.MULTI_VIEW_RECALL,
+        V3ActionFamily.INDEPENDENT_RECALL,
         V3ActionFamily.DEFINITION_RECALL,
         V3ActionFamily.ALTERNATIVE_RECALL,
         V3ActionFamily.ATTRIBUTE_DECOMPOSITION,

@@ -102,6 +102,28 @@ def _check(name: str, value: Any, where: str) -> float:
     return value
 
 
+def _parse_action_family(value: object) -> Any:
+    """Parse V2 or V3 action-family strings without merging their enums."""
+    raw = getattr(value, "value", value)
+    try:
+        return ActionFamily(str(raw))
+    except ValueError:
+        pass
+    try:
+        from cover_kbc.v3_core.relation_programs import V3ActionFamily
+
+        return V3ActionFamily(str(raw))
+    except ValueError:
+        raise PlannerError(
+            f"historical bin action_family {raw!r} is not a known V2 or V3 "
+            "action family"
+        ) from None
+
+
+def _family_value(value: object) -> str:
+    return str(getattr(value, "value", value))
+
+
 @dataclass(frozen=True)
 class SuccessorStat:
     """One recorded successor branch, for depth-2 micro-lookahead.
@@ -140,7 +162,7 @@ class HistoricalActionBin:
     relation: str
     program_type: str
     state_bin_key: str
-    action_family: ActionFamily
+    action_family: Any
     support_count: int
     expected_verified_gain: float
     expected_delta_r: float
@@ -200,7 +222,7 @@ class HistoricalActionBin:
         return cls(
             relation=payload["Relation"], program_type=payload["program_type"],
             state_bin_key=payload["state_bin_key"],
-            action_family=ActionFamily(payload["action_family"]),
+            action_family=_parse_action_family(payload["action_family"]),
             target_class=payload.get("target_class", ""),
             support_count=int(payload["support_count"]),
             expected_verified_gain=float(payload["expected_verified_gain"]),
@@ -311,7 +333,7 @@ class HistoricalBinPackage:
 
     def lookup(
         self, *, relation: str, program_type: str, state_bin_key: str,
-        family: ActionFamily, target_class: str = "",
+        family: Any, target_class: str = "",
     ) -> HistoricalActionBin:
         """Resolve exactly one bin. Deterministic, exact, version-aware.
 
@@ -324,7 +346,7 @@ class HistoricalBinPackage:
             if entry.relation == relation
             and entry.program_type == program_type
             and entry.state_bin_key == state_bin_key
-            and entry.action_family is family
+            and _family_value(entry.action_family) == _family_value(family)
             and entry.target_class in ("", target_class)
         ]
         if not matches and self.fallback_state_bin:
@@ -333,7 +355,7 @@ class HistoricalBinPackage:
                 if entry.relation == relation
                 and entry.program_type == program_type
                 and entry.state_bin_key == self.fallback_state_bin
-                and entry.action_family is family
+                and _family_value(entry.action_family) == _family_value(family)
                 and entry.target_class in ("", target_class)
             ]
         if not matches:

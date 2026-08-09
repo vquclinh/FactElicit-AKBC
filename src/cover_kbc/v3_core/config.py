@@ -14,6 +14,8 @@ class V3CoreMode(str, Enum):
     SHADOW = "shadow"
     #: Future V3D collection over TRAIN. This still does not mean calibrated.
     TRAIN_COLLECTION = "train_collection"
+    #: Calibrated V3 production. Configurable only after V3 artifacts exist.
+    PRODUCTION = "production"
 
 
 @dataclass(frozen=True)

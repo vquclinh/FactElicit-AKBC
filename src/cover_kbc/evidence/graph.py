@@ -279,6 +279,43 @@ class EvidenceGraph:
         candidate.verifications.append(result)
         return candidate
 
+    def add_semantic_contradiction(
+        self, record: GenerationRecord, surface: str, *, reason: str,
+    ) -> Candidate | None:
+        """Attach deterministic near-slot evidence without minting a candidate.
+
+        V3 relation-specific decomposition may learn that a surface already in
+        the graph belongs to a non-target semantic slot, e.g. a birth city in a
+        death-city query. That is evidence about an existing hypothesis, not a
+        new object proposal, so this method refuses to create a candidate.
+        """
+        self.register_record(record)
+        if is_abstain(surface):
+            return None
+        key = self._candidate_key(surface)
+        candidate = self.candidates.get(key)
+        if candidate is None:
+            return None
+        candidate.add_facet(record.facet_id or record.view_id)
+        self._attach(
+            candidate,
+            Evidence(
+                candidate_key=key,
+                edge_type=EdgeType.CONTRADICT,
+                independence_group=record.independence_group,
+                view_id=record.view_id,
+                model_id=record.model_id,
+                run_id=record.run_id,
+                record_id=record.record_id,
+                model_family=record.model_family,
+                mode=EvidenceMode.INDEPENDENT_RECALL,
+                token_cost=record.generated_tokens or 0,
+            ),
+        )
+        if not candidate.rejection_reason:
+            candidate.rejection_reason = reason
+        return candidate
+
     def reject(self, key: str, reason: str) -> None:
         """Mark a candidate rejected by a deterministic hard contract rule.
 

@@ -365,9 +365,11 @@ def test_death_attribute_contrast_slots_do_not_promote_nearby_locations() -> Non
 
 
 def test_relation_specific_action_legality_and_borders_freeze() -> None:
-    assert legal_action_families(
+    award_set_growing = legal_action_families(
         "awardWonBy", FailureSearchState.SET_GROWING
-    ) == (V3ActionFamily.SET_EXPANSION,)
+    )
+    assert V3ActionFamily.SET_EXPANSION in award_set_growing
+    assert V3ActionFamily.LISTING_ELIMINATION not in award_set_growing
     assert V3ActionFamily.LISTING_ELIMINATION in legal_action_families(
         "companyTradesAtStockExchange", FailureSearchState.HIGH_FP_RISK
     )

@@ -50,6 +50,25 @@ budget_assertion:
   limit: 32000000000
   legal: true
 
+train_dataset:
+  rows: 477
+  sha256: ad37cd30d1ff4b9f1ef2579b25e64093b202c40da11e8c412e13386f1e5d332e
+  identity_sha256: 04b56aa6f401f00ca8d672a8d6cade09cfa2492640aac16a9aab8bc42c1b8054
+
+diagnostics:
+  enabled: true
+  telemetry_file: inference_telemetry.jsonl
+
+development_subset:
+  purpose: deterministic source/debug smoke only; not calibration
+  selection: first_n_by_official_train_order
+  rows: 24
+
+v3_calibration_outputs:
+  m20_relation_budget: configs/calibration/v3/m20_relation_budget.json
+  m21_historical_bins: configs/calibration/v3/m21_historical_bins.json
+  m21_planner_calibration: configs/calibration/v3/m21_planner_calibration.json
+
 pipeline:
   mode: interleaved
   enable_active_controller: true

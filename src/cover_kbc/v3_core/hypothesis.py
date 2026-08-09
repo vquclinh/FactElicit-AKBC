@@ -473,6 +473,11 @@ def _build_hypothesis(
                 candidate.rejection_reason or "",
                 " ".join(candidate.disagreement_kinds),
                 " ".join(candidate.annotations),
+                " ".join(
+                    facet
+                    for support in candidate.group_supports
+                    for facet in support.facets
+                ),
             ))
         )
         if candidate.relation == "hasCapacity" else None

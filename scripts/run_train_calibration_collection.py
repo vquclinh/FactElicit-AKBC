@@ -65,6 +65,7 @@ from cover_kbc.controller_calibration.progress import (
 )
 from cover_kbc.controller_calibration.readiness import (
     evaluate_collection_readiness,
+    evaluate_v3_core_readiness,
 )
 from cover_kbc.controller_calibration.recovery import (
     capture_telemetry_commit_boundary,
@@ -83,6 +84,7 @@ from cover_kbc.controller_calibration.telemetry import (
 )
 from cover_kbc.coverage_gap.missingness import build_coverage_gap_estimator
 from cover_kbc.data.loader import load_dataset
+from cover_kbc.diagnostics import DiagnosticRecorder, InferenceTelemetryWriter
 from cover_kbc.elicitation.library import check_library_covers_contracts
 from cover_kbc.evidence.consensus import build_consensus_engine
 from cover_kbc.evidence.layer4 import build_layer4_integrator
@@ -115,6 +117,10 @@ from cover_kbc.specialists import (
 )
 from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
 from cover_kbc.verification.specialist_verifier import build_specialist_verifier
+from cover_kbc.v3_core.relation_programs import (
+    V3ActionFamily,
+    relation_train_collection_actions,
+)
 
 #: Rows the official TRAIN split must contain. A different number means the
 #: benchmark snapshot moved, and calibrating against it would be calibrating
@@ -126,7 +132,8 @@ SUMMARY_EVERY = 20
 
 #: The catalogue kinds this collection executes actions from. Also the source of
 #: the action-family vocabulary the coverage gate is declared against.
-COLLECTED_CATALOGUES = ("m17", "m18")
+COLLECTED_CATALOGUES = ("v3",)
+LEGACY_COLLECTED_CATALOGUES = ("m17", "m18")
 
 #: Failures that make the *process* untrustworthy rather than the row. Anything
 #: here aborts and preserves what was committed; everything else is contained as
@@ -180,6 +187,34 @@ def _config_sha(payload: dict) -> str:
         json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _v3_enabled(config: dict) -> bool:
+    pipeline = dict(config.get("pipeline") or {})
+    v3 = dict(pipeline.get("v3_core") or {})
+    return bool(v3.get("enabled", False))
+
+
+def _required_v3_families() -> tuple[str, ...]:
+    by_relation = {
+        relation: relation_train_collection_actions(relation)
+        for relation in sorted(_collection_relations())
+    }
+    families = {
+        family.value
+        for actions in by_relation.values()
+        for family in actions
+        if family is not V3ActionFamily.STOP
+    }
+    return tuple(sorted(families))
+
+
+def _write_jsonl(path: Path, rows) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            payload = row.to_json() if hasattr(row, "to_json") else row
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
 def build_pipeline(config: dict, selector):
     """Construct the upgraded pipeline exactly as the canonical runner does."""
     enumerator_cfg, verifier_cfg = model_blocks(config)
@@ -229,6 +264,14 @@ def build_pipeline(config: dict, selector):
         },
         relations=tuple(sorted(_collection_relations())),
     )
+    diagnostics_block = dict(config.get("diagnostics") or {})
+    recorder = (
+        DiagnosticRecorder(
+            run_id="",
+            split=str((config.get("experiment") or {}).get("split", "")),
+        )
+        if diagnostics_block.get("enabled", False) else None
+    )
 
     pipeline = CoverPipeline(
         runtime, pipeline_config, verifier_runtime=verifier_runtime,
@@ -261,6 +304,7 @@ def build_pipeline(config: dict, selector):
         micro_planner=build_micro_planner(config.get("micro_planner")),
         integration_mode=IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY,
         action_selector=selector,
+        diagnostics=recorder,
     )
     return pipeline, runtime, verifier_runtime
 
@@ -365,8 +409,12 @@ def main() -> int:
     # The readiness verdict, from its owner. Evaluated **before any model is
     # built**, so a profile with the upgraded stack switched off refuses in a
     # second rather than after an hour of inference that observed nothing.
-    readiness = evaluate_collection_readiness(
-        config, base_dir=args.config.parent, split=split)
+    readiness = (
+        evaluate_v3_core_readiness(config, base_dir=args.config.parent, split=split)
+        if _v3_enabled(config)
+        else evaluate_collection_readiness(
+            config, base_dir=args.config.parent, split=split)
+    )
     if not readiness.may_run_collection:
         print("collection readiness: REFUSED", file=sys.stderr)
         for blocker in readiness.blockers:
@@ -390,7 +438,10 @@ def main() -> int:
     # The action-family vocabulary this run expects to be able to surface, read
     # from Layer 6's own adapters. A required family that never appears in any
     # catalogue now fails the integrity gate instead of quietly not existing.
-    expected_families = required_families(COLLECTED_CATALOGUES)
+    expected_families = (
+        _required_v3_families()
+        if _v3_enabled(config) else required_families(LEGACY_COLLECTED_CATALOGUES)
+    )
     policy.note_families(expected_families)
 
     def selector(kind: str, catalogue):
@@ -400,8 +451,12 @@ def main() -> int:
         the family comes from the same Layer-6 adapter that stamps the telemetry
         rather than from a guess at the raw entry's attributes.
         """
+        if kind == "v3":
+            return policy.select(
+                catalogue,
+                family_key=lambda entry: entry.family.value,
+            )
         from cover_kbc.control.action_catalog import action_family_for
-
         return policy.select(
             catalogue,
             family_key=lambda entry: action_family_for(kind, entry).value)
@@ -455,10 +510,20 @@ def main() -> int:
         counters = RunCounters.restore(restored.counters, total_rows=total)
         telemetry_boundary = restored.telemetry_committed
 
+    if pipeline.diagnostics is not None:
+        pipeline.diagnostics.run_id = run_id
+        pipeline.diagnostics.split = split
+
     out_dir = args.output_dir / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     predictions_path = out_dir / "predictions.jsonl"
     telemetry_path = out_dir / "train_telemetry.jsonl"
+    diagnostics_block = dict(config.get("diagnostics") or {})
+    inference_telemetry_path = out_dir / str(
+        diagnostics_block.get("telemetry_file", "inference_telemetry.jsonl"))
+    v3_pre_m8_path = out_dir / "v3_pre_m8_hypothesis_graphs.jsonl"
+    v3_final_graph_path = out_dir / "v3_final_hypothesis_graphs.jsonl"
+    v3_action_effect_path = out_dir / "v3_action_effects.jsonl"
 
     if args.resume:
         # Carry the committed coverage forward; a fresh ledger would report only
@@ -540,6 +605,7 @@ def main() -> int:
                 print(round_line(position, total, round_index=0,
                                  detail="acquisition + specialists"))
                 prediction = pipeline.decide_graph(graph)
+                pipeline._observe(graph, prediction, seen_records)
                 program_type = program_type_value(graph.contract)
 
                 row_records = []
@@ -685,6 +751,14 @@ def main() -> int:
     sufficiency = evaluate_sufficiency(
         committed, expect_transitions=not aborted and counters.rows_completed > 0)
 
+    if pipeline.diagnostics is not None:
+        InferenceTelemetryWriter(inference_telemetry_path).write_all(
+            pipeline.diagnostics.records)
+    if _v3_enabled(config):
+        _write_jsonl(v3_pre_m8_path, pipeline.v3_pre_m8_results)
+        _write_jsonl(v3_final_graph_path, pipeline.v3_core_results)
+        _write_jsonl(v3_action_effect_path, pipeline.v3_action_effects)
+
     gate: list[str] = []
     if aborted:
         gate.append(f"run aborted: {aborted['error']}")
@@ -748,6 +822,15 @@ def main() -> int:
         "accounting": counters.to_json(),
         "coverage": policy.coverage.to_json(),
         "sufficiency": sufficiency.to_json(),
+        "inference_telemetry": (
+            str(inference_telemetry_path)
+            if pipeline.diagnostics is not None else None),
+        "v3_pre_m8_hypothesis_graphs": (
+            str(v3_pre_m8_path) if _v3_enabled(config) else None),
+        "v3_final_hypothesis_graphs": (
+            str(v3_final_graph_path) if _v3_enabled(config) else None),
+        "v3_action_effects": (
+            str(v3_action_effect_path) if _v3_enabled(config) else None),
         "gate_blockers": gate,
         "action_bound_per_catalogue":
             pipeline.config.max_control_rounds_per_catalogue,
@@ -772,6 +855,12 @@ def main() -> int:
           f"({counters.failed_attempt_calls} call(s) burned, not committed)")
     print(f"  predictions:    {predictions_path}")
     print(f"  telemetry:      {telemetry_path}")
+    if pipeline.diagnostics is not None:
+        print(f"  inference:      {inference_telemetry_path}")
+    if _v3_enabled(config):
+        print(f"  v3 pre-M8:      {v3_pre_m8_path}")
+        print(f"  v3 final:       {v3_final_graph_path}")
+        print(f"  v3 actions:     {v3_action_effect_path}")
     print(f"  manifest:       {out_dir / 'manifest.json'}")
 
     if gate:

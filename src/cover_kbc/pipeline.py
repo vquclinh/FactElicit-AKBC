@@ -84,10 +84,21 @@ from cover_kbc.verification.bidirectional_types import QueryBidirectionalResult
 from cover_kbc.verification.bidirectional_verifier import BidirectionalVerifier
 from cover_kbc.verification.specialist_types import QuerySpecialistVerificationResult
 from cover_kbc.verification.specialist_verifier import SpecialistVerifier
-from cover_kbc.v3_core.config import V3CoreConfig
+from cover_kbc.v3_core.config import V3CoreConfig, V3CoreMode
+from cover_kbc.v3_core.execution import (
+    V3ActionCandidate,
+    build_v3_action_catalog,
+    execute_v3_action,
+)
 from cover_kbc.v3_core.hypothesis import (
     QueryHypothesisGraph,
     build_hypothesis_graph,
+)
+from cover_kbc.v3_core.relation_programs import (
+    ActionHistory,
+    NoveltyChange,
+    V3ActionFamily,
+    legal_action_families,
 )
 from cover_kbc.evidence.graph import EvidenceGraph, apply_hard_contract_rules, build_graph
 from cover_kbc.models.base import LMRuntime, LogitsUnavailable
@@ -483,12 +494,13 @@ class CoverPipeline:
                 "V3 core was enabled without Module 16 consensus; V3 builds a "
                 "hypothesis graph from M16 and must fail closed"
             )
-        if self.config.v3_core.production_calibration_ready:
-            raise ValueError(
-                "V3 production calibration is not ready in this milestone; "
-                "do not mark v3_core.production_calibration_ready true"
-            )
         self.v3_core_results: list[QueryHypothesisGraph] = []
+        #: V3 hypothesis graphs built before Module 8 finalizes. Present only
+        #: in activated V3 collection/production paths.
+        self.v3_pre_m8_results: list[QueryHypothesisGraph] = []
+        #: Per-action V3 owner readings, persisted by the collection runner.
+        self.v3_action_effects: list[dict[str, Any]] = []
+        self._v3_action_histories: dict[tuple[str, str, int], ActionHistory] = {}
         # Module 17, shadow mode. It spends real verifier calls, so the seam
         # below builds only the deterministic *catalogue* of verifiable targets
         # and verifies nothing on its own: choosing which targets are worth a
@@ -566,6 +578,40 @@ class CoverPipeline:
         # Normalised exactly once, here at the pipeline boundary, so no module
         # downstream ever parses a raw mode string again.
         self.integration_mode = parse_mode(integration_mode, module="pipeline")
+        if self.config.v3_core.enabled:
+            if self.config.v3_core.mode is V3CoreMode.PRODUCTION:
+                if not self.config.v3_core.production_calibration_ready:
+                    raise ValueError(
+                        "V3 production mode requires "
+                        "v3_core.production_calibration_ready=true and separate "
+                        "V3 calibration artifacts"
+                    )
+                if not self.integration_mode.is_production:
+                    raise ValueError(
+                        "V3 production mode requires the production integration "
+                        "mode so V3 evidence reaches Module 8 only through the "
+                        "typed production seam"
+                    )
+                missing = [
+                    name for name, value in (
+                        ("M20 relation budget scheduler", self.relation_budget_scheduler),
+                        ("M21 micro-planner", self.micro_planner),
+                        ("Layer-4 integrator", self.layer4_integrator),
+                        ("M19 coverage-gap estimator", self.coverage_gap_estimator),
+                    ) if value is None
+                ]
+                if missing:
+                    raise ValueError(
+                        "V3 production mode requires "
+                        + ", ".join(missing)
+                        + "; V3 action selection is failure-aware M21, not a "
+                        "new controller"
+                    )
+            elif self.config.v3_core.production_calibration_ready:
+                raise ValueError(
+                    "v3_core.production_calibration_ready may only be true in "
+                    "V3 production mode"
+                )
         self.production_bridge = ProductionEvidenceBridge(self.integration_mode)
         self.bridge_reports: list[BridgeReport] = []
         #: One entry per action considered, with its own measured cost and
@@ -651,6 +697,32 @@ class CoverPipeline:
         enumerator = self.config.enumerator_model_id or self.runtime.spec.model_id
         verifier = self.config.verifier_model_id or self.verifier_runtime.spec.model_id
         return bool(enumerator) and bool(verifier) and enumerator != verifier
+
+    def _v3_train_collection_active(self) -> bool:
+        """Whether V3 may mutate the evidence graph before Module 8.
+
+        V3 shadow remains post-hoc observability. The only source milestone path
+        allowed to execute V3 actions without TRAIN-derived V3 calibration is
+        deterministic TRAIN collection.
+        """
+        return (
+            self.config.v3_core.enabled
+            and self.config.v3_core.mode is V3CoreMode.TRAIN_COLLECTION
+            and self.integration_mode.is_collection
+        )
+
+    def _v3_control_loop_active(self) -> bool:
+        """Whether V3 actions may participate in the pre-M8 control loop."""
+        if self._v3_train_collection_active():
+            return True
+        return (
+            self.config.v3_core.enabled
+            and self.config.v3_core.mode is V3CoreMode.PRODUCTION
+            and self.config.v3_core.production_calibration_ready
+            and self.integration_mode.is_production
+            and self.micro_planner is not None
+            and self.relation_budget_scheduler is not None
+        )
 
     # ---------------------------------------------------------------- gate --
 
@@ -1716,15 +1788,10 @@ class CoverPipeline:
                 return profile
         return None
 
-    def _run_consensus(self, graph: EvidenceGraph) -> None:
-        """Build Module 16's consensus for one finished query.
-
-        Runs at the Phase-C seam, after verification, so the verifier evidence
-        Module 4 produced is visible as ``L``. Spends nothing, mutates nothing:
-        the graph goes in and only a separate result object comes out.
-        """
+    def _build_consensus_snapshot(self, graph: EvidenceGraph) -> QueryConsensusResult:
+        """Build Module 16's read-only consensus snapshot for ``graph``."""
         profile = self._profile_for(graph)
-        result = self.consensus_engine.consense(
+        return self.consensus_engine.consense(
             graph,
             self._specialist_result_for(graph),
             retrieval=self._retrieval_result_for(graph),
@@ -1733,6 +1800,15 @@ class CoverPipeline:
             # adds no judgement of its own to them.
             query_risk=(profile.to_json().get("risk", {}) if profile else {}),
         )
+
+    def _run_consensus(self, graph: EvidenceGraph) -> None:
+        """Build Module 16's consensus for one finished query.
+
+        Runs at the Phase-C seam, after verification, so the verifier evidence
+        Module 4 produced is visible as ``L``. Spends nothing, mutates nothing:
+        the graph goes in and only a separate result object comes out.
+        """
+        result = self._build_consensus_snapshot(graph)
         self.consensus_results.append(result)
         if self.specialist_verifier is not None:
             self._catalogue_specialist_targets(result)
@@ -1751,9 +1827,13 @@ class CoverPipeline:
                 self._estimate_coverage_gap(result, graph.contract)
 
         # Each action re-integrates and refreshes, so round t+1 plans over what
-        # round t changed.
-        self.action_records.extend(
-            self._execute_selected_verifications(result, graph))
+        # round t changed. V3 TRAIN collection has its own relation-conditioned
+        # catalogue and executor; running the legacy M17/M18 selector here
+        # would mix two action spaces in one calibration corpus or production
+        # decision.
+        if not self._v3_control_loop_active():
+            self.action_records.extend(
+                self._execute_selected_verifications(result, graph))
 
         if self.layer4_integrator is not None:
             self._integrate_layer4(result, graph)
@@ -1764,7 +1844,10 @@ class CoverPipeline:
                 self.production_bridge.apply(graph, self.layer4_results[-1]))
             if self.coverage_gap_estimator is not None:
                 self._estimate_coverage_gap(result, graph.contract)
-                if self.micro_planner is not None:
+                if (
+                    self.micro_planner is not None
+                    and not self._v3_control_loop_active()
+                ):
                     self._plan_micro_action(result, graph.contract)
 
     def _plan_next_action(
@@ -2103,6 +2186,19 @@ class CoverPipeline:
             candidates, _ = m18_actions(
                 (action,), subject=query.subject, relation=query.relation,
                 row_index=query.row_index)
+        elif kind == "v3":
+            if not isinstance(action, V3ActionCandidate):
+                raise UnsupportedAction(
+                    "v3: action is not a V3ActionCandidate; legality must come "
+                    "from the V3 catalogue")
+            if (action.subject, action.relation, action.row_index) != (
+                query.subject, query.relation, query.row_index
+            ):
+                raise UnsupportedAction(
+                    f"v3: action {action.action_id!r} is for "
+                    f"{(action.subject, action.relation, action.row_index)}, "
+                    f"not {(query.subject, query.relation, query.row_index)}")
+            return action
         else:
             raise UnsupportedAction(f"no budget projection for kind {kind!r}")
         return candidates[0] if candidates else None
@@ -2371,6 +2467,228 @@ class CoverPipeline:
                     # offered the same catalogue and refused identically.
                     break
         return records
+
+    def _refresh_v3_consensus(self, graph: EvidenceGraph) -> QueryConsensusResult:
+        """Refresh M16/Layer4/M19 after a V3 action mutated the graph."""
+        result = self._build_consensus_snapshot(graph)
+        self.consensus_results.append(result)
+        if self.layer4_integrator is not None:
+            self._integrate_layer4(result, graph)
+            self.bridge_reports.append(
+                self.production_bridge.apply(graph, self.layer4_results[-1]))
+            if self.coverage_gap_estimator is not None:
+                self._estimate_coverage_gap(result, graph.contract)
+        return result
+
+    def _v3_hypothesis_graph(
+        self, consensus: QueryConsensusResult, graph: EvidenceGraph,
+        history: ActionHistory,
+    ) -> QueryHypothesisGraph:
+        profile = get_relation_profile(graph.query.relation)
+        hgraph = build_hypothesis_graph(
+            consensus,
+            profile,
+            prediction=None,
+            specialist_verification=self._specialist_verification_for_graph(graph),
+            schema_version=self.config.v3_core.schema_version,
+        )
+        state = hgraph.failure_state
+        legal = (
+            legal_action_families(graph.query.relation, state, history)
+            if state is not None else ()
+        )
+        return replace(
+            hgraph,
+            legal_action_families=legal,
+            action_family_mapping={
+                **dict(hgraph.action_family_mapping),
+                "pre_m8": True,
+                "history": history.to_json(),
+                "legal_actions_after_history_filter": [
+                    action.value for action in legal
+                ],
+            },
+        )
+
+    def _update_graph_budget_snapshot(
+        self, graph: EvidenceGraph, delta: Mapping[str, int],
+    ) -> None:
+        snapshot = dict(graph.budget_snapshot or {})
+        snapshot["calls_used"] = int(snapshot.get("calls_used", 0)) + int(
+            delta.get("physical_calls", 0))
+        snapshot["generated_tokens_used"] = int(
+            snapshot.get("generated_tokens_used", 0)
+        ) + int(delta.get("generated_tokens", 0))
+        graph.budget_snapshot = snapshot
+
+    @staticmethod
+    def _v3_novelty_from_effect(
+        action: V3ActionCandidate, effect: Mapping[str, Any],
+    ) -> NoveltyChange:
+        added = tuple(effect.get("candidates_added", ()))
+        supported = tuple(effect.get("candidates_supported", ()))
+        contradicted = tuple(effect.get("candidates_contradicted", ()))
+        verifier = str(effect.get("verifier_outcome", ""))
+        return NoveltyChange(
+            new_normalized_hypotheses=len(added),
+            new_prompt_families=max(0, len(supported) - len(added)),
+            new_contradictions=len(contradicted),
+            new_verified_candidates=1 if "VALID" in verifier.split("|") else 0,
+            new_set_members=(
+                len(added) if action.family is V3ActionFamily.SET_EXPANSION else 0
+            ),
+        )
+
+    def _execute_v3_action_record(
+        self, action: V3ActionCandidate, graph: EvidenceGraph, *,
+        round_index: int,
+    ) -> dict[str, Any]:
+        from cover_kbc.controller_calibration.telemetry import RedundancyStatus
+
+        before = self.physical_snapshot()
+        state_before = self.control_state(graph)
+        evidence_before = self._candidate_evidence_signature(graph)
+        admitted, refusal, hold = self._precharge("v3", action, graph)
+        base = {
+            "kind": "v3",
+            "round_index": round_index,
+            "action": action,
+            "projection": action,
+            "pre": before,
+            "state_before": state_before,
+            "entropy_before": state_before.entropy,
+        }
+        if not admitted:
+            return {
+                **base, "executed": False, "admitted": False,
+                "refusal": refusal, "post": before, "state_after": None,
+                "entropy_after": None, "effect": None, "bridge": None,
+                "cost": self.physical_delta(before, before),
+            }
+        try:
+            owner_reading = execute_v3_action(
+                action,
+                graph,
+                graph.contract,
+                enumerator_engine=self.engine,
+                verifier_runtime=self.verifier_runtime,
+                tracer=self.tracer,
+                run_id=round_index,
+            )
+            apply_hard_contract_rules(graph)
+            after = self.physical_snapshot()
+            cost = self.physical_delta(before, after)
+            self._update_graph_budget_snapshot(graph, cost)
+            if action.model_role == ModelRole.VERIFIER.value:
+                graph.verification_calls += int(cost["physical_calls"])
+            self._refresh_v3_consensus(graph)
+        except BaseException:
+            self._release_hold(hold, before, self.physical_snapshot(),
+                               executed=False)
+            raise
+        self._release_hold(hold, before, after, executed=True)
+        state_after = self.control_state(graph)
+        effect = self._candidate_effect(
+            evidence_before, self._candidate_evidence_signature(graph))
+        named = tuple(owner_reading.candidates_named)
+        touched = tuple(owner_reading.candidates_touched)
+        surface = len(named) + len(touched)
+        enriched_effect = {
+            **effect,
+            "verifier_outcome": (
+                owner_reading.verifier_outcome or effect["verifier_outcome"]
+            ),
+            "structural_outcome": owner_reading.structural_outcome,
+            "errors": owner_reading.errors,
+            "candidates_named": named,
+            "candidates_touched": touched,
+            "candidate_effect_measured": True,
+            "redundancy": (len(touched) / surface) if surface else None,
+            "redundancy_status": (
+                RedundancyStatus.MEASURED if surface
+                else RedundancyStatus.NOT_APPLICABLE
+            ),
+            "v3_action_effect": owner_reading.to_json(),
+        }
+        self.v3_action_effects.append(owner_reading.to_json())
+        return {
+            **base, "executed": True, "admitted": True, "refusal": "",
+            "post": after, "state_after": state_after,
+            "entropy_after": state_after.entropy,
+            "delta_entropy": state_before.entropy - state_after.entropy,
+            "delta_residual": state_before.residual - state_after.residual,
+            "effect": enriched_effect,
+            "bridge": None,
+            "cost": cost,
+        }
+
+    def _run_v3_control_loop(self, graph: EvidenceGraph) -> None:
+        """Run bounded V3 actions before Module 8 finalizes."""
+        if not self._v3_control_loop_active():
+            return
+        consensus = self._consensus_for_graph(graph)
+        if consensus is None:
+            return
+        key = self._query_key(graph)
+        history = self._v3_action_histories.setdefault(key, ActionHistory())
+        bound = min(
+            max(0, int(self.config.max_control_rounds_per_catalogue)),
+            max(0, int(self.config.max_steps_per_query)),
+        )
+        for round_index in range(1, bound + 1):
+            hgraph = self._v3_hypothesis_graph(consensus, graph, history)
+            self.v3_pre_m8_results.append(hgraph)
+            if (
+                hgraph.failure_state is None
+                or hgraph.legal_action_families == (V3ActionFamily.STOP,)
+            ):
+                break
+            catalogue = build_v3_action_catalog(
+                hgraph, graph, graph.contract, history=history)
+            chosen = self._select_actions("v3", catalogue, consensus, graph)
+            if not chosen:
+                break
+
+            action = chosen[0]
+            budget = self.config.budget(graph.contract)
+            snapshot = graph.budget_snapshot or {}
+            budget.charge(
+                calls=int(snapshot.get("calls_used", 0)),
+                generated_tokens=int(snapshot.get("generated_tokens_used", 0)),
+            )
+            planned = action.budget_descriptor.cost()
+            if (
+                planned.neural_calls > budget.calls_left
+                or planned.generated_tokens > budget.tokens_left
+            ):
+                break
+
+            record = self._execute_v3_action_record(
+                action, graph, round_index=round_index)
+            self.action_records.append(record)
+            effect = record.get("effect") or {}
+            novelty = self._v3_novelty_from_effect(action, effect)
+            history.record(hgraph.failure_state, action.family, novelty)
+
+            for other in catalogue:
+                if other is action:
+                    continue
+                self.action_records.append({
+                    "kind": "v3", "round_index": round_index,
+                    "action": other, "projection": other,
+                    "executed": False, "admitted": True,
+                    "refusal": "", "legal_not_selected": True,
+                    "pre": record["pre"], "post": None,
+                    "state_before": record["state_before"],
+                    "state_after": None,
+                    "entropy_before": record.get("entropy_before"),
+                    "entropy_after": None, "effect": None, "bridge": None,
+                    "cost": self.physical_delta(record["pre"], record["pre"]),
+                })
+
+            consensus = self._consensus_for_graph(graph)
+            if consensus is None or not record["executed"]:
+                break
 
     def _catalogued_targets(self, consensus: QueryConsensusResult) -> tuple:
         for entry in self.specialist_verifications:
@@ -3030,8 +3348,6 @@ class CoverPipeline:
                 },
             ]
             graph.pending_action = {}
-        budget_snapshot = graph.budget_snapshot or {}
-        verification_calls = graph.verification_calls
         stopped = "gate_negative" if graph.gate_negative else "fixed_budget_views_complete"
         log = graph.controller_log
         if log:
@@ -3043,7 +3359,10 @@ class CoverPipeline:
         # and deliberately incapable of changing what ``finalize`` returns.
         if self.consensus_engine is not None:
             self._run_consensus(graph)
+            self._run_v3_control_loop(graph)
 
+        budget_snapshot = graph.budget_snapshot or {}
+        verification_calls = graph.verification_calls
         prediction = finalize(
             graph,
             stopped_reason=stopped,
