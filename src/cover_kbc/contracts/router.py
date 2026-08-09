@@ -13,6 +13,11 @@ from __future__ import annotations
 from cover_kbc.contracts.base import RelationContract
 from cover_kbc.contracts.programs import check_program_compatibility, get_program
 from cover_kbc.contracts.registry import CONTRACTS, get_contract
+from cover_kbc.contracts.relation_profile import (
+    RelationProfile,
+    check_profile_consistency,
+    get_relation_profile,
+)
 from cover_kbc.evaluation.official import relation_types
 from cover_kbc.types import OutputType, ProgramType, Query
 
@@ -48,6 +53,19 @@ def route_program(relation: str):
 def compile_query(subject: str, relation: str, row_index: int = -1) -> tuple[Query, RelationContract]:
     """Module 0 + Module 1: compile ``(s, r)`` into a query and its contract."""
     return Query(subject=subject, relation=relation, row_index=row_index), get_contract(relation)
+
+
+def route_profile(relation: str) -> RelationProfile:
+    """The relation's failure/search semantics (Module 1's second answer).
+
+    Published here beside :func:`route` because both are Module 1's: one says
+    how to execute the relation, the other what going wrong looks like for it.
+    Fails closed on an unknown relation, exactly as :func:`route` does.
+
+    Purely declarative in milestone V3A - nothing on the inference path calls
+    it. See :mod:`cover_kbc.contracts.relation_profile`.
+    """
+    return get_relation_profile(relation)
 
 
 def check_router_consistency() -> None:
@@ -92,6 +110,14 @@ def check_router_consistency() -> None:
             contract.validate()
         except ValueError as exc:
             problems.append(str(exc))
+
+    # The relation profile is Module 1's second statement about the same six
+    # relations, so it is checked against the contracts here rather than left to
+    # disagree silently. It can only raise; nothing routes on it.
+    try:
+        check_profile_consistency()
+    except ValueError as exc:
+        problems.append(str(exc))
 
     if problems:
         raise ValueError("Router/contract inconsistency:\n  - " + "\n  - ".join(problems))

@@ -17,7 +17,9 @@ from dataclasses import dataclass
 from cover_kbc.contracts.base import RelationContract
 from cover_kbc.normalization.numeric import (
     AREA_UNITS_TO_KM2,
+    NumericParseError,
     NumericValue,
+    format_numeric,
     parse_numbers,
 )
 from cover_kbc.normalization.strings import (
@@ -237,3 +239,99 @@ def parse_numeric_observations(
 def parse_numeric_values(text: str, contract: RelationContract) -> list[float]:
     """Normalised scalars only. Prefer :func:`parse_numeric_observations`."""
     return [o.value for o in parse_numeric_observations(text, contract)]
+
+
+# --------------------------------------------------------------------------
+# Diagnostic seam - read-only, off the inference path
+# --------------------------------------------------------------------------
+
+
+def acquisition_fragments(text: str, contract: RelationContract) -> list[str]:
+    """Everything the model *offered*, before any rejecting normalisation.
+
+    The V3A failure taxonomy has to separate "the gold object was never
+    elicited" from "it was elicited and normalisation dropped it", and the two
+    are indistinguishable downstream: :func:`parse_entities` and
+    :func:`parse_numeric_observations` both return only survivors, so a
+    rejected fragment leaves no trace at all.
+
+    This returns the nearest faithful executable representation of that
+    boundary:
+
+    * numeric relations use the same low-level numeric scanner as production,
+      before relation-specific type rejection, and include deterministic unit
+      conversion where the production parser would perform it;
+    * entity relations use exactly :func:`parse_entities`. The raw text does not
+      preserve a reliable "candidate before entity-shape rejection" identity:
+      keeping long prose, refusals or punctuation fragments would inflate
+      oracle recall with strings the production parser never considered
+      recoverable objects. For entities, ACQUIRED therefore means "the model
+      produced a parser-recoverable object surface", and later losses are
+      observed at graph admission, verification, acceptance and final selection.
+
+    ============================ ================= ==========================
+    step                         cosmetic/rejecting included here
+    ============================ ================= ==========================
+    ``_split_items``             cosmetic          yes
+    ``clean_surface``            cosmetic          yes
+    unit conversion (``km2``)    cosmetic          yes, alongside the numeral
+    ``is_abstain`` (whole text)  rejecting         no
+    ``is_refusal`` (whole text)  rejecting         no
+    ``is_abstain`` (fragment)    rejecting         no
+    ``max_words`` limit          rejecting         no
+    ``alphanumeric_ratio``       rejecting         no
+    "contains a letter"          rejecting         no
+    unknown / area-unit drop     rejecting         no
+    negative-count drop          rejecting         no
+    ============================ ================= ==========================
+
+    Numeric relations get both the numeral as written and its converted value,
+    because a model answering "2145 square miles" genuinely acquired the area:
+    the conversion to km2 is deterministic canonicalisation (§8.2), not a
+    factual step, and scoring only the unconverted numeral would report a
+    correct acquisition as a miss.
+
+    **Diagnostics only.** Nothing on the inference path calls this. It is pure,
+    deterministic and spends no neural call, so it can be applied offline to a
+    persisted ``GenerationRecord.raw_output`` and cannot perturb a run.
+
+    Returns:
+        Cleaned surface forms in order of first appearance, deduplicated.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def emit(surface: str) -> None:
+        if surface and surface not in seen:
+            seen.add(surface)
+            out.append(surface)
+
+    if contract.output_type is OutputType.NUMBER:
+        integers = contract.selection.numeric_integer_only
+        target = contract.selection.numeric_target_unit
+        for value in parse_numbers(text, default_unit=None):
+            emit(_format_or_empty(value.value, integers))
+            if target == "km2":
+                factor = AREA_UNITS_TO_KM2.get(value.unit or "km2")
+                if factor is not None:
+                    emit(_format_or_empty(value.value * factor, integers))
+        return out
+
+    for fragment in parse_entities(text, contract):
+        emit(fragment)
+    return out
+
+
+def _format_or_empty(value: float, integer_only: bool) -> str:
+    """``format_numeric`` that yields nothing for a value it cannot format.
+
+    A diagnostic must not be able to raise on a run's own recorded output; an
+    infinity the parser somehow produced is simply not an acquired candidate.
+    """
+    try:
+        return format_numeric(value, integer_only=integer_only)
+    except NumericParseError:
+        return ""

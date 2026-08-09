@@ -42,8 +42,10 @@ from cover_kbc.controller_calibration.production import (
 from cover_kbc.controller_calibration.readiness import (
     ReadinessState,
     evaluate_test_readiness,
+    evaluate_train_diagnostic_readiness,
     evaluate_validation_readiness,
 )
+from cover_kbc.diagnostics import DiagnosticRecorder, InferenceTelemetryWriter
 from cover_kbc.integration_mode import IntegrationMode
 from cover_kbc.coverage_gap.missingness import build_coverage_gap_estimator
 from cover_kbc.evidence.layer4 import build_layer4_integrator
@@ -119,7 +121,8 @@ def _wants_production(config: dict) -> bool:
     )
 
 
-#: Which readiness gate governs which split, and the one state that clears it.
+#: Which leaderboard readiness gate governs which split, and the one state that
+#: clears it.
 #: A split absent from this table has no production path at all - stated as a
 #: table rather than an if/else so adding one is a deliberate edit and
 #: `--split test` cannot quietly inherit the validation gate.
@@ -127,6 +130,51 @@ PRODUCTION_GATES = {
     "val": (evaluate_validation_readiness, ReadinessState.FULL_VALIDATION_READY),
     "test": (evaluate_test_readiness, ReadinessState.FULL_TEST_READY),
 }
+
+#: TRAIN diagnostics deliberately do not live in ``PRODUCTION_GATES``. That
+#: table is a leaderboard contract, and existing tests enforce that train does
+#: not become a production submission path. V3A's labelled TRAIN run is the same
+#: calibrated inference stack plus post-hoc telemetry, selected only when the
+#: config explicitly enables diagnostics.
+TRAIN_DIAGNOSTIC_GATE = (
+    evaluate_train_diagnostic_readiness,
+    ReadinessState.TRAIN_DIAGNOSTIC_READY,
+)
+
+
+def build_diagnostic_recorder(
+    config: dict, *, run_id: str, split: str,
+) -> "DiagnosticRecorder | None":
+    """The V3A failure recorder, if this experiment asks for one.
+
+    ``None`` - the default for every committed leaderboard config - is the
+    pre-V3A path exactly. The recorder itself is gold-free and would be safe on
+    any split; what is *not* safe is joining it to labels, and that is refused
+    by :class:`~cover_kbc.diagnostics.TrainGoldAttribution` at analysis time
+    rather than guessed at here.
+    """
+    block = dict(config.get("diagnostics") or {})
+    if not block.get("enabled", False):
+        return None
+    return DiagnosticRecorder(run_id=run_id, split=split)
+
+
+def diagnostic_telemetry_path(config: dict, *, out_dir: Path) -> "Path | None":
+    """Where the opt-in V3A telemetry artifact is written."""
+    block = dict(config.get("diagnostics") or {})
+    if not block.get("enabled", False):
+        return None
+    raw = str(block.get("telemetry_file") or "")
+    if not raw:
+        raise SystemExit(
+            "diagnostics.enabled is true but diagnostics.telemetry_file is not "
+            "declared")
+    path = Path(raw)
+    return path if path.is_absolute() else out_dir / path
+
+
+def _diagnostics_enabled(config: dict) -> bool:
+    return bool((config.get("diagnostics") or {}).get("enabled", False))
 
 
 #: Written instead of a manifest when physical accounting breaks. Named so it
@@ -274,15 +322,18 @@ def main() -> int:
     calibration = None
     if production:
         provenance = dict(config.get("calibration_provenance") or {})
-        # One production stack, two splits, two gates. The split selects which
-        # gate runs, and an unknown split selects neither: `--split test` must
-        # never be a way around the validation gate, and a val-ready profile is
-        # not by itself cleared for the blind official split.
-        gate, required = PRODUCTION_GATES.get(split, (None, None))
+        # One production stack. Leaderboard splits use the locked production
+        # gate table; V3A TRAIN diagnostics use a separate opt-in gate, because
+        # they measure the calibrated stack over labels and are not a submission
+        # path.
+        if split == "train" and _diagnostics_enabled(config):
+            gate, required = TRAIN_DIAGNOSTIC_GATE
+        else:
+            gate, required = PRODUCTION_GATES.get(split, (None, None))
         if gate is None:
             raise SystemExit(
                 f"{args.config} declares production mode for split {split!r}; "
-                f"a production run is defined only for "
+                f"a production leaderboard run is defined only for "
                 f"{sorted(PRODUCTION_GATES)}")
         readiness = gate(
             config, base_dir=args.config.parent, split=split,
@@ -309,6 +360,8 @@ def main() -> int:
     run_id = new_run_id(experiment.get("name", "cover"), split)
     out_dir = args.output_dir or (OUTPUTS_DIR / run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
+    recorder = build_diagnostic_recorder(config, run_id=run_id, split=split)
+    telemetry_path = diagnostic_telemetry_path(config, out_dir=out_dir)
 
     manifest = RunManifest(
         run_id=run_id,
@@ -338,6 +391,8 @@ def main() -> int:
     print(f"execution   : {execution_mode.value} (from config)")
     print(f"config hash : {manifest.config_hash}")
     print(f"outputs     : {out_dir}")
+    if telemetry_path is not None:
+        print(f"telemetry   : {telemetry_path}")
 
     with RunTracer(out_dir / "calls.jsonl") as tracer:
         # The canonical config path, so this runner cannot drift from
@@ -462,6 +517,10 @@ def main() -> int:
             # choice to Module 21 (F-24).
             integration_mode=(IntegrationMode.PRODUCTION if production
                               else IntegrationMode.SHADOW),
+            # V3A, observability only: consulted after each query is decided
+            # and incapable of changing one. Absent from every leaderboard
+            # config, so those runs take the pre-V3A path unchanged.
+            diagnostics=recorder,
         )
         try:
             result = pipeline.run(queries, progress=True)
@@ -483,6 +542,17 @@ def main() -> int:
     )
     write_trace(result.predictions, out_dir / "trace.jsonl")
     print(f"\npredictions : {predictions_path}")
+
+    if recorder is not None:
+        if len(recorder.records) != len(result.predictions):
+            raise SystemExit(
+                "diagnostic recorder produced "
+                f"{len(recorder.records)} row(s) for "
+                f"{len(result.predictions)} prediction(s); refusing to write "
+                "ambiguous V3A telemetry")
+        assert telemetry_path is not None
+        InferenceTelemetryWriter(telemetry_path).write_all(recorder.records)
+        print(f"telemetry   : {telemetry_path} ({len(recorder.records)} queries)")
 
     for tag, name, records in (
         ("M9", "query_profiles.jsonl", pipeline.query_profiles),

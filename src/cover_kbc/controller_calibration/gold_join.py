@@ -113,33 +113,10 @@ class GoldIndex:
                 official scorer disagree about how many true positives there
                 are.
         """
-        row = self.rows.get((subject, relation))
-        if row is None:
-            raise GoldJoinError(
-                f"no TRAIN gold row for {subject!r}/{relation!r}; the telemetry "
-                "and the gold file describe different runs"
-            )
+        row = self._row(subject, relation)
         evaluator = load_official_evaluator()
         gts = [list(aliases) for aliases in row.aliases]
-
-        # Duplicate surfaces collapse before matching, exactly as
-        # ``evaluate_per_sr_pair`` collapses them before scoring a row: two
-        # spellings of one prediction are one prediction. It keeps the *first
-        # raw surface* of each normalised group and scores that, which matters
-        # for numerics - ``normalize_string`` turns "5556.0" into "5556 0",
-        # which parses as no number at all.
-        norms: list[str] = []
-        surfaces: list[str] = []
-        by_norm: dict[str, list[str]] = {}
-        for candidate in candidates:
-            if not candidate:
-                continue
-            key = evaluator.normalize_string(candidate)
-            if key not in by_norm:
-                by_norm[key] = []
-                norms.append(key)
-                surfaces.append(candidate)
-            by_norm[key].append(candidate)
+        norms, surfaces, by_norm = _collapse(candidates, evaluator)
 
         if not gts or not surfaces:
             return GoldAttribution(
@@ -174,6 +151,100 @@ class GoldIndex:
                                for surface in surfaces},
             gold_size=len(gts))
 
+    # -- gold-object identity ------------------------------------------------
+
+    def gold_assignment(
+        self, subject: str, relation: str, candidates: Sequence[str],
+    ) -> "GoldAssignment":
+        """*Which* gold objects this candidate set accounts for, by index.
+
+        :meth:`attribute` answers "which predictions are right", which is what
+        a per-action gain needs. Stage-level failure attribution needs the
+        mirror question - "which gold objects are still present here" - because
+        a gold object's earliest irreversible loss is a fact about the *object*,
+        not about a prediction.
+
+        Both questions are answered by the same one-to-one assignment, so they
+        can never disagree about how many. The cardinality is cross-checked
+        against the pinned official scorer exactly as :meth:`attribute` checks
+        it, for the same reason: an adaptation that drifted from
+        ``benchmark/evaluate.py`` must fail rather than quietly report a
+        different number from the leaderboard's.
+
+        The assignment itself is deterministic but not unique - a maximum
+        matching rarely is. Which gold object a given prediction is credited
+        with can therefore vary with a different (equally maximum) matching;
+        *how many* cannot, and that is what every reported statistic is built
+        from.
+
+        Raises:
+            GoldJoinError: on an unknown row, or on disagreement with the
+                official scorer.
+        """
+        row = self._row(subject, relation)
+        evaluator = load_official_evaluator()
+        gts = [list(aliases) for aliases in row.aliases]
+        _, surfaces, _ = _collapse(candidates, evaluator)
+
+        if not gts or not surfaces:
+            return GoldAssignment(matched_gold=frozenset(), gold_size=len(gts))
+
+        if self.relation_types.get(relation, "string") == "numeric":
+            assignment = _numeric_gold_assignment(
+                surfaces, gts, evaluator, self.tolerance)
+            official = evaluator.numeric_true_positives(
+                surfaces, gts, self.tolerance)
+        else:
+            assignment = _string_gold_assignment(surfaces, gts, evaluator)
+            official = evaluator.string_true_positives(surfaces, gts)
+
+        if len(assignment) != official:
+            raise GoldJoinError(
+                f"{subject!r}/{relation!r}: gold assignment matched "
+                f"{len(assignment)} gold object(s) but the official scorer "
+                f"counts {official} true positive(s); the adaptation has "
+                "drifted from the pinned evaluator and must not be used")
+        return GoldAssignment(
+            matched_gold=frozenset(assignment), gold_size=len(gts))
+
+    def _row(self, subject: str, relation: str) -> GoldRow:
+        row = self.rows.get((subject, relation))
+        if row is None:
+            raise GoldJoinError(
+                f"no TRAIN gold row for {subject!r}/{relation!r}; the telemetry "
+                "and the gold file describe different runs"
+            )
+        return row
+
+
+def _collapse(
+    candidates: Sequence[str], evaluator,
+) -> tuple[list[str], list[str], dict[str, list[str]]]:
+    """Collapse duplicate surfaces, exactly as ``evaluate_per_sr_pair`` does.
+
+    Two spellings of one prediction are one prediction. The *first raw surface*
+    of each normalised group is what gets scored, which matters for numerics:
+    ``normalize_string`` turns "5556.0" into "5556 0", which parses as no
+    number at all.
+
+    Returns:
+        ``(normalised forms, representative surfaces, surfaces by norm)`` - all
+        three in first-appearance order, which is the caller's priority order.
+    """
+    norms: list[str] = []
+    surfaces: list[str] = []
+    by_norm: dict[str, list[str]] = {}
+    for candidate in candidates:
+        if not candidate:
+            continue
+        key = evaluator.normalize_string(candidate)
+        if key not in by_norm:
+            by_norm[key] = []
+            norms.append(key)
+            surfaces.append(candidate)
+        by_norm[key].append(candidate)
+    return norms, surfaces, by_norm
+
 
 def _string_attribution(
     surfaces: Sequence[str], gts: Sequence[Sequence[str]], evaluator,
@@ -189,6 +260,22 @@ def _string_attribution(
     unmatches an already-matched prediction, so an earlier candidate keeps its
     gold entity whenever some maximum matching lets it. That is how the caller
     expresses precedence without changing the score.
+    """
+    return sorted(_string_gold_assignment(surfaces, gts, evaluator).values())
+
+
+def _string_gold_assignment(
+    surfaces: Sequence[str], gts: Sequence[Sequence[str]], evaluator,
+) -> dict[int, int]:
+    """The same matching, viewed from the gold side.
+
+    One algorithm, two views: :func:`_string_attribution` reports which
+    *predictions* were credited, this reports which *gold objects* were
+    covered. Keeping them as one function is what stops the prediction-side
+    number and the gold-side number ever disagreeing.
+
+    Returns:
+        ``{gold index: prediction index}`` for every matched gold object.
     """
     alias_sets = [
         {evaluator.normalize_string(alias) for alias in aliases}
@@ -214,7 +301,7 @@ def _string_attribution(
 
     for index in range(len(normalised)):
         augment(index, set())
-    return sorted(gold_to_pred.values())
+    return gold_to_pred
 
 
 def _numeric_attribution(
@@ -233,24 +320,35 @@ def _numeric_attribution(
     Returns:
         Indices into ``surfaces`` that were assigned a gold value.
     """
+    assignment = _numeric_gold_assignment(surfaces, gts, evaluator, tolerance)
+    return sorted(assignment.values())
+
+
+def _numeric_gold_assignment(
+    surfaces: Sequence[str], gts: Sequence[Sequence[str]], evaluator,
+    tolerance: float,
+) -> dict[int, int]:
+    """The same greedy matching, viewed from the gold side.
+
+    Returns:
+        ``{gold index: prediction index}`` for every matched gold value.
+    """
     gold_numbers = [
         evaluator.try_parse_number(aliases[0]) if aliases else None
         for aliases in gts
     ]
-    matched_gold: set[int] = set()
-    matched: list[int] = []
+    assignment: dict[int, int] = {}
     for position, surface in enumerate(surfaces):
         value = evaluator.try_parse_number(surface)
         if value is None:
             continue
         for index, gold in enumerate(gold_numbers):
-            if index in matched_gold or gold is None or gold == 0:
+            if index in assignment or gold is None or gold == 0:
                 continue
             if abs(value - gold) / gold <= tolerance:
-                matched_gold.add(index)
-                matched.append(position)
+                assignment[index] = position
                 break
-    return matched
+    return assignment
 
 
 @dataclass(frozen=True)
@@ -292,6 +390,35 @@ class GoldAttribution:
             if (norm := self.norm_by_candidate.get(candidate)) is not None
             and norm not in self.matched_norms
         })
+
+
+@dataclass(frozen=True)
+class GoldAssignment:
+    """Which gold objects a candidate set covered, by index into the row.
+
+    The gold-side mirror of :class:`GoldAttribution`. It deliberately carries
+    **indices, never strings**: the same discipline
+    :class:`ActionGoldEffect` follows, so a diagnostic report can say *how many*
+    and *which position* without a gold object string ever leaving this module.
+    """
+
+    #: Indices into ``GoldRow.aliases`` that some candidate accounted for.
+    matched_gold: frozenset[int]
+    gold_size: int
+
+    @property
+    def matched(self) -> int:
+        return len(self.matched_gold)
+
+    @property
+    def fraction(self) -> float:
+        """Share of this row's gold objects covered. ``0.0`` for an empty row.
+
+        Never a division by zero: an empty-gold row has no recall to report and
+        must be counted separately, not folded into a rate whose denominator
+        does not exist.
+        """
+        return (self.matched / self.gold_size) if self.gold_size else 0.0
 
 
 @dataclass(frozen=True)
@@ -513,6 +640,7 @@ def score_actions(
 
 __all__ = [
     "ActionGoldEffect",
+    "GoldAssignment",
     "GoldAttribution",
     "GoldIndex",
     "GoldJoinError",

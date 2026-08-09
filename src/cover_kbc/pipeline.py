@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping, Se
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import cycle
     from cover_kbc.controller_calibration.telemetry import ControlStateFeatures
+    from cover_kbc.diagnostics.inference_telemetry import DiagnosticRecorder
 
 from cover_kbc.contracts.base import RelationContract
 from cover_kbc.contracts.router import compile_query
@@ -379,6 +380,7 @@ class CoverPipeline:
         layer6_integrator: "Layer6Integrator | None" = None,
         integration_mode: "IntegrationMode | str" = IntegrationMode.SHADOW,
         action_selector: "Callable[[str, Sequence[Any]], Sequence[Any]] | None" = None,
+        diagnostics: "DiagnosticRecorder | None" = None,
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
@@ -559,6 +561,13 @@ class CoverPipeline:
         # nothing is selected - fail-closed, so an uncalibrated production run
         # spends nothing rather than verifying everything it can see.
         self.action_selector = action_selector
+        # V3A failure attribution, observability only. ``None`` - the default -
+        # is the pre-V3A code path exactly. When present it is consulted at one
+        # place, ``_observe``, *after* a query's prediction already exists, and
+        # it only reads: it holds no gold, cannot obtain any, and has no route
+        # back into the graph, the ledger or Module 8. Predictions are
+        # byte-identical with it attached and without.
+        self.diagnostics = diagnostics
         self.shadow_calls = 0
         #: Physical calls made by upgraded modules in a mode that charges
         #: production. Kept apart from ``shadow_calls`` because summing the two
@@ -2982,9 +2991,12 @@ class CoverPipeline:
 
     def run_query(self, query: Query) -> Prediction:
         """Interleaved single-query run: enumerate, verify, decide."""
+        marker = len(self.action_records)
         graph = self.enumerate_query(query)
         self.verify_graph(graph)
-        return self.decide_graph(graph)
+        prediction = self.decide_graph(graph)
+        self._observe(graph, prediction, marker)
+        return prediction
 
     # ``verify_graph`` folds its own spend into ``graph.budget_snapshot``, so
     # ``decide_graph`` reads one authoritative figure for every mode.
@@ -3051,8 +3063,10 @@ class CoverPipeline:
         """
         result = PipelineResult()
         for graph in graphs:
+            marker = len(self.action_records)
             prediction = self.decide_graph(graph)
             self._collect(result, prediction, graph)
+            self._observe(graph, prediction, marker)
             if on_result is not None:
                 on_result(prediction, graph)
         return result
@@ -3082,6 +3096,7 @@ class CoverPipeline:
         result = PipelineResult()
         queries = list(queries)
         for index, query in enumerate(queries):
+            marker = len(self.action_records)
             try:
                 graph = self.enumerate_query(query)
                 self.verify_graph(graph)
@@ -3111,9 +3126,54 @@ class CoverPipeline:
                 )
                 graph = None
             self._collect(result, prediction, graph)
+            self._observe(graph, prediction, marker)
             if progress and (index + 1) % 25 == 0:
                 print(f"  ... {index + 1}/{len(queries)} queries", flush=True)
         return result
+
+    def _observe(
+        self, graph: EvidenceGraph | None, prediction: Prediction, marker: int,
+    ) -> None:
+        """Hand one finished query to the V3A recorder, if there is one.
+
+        Deliberately the whole of the diagnostics wiring, and deliberately
+        placed after the prediction exists: there is no point in this method at
+        which a decision is still open, so there is nothing it could change.
+        With ``self.diagnostics`` unset it is a single attribute test.
+
+        ``marker`` is where this query's slice of ``action_records`` begins.
+        Taken by the caller before the query ran, because the list is
+        run-scoped and the records carry no query key of their own.
+        """
+        if self.diagnostics is None:
+            return
+        action_records = self.action_records[marker:]
+        if graph is not None and not action_records:
+            action_records = self._action_records_for(graph)
+        self.diagnostics.observe(
+            graph, prediction, action_records=action_records)
+
+    def _action_records_for(self, graph: EvidenceGraph) -> list[dict[str, Any]]:
+        """Records belonging to ``graph`` when marker slicing is unavailable.
+
+        Staged Phase C may run after Phase A/B populated ``action_records``.
+        In that path ``marker`` is the end of the run-scoped list, so slicing
+        gives an empty result even though the records carry query identity on
+        their Layer-6 projection. Filter by that identity instead of guessing.
+        """
+        query = graph.query
+        out: list[dict[str, Any]] = []
+        for entry in self.action_records:
+            projection = entry.get("projection")
+            if projection is None:
+                continue
+            if (
+                getattr(projection, "subject", None) == query.subject
+                and getattr(projection, "relation", None) == query.relation
+                and getattr(projection, "row_index", None) == query.row_index
+            ):
+                out.append(entry)
+        return out
 
     @staticmethod
     def _collect(

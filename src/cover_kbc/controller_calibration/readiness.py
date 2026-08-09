@@ -20,6 +20,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+FROZEN_ENUMERATOR_ID = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+FROZEN_ENUMERATOR_REVISION = "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+FROZEN_VERIFIER_ID = "Qwen/Qwen3.5-4B"
+FROZEN_VERIFIER_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+FROZEN_PARAMETER_TOTAL = 28_671_226_368
+PARAMETER_LIMIT = 32_000_000_000
+
 
 class ReadinessState(str, Enum):
     """What this profile may legally be used for right now."""
@@ -34,6 +41,12 @@ class ReadinessState(str, Enum):
     #: run, and the dataset's exact identity has to be the one the config
     #: declares - so a val-ready profile must not read as test-ready.
     FULL_TEST_READY = "FULL_TEST_READY"
+    #: The same production system, pointed at labelled TRAIN to be *measured*
+    #: rather than scored (milestone V3A). Its own state because a TRAIN
+    #: diagnostic run has a requirement neither leaderboard run has - it must
+    #: actually record failure telemetry, or it produces nothing - and because
+    #: a TRAIN-ready profile must never read as cleared for VAL or TEST.
+    TRAIN_DIAGNOSTIC_READY = "TRAIN_DIAGNOSTIC_READY"
     #: Neither - the profile is incomplete or inconsistent.
     NOT_READY = "NOT_READY"
 
@@ -68,12 +81,23 @@ class ReadinessReport:
             ReadinessState.FULL_VALIDATION_READY,
         )
 
+    @property
+    def may_run_train_diagnostic(self) -> bool:
+        """Cleared to run the calibrated system over labelled TRAIN.
+
+        Like :attr:`may_run_test`, satisfied only by its own gate. A val-ready
+        or test-ready profile has not been checked for the one thing a
+        diagnostic run is *for*: that it will actually record telemetry.
+        """
+        return self.state is ReadinessState.TRAIN_DIAGNOSTIC_READY
+
     def to_json(self) -> dict[str, Any]:
         return {
             "state": self.state.value,
             "may_run_collection": self.may_run_collection,
             "may_run_validation": self.may_run_validation,
             "may_run_test": self.may_run_test,
+            "may_run_train_diagnostic": self.may_run_train_diagnostic,
             "blockers": list(self.blockers),
             "satisfied": list(self.satisfied),
             "details": dict(self.details),
@@ -625,6 +649,236 @@ def evaluate_test_readiness(
 
 
 
+def evaluate_train_diagnostic_readiness(
+    config: Mapping[str, Any], *, base_dir: str | Path = ".",
+    split: str | None = None,
+    expected_collection_repo_sha: str | None = None,
+    expected_derivation_repo_sha: str | None = None,
+    data_dir: str | Path | None = None,
+) -> ReadinessReport:
+    """May this profile run the calibrated system over labelled TRAIN?
+
+    Milestone V3A asks a question no leaderboard run answers: *where* does each
+    relation lose its gold objects? Answering it means running the production
+    decision path - the same models, the same prompts, the same Modules 20 and
+    21 - against a split whose answers are known. So this gate requires
+    everything :func:`evaluate_validation_readiness` requires, and then three
+    things of its own:
+
+    * the split is ``train``. Not val, not test.
+    * ``diagnostics.enabled`` is true and an output path is declared. A
+      "diagnostic" run that records nothing burns a GPU hour and produces no
+      diagnosis - the same class of silent success Audit 0041 F-01 caught for
+      collection.
+    * the TRAIN file's row count, SHA256 and ordered identity are exactly the
+      ones the config records. The benchmark has already been resnapshotted
+      once during this project; a failure report attributed against a different
+      TRAIN than the run read is worse than no report.
+
+    Two things this gate deliberately does **not** relax, because a diagnostic
+    run is still a real run of the frozen system: Modules 20 and 21 must both
+    declare ``production``, and the three calibration artifacts must load.
+    Diagnosing a system nobody runs would tell us nothing about the one we do.
+
+    Note for the record, not a blocker: the shipped M20/M21 artifacts were
+    derived from TRAIN, so a TRAIN diagnostic run is measured on the
+    calibration's own source data. That is sound for "where is the gold lost",
+    which is what V3A asks, and unsound for "how well does it generalise",
+    which V3A does not ask and must not be read as answering.
+
+    Returns:
+        A report whose default is refusal. ``TRAIN_DIAGNOSTIC_READY`` only when
+        every one of the above holds.
+    """
+    blockers, satisfied, details = _evaluate_production_readiness(
+        config, base_dir=base_dir, split=split, expected_split="train",
+        run_kind="train diagnostic",
+        expected_collection_repo_sha=expected_collection_repo_sha,
+        expected_derivation_repo_sha=expected_derivation_repo_sha)
+
+    diagnostics = dict(config.get("diagnostics") or {})
+    details["diagnostics_enabled"] = bool(diagnostics.get("enabled", False))
+    if not diagnostics.get("enabled", False):
+        blockers.append(
+            "diagnostics: diagnostics.enabled is false; a TRAIN diagnostic run "
+            "that records no failure telemetry produces nothing to analyse")
+    elif not str(diagnostics.get("telemetry_file", "")):
+        blockers.append(
+            "diagnostics: diagnostics.telemetry_file is not declared; the "
+            "telemetry has to be written somewhere the analysis can read it")
+    else:
+        satisfied.append(
+            f"diagnostics: enabled, writing "
+            f"{diagnostics.get('telemetry_file')!r}")
+
+    blockers, satisfied, details = _check_train_diagnostic_baseline(
+        config, blockers, satisfied, details)
+    blockers, satisfied, details = _check_labelled_split(
+        config, "train", "train_dataset", data_dir,
+        blockers, satisfied, details)
+
+    if blockers:
+        return ReadinessReport(
+            ReadinessState.NOT_READY, tuple(blockers), tuple(satisfied), details)
+    return ReadinessReport(
+        ReadinessState.TRAIN_DIAGNOSTIC_READY, (), tuple(satisfied), details)
+
+
+def _check_train_diagnostic_baseline(
+    config: Mapping[str, Any],
+    blockers: list[str], satisfied: list[str], details: dict[str, Any],
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    """V3A diagnoses the frozen calibrated baseline, not a new architecture."""
+    from cover_kbc.models.registry import model_blocks
+
+    try:
+        enumerator, verifier = model_blocks(config)
+    except Exception as error:                                  # noqa: BLE001
+        blockers.append(f"model profile: unreadable ({error})")
+        return blockers, satisfied, details
+
+    expected = (
+        ("enumerator", enumerator, FROZEN_ENUMERATOR_ID,
+         FROZEN_ENUMERATOR_REVISION),
+        ("verifier", verifier, FROZEN_VERIFIER_ID, FROZEN_VERIFIER_REVISION),
+    )
+    for role, block, model_id, revision in expected:
+        actual_id = str(block.get("model_id", ""))
+        actual_revision = str(block.get("revision", ""))
+        details[f"{role}_model_id"] = actual_id
+        details[f"{role}_revision"] = actual_revision
+        if actual_id != model_id:
+            blockers.append(
+                f"model profile: {role} model_id is {actual_id!r}, expected "
+                f"{model_id!r}; V3A diagnostics must measure the frozen "
+                "two-model baseline")
+        if actual_revision != revision:
+            blockers.append(
+                f"model profile: {role} revision is {actual_revision!r}, "
+                f"expected {revision!r}")
+
+    assertion = config.get("budget_assertion") or {}
+    total = int(assertion.get("total_published_parameters", 0) or 0)
+    limit = int(assertion.get("limit", 0) or 0)
+    details["published_parameters"] = total
+    details["parameter_limit"] = limit
+    if total != FROZEN_PARAMETER_TOTAL:
+        blockers.append(
+            f"budget_assertion: total_published_parameters is {total}, "
+            f"expected {FROZEN_PARAMETER_TOTAL}")
+    if limit != PARAMETER_LIMIT:
+        blockers.append(
+            f"budget_assertion: limit is {limit}, expected {PARAMETER_LIMIT}")
+    if total == FROZEN_PARAMETER_TOTAL and limit == PARAMETER_LIMIT:
+        satisfied.append(
+            f"frozen model budget: {FROZEN_PARAMETER_TOTAL} / {PARAMETER_LIMIT}")
+
+    v3b = config.get("v3b_features") or {}
+    enabled = [
+        name for name, value in sorted(dict(v3b).items())
+        if bool(value)
+    ] if isinstance(v3b, Mapping) else ["<invalid v3b_features block>"]
+    if enabled:
+        blockers.append(
+            f"V3B: v3b_features enables {enabled}; V3A diagnostics must not "
+            "start specialized recall or failure-aware control")
+    else:
+        satisfied.append("V3B: no v3b_features enabled")
+
+    return blockers, satisfied, details
+
+
+def _check_labelled_split(
+    config: Mapping[str, Any], split: str, block: str,
+    data_dir: "str | Path | None",
+    blockers: list[str], satisfied: list[str], details: dict[str, Any],
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    """A labelled split, pinned three ways and required to *carry* its labels.
+
+    The mirror image of :func:`_check_blind_test_dataset`. Row count, byte hash
+    and ordered identity are checked identically - the reason is the same, that
+    a run against a different or reordered file is not the run it claims to be.
+    The blindness check is inverted: TEST is refused if any row carries objects,
+    TRAIN is refused if none does, because a diagnostic joined against a gold
+    file with no gold in it would report every relation as a total failure.
+    """
+    import hashlib
+
+    expected = config.get(block) or {}
+    if data_dir is not None:
+        path = Path(data_dir) / f"{split}.jsonl"
+    else:
+        from cover_kbc.paths import SPLIT_FILES
+        path = SPLIT_FILES.get(split)
+    details[f"{split}_dataset_path"] = str(path) if path else ""
+
+    if path is None or not Path(path).is_file():
+        blockers.append(f"{split} dataset: not found at {path}")
+        return blockers, satisfied, details
+
+    raw = Path(path).read_bytes()
+    actual_sha = hashlib.sha256(raw).hexdigest()
+    lines = [line for line in raw.decode("utf-8").splitlines() if line.strip()]
+    details[f"{split}_rows"] = len(lines)
+    details[f"{split}_sha256"] = actual_sha
+
+    declared_sha = str(expected.get("sha256", ""))
+    declared_rows = expected.get("rows")
+    if not declared_sha or declared_rows is None:
+        blockers.append(
+            f"{block}: the config must record the exact rows and sha256 of the "
+            f"{split} split it will read; an unrecorded dataset cannot be shown "
+            "to be the one the report describes")
+    else:
+        if actual_sha != declared_sha:
+            blockers.append(
+                f"{split} dataset: sha256 is {actual_sha}, the config expects "
+                f"{declared_sha}")
+        else:
+            satisfied.append(f"{split} dataset: sha256 {actual_sha[:12]}...")
+        if len(lines) != int(declared_rows):
+            blockers.append(
+                f"{split} dataset: {len(lines)} rows, the config expects "
+                f"{declared_rows}")
+        else:
+            satisfied.append(f"{split} dataset: {len(lines)} rows")
+
+    try:
+        rows = [json.loads(line) for line in lines]
+    except json.JSONDecodeError as error:
+        blockers.append(f"{split} dataset: malformed JSONL ({error})")
+        return blockers, satisfied, details
+
+    identity = ordered_identity_digest(
+        (str(r.get("SubjectEntity", "")), str(r.get("Relation", "")))
+        for r in rows)
+    details[f"{split}_identity_sha256"] = identity
+    declared_identity = str(expected.get("identity_sha256", ""))
+    if not declared_identity:
+        blockers.append(
+            f"{block}: the config must record identity_sha256, the digest of "
+            "the ordered SubjectEntity/Relation pairs the run will read")
+    elif identity != declared_identity:
+        blockers.append(
+            f"{split} dataset: ordered identity digest is {identity}, the "
+            f"config expects {declared_identity}")
+    else:
+        satisfied.append(f"{split} dataset: ordered identity {identity[:12]}...")
+
+    with_objects = sum(1 for r in rows if r.get("ObjectEntities"))
+    details[f"{split}_rows_with_objects"] = with_objects
+    if not with_objects:
+        blockers.append(
+            f"{split} dataset: no row carries ObjectEntities; that is a blind "
+            "split, and a diagnostic attributed against it would report every "
+            "gold object as lost")
+    else:
+        satisfied.append(
+            f"{split} dataset: labelled ({with_objects} rows carry objects)")
+
+    return blockers, satisfied, details
+
+
 def _test_verdict(blockers: list[str], satisfied: list[str],
                   details: dict[str, Any]) -> ReadinessReport:
     if blockers:
@@ -652,6 +906,7 @@ __all__ = [
     "FORBIDDEN_COLLECTION_MODULES",
     "REQUIRED_VALIDATION_MODULES",
     "evaluate_test_readiness",
+    "evaluate_train_diagnostic_readiness",
     "evaluate_validation_readiness",
     "ordered_identity_digest",
     "REQUIRED_COLLECTION_MODULES",
