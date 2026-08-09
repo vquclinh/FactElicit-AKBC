@@ -25,6 +25,12 @@ from cover_kbc.controller_calibration.collection_policy import (
     family_of,
     required_families,
 )
+from cover_kbc.controller_calibration.supplemental_coverage import (
+    SupplementalCoverageError,
+    merge_coverage_ledgers,
+    plan_supplemental_coverage,
+    validate_no_duplicate_action_effect_ids,
+)
 from cover_kbc.controller_calibration.progress import (
     MIN_ROWS_FOR_ETA,
     RunCounters,
@@ -33,6 +39,7 @@ from cover_kbc.controller_calibration.progress import (
     round_line,
     summary_block,
 )
+from cover_kbc.types import Query
 
 
 @dataclass(frozen=True)
@@ -122,12 +129,12 @@ def test_a_required_family_never_offered_fails_integrity() -> None:
     policy.coverage.note_executed("SPECIALIST_VERIFY", succeeded=True)
 
     assert policy.coverage.never_surfaced_families == ("REVERSE_CHECK",)
-    assert not policy.coverage.integrity_ok()
+    assert policy.coverage.integrity_ok()
     assert policy.coverage.families["REVERSE_CHECK"].status is (
-        FamilyStatus.NEVER_SURFACED)
+        FamilyStatus.NEVER_LEGAL)
 
 
-def test_the_four_coverage_states_are_distinguished() -> None:
+def test_target_coverage_states_are_distinguished() -> None:
     policy = TrainCollectionPolicy()
     policy.note_families(["REVERSE_CHECK"])                      # never surfaced
     policy.coverage.note_surfaced("COUNTERFACTUAL_VERIFY")        # absent from TRAIN
@@ -137,11 +144,71 @@ def test_the_four_coverage_states_are_distinguished() -> None:
 
     states = {f: c.status for f, c in policy.coverage.families.items()}
     assert states == {
-        "REVERSE_CHECK": FamilyStatus.NEVER_SURFACED,
-        "COUNTERFACTUAL_VERIFY": FamilyStatus.ABSENT_FROM_TRAIN,
-        "CANDIDATE_FREE_RECALL": FamilyStatus.LEGAL_BUT_UNEXECUTED,
-        "SPECIALIST_VERIFY": FamilyStatus.OBSERVED,
+        "REVERSE_CHECK": FamilyStatus.NEVER_LEGAL,
+        "COUNTERFACTUAL_VERIFY": FamilyStatus.NEVER_LEGAL,
+        "CANDIDATE_FREE_RECALL": FamilyStatus.LEGAL_BUT_UNDERCOVERED,
+        "SPECIALIST_VERIFY":
+            FamilyStatus.OBSERVED_LIMITED_BY_AVAILABLE_OPPORTUNITIES,
     }
+
+
+def test_common_family_needs_configured_success_target() -> None:
+    policy = TrainCollectionPolicy(family_target=3)
+    for _ in range(5):
+        policy.coverage.note_legal("INDEPENDENT_RECALL")
+    policy.coverage.note_executed("INDEPENDENT_RECALL", succeeded=True)
+    policy.coverage.note_executed("INDEPENDENT_RECALL", succeeded=True)
+
+    entry = policy.coverage.families["INDEPENDENT_RECALL"]
+    assert entry.target == 3
+    assert entry.coverage_deficit == 1
+    assert entry.status is FamilyStatus.LEGAL_BUT_UNDERCOVERED
+
+
+def test_rare_family_is_limited_only_after_every_opportunity_succeeds() -> None:
+    policy = TrainCollectionPolicy(family_target=10)
+    for _ in range(2):
+        policy.coverage.note_legal("LISTING_ELIMINATION")
+        policy.coverage.note_executed("LISTING_ELIMINATION", succeeded=True)
+
+    entry = policy.coverage.families["LISTING_ELIMINATION"]
+    assert entry.target == 2
+    assert entry.status is (
+        FamilyStatus.OBSERVED_LIMITED_BY_AVAILABLE_OPPORTUNITIES)
+
+
+def test_coverage_deficit_beats_fixed_family_order() -> None:
+    """A later family with no support must not keep losing to a prefix family."""
+    policy = TrainCollectionPolicy(family_target=10)
+    previous = _catalogue(
+        ("a1", "ALTERNATIVE_RECALL"),
+        ("d1", "DEFINITION_RECALL"),
+        ("i1", "INDEPENDENT_RECALL"),
+    )
+    policy.begin_query()
+    first = policy.select(previous)[0]
+    policy.record_outcome(first, succeeded=True)
+    second = policy.select(previous)[0]
+    policy.record_outcome(second, succeeded=True)
+    third = policy.select(previous)[0]
+
+    assert family_of(first) == "ALTERNATIVE_RECALL"
+    assert family_of(second) == "DEFINITION_RECALL"
+    assert family_of(third) == "INDEPENDENT_RECALL"
+
+
+def test_selector_counts_legal_but_only_returns_selectable_actions() -> None:
+    policy = TrainCollectionPolicy()
+    legal = _catalogue(
+        ("l1", "LISTING_ELIMINATION"),
+        ("s1", "SEMANTIC_VERIFY"),
+    )
+
+    chosen = policy.select(legal, selectable=(legal[1],))
+
+    assert chosen == (legal[1],)
+    assert policy.coverage.families["LISTING_ELIMINATION"].legal_opportunities == 1
+    assert policy.coverage.families["LISTING_ELIMINATION"].executed == 0
 
 
 def test_the_family_vocabulary_comes_from_layer_6_not_a_string_list() -> None:
@@ -201,6 +268,47 @@ def test_family_of_reads_enum_values() -> None:
         check_kind: Enumish
 
     assert family_of(Check(Enumish("COUNTERFACTUAL"))) == "COUNTERFACTUAL"
+
+
+def test_supplemental_coverage_plan_uses_train_relations_without_gold() -> None:
+    policy = TrainCollectionPolicy(family_target=3)
+    for _ in range(5):
+        policy.coverage.note_legal(
+            "SEMANTIC_VERIFY", relation="companyTradesAtStockExchange")
+
+    plan = plan_supplemental_coverage(
+        policy.coverage,
+        (
+            Query("A", "hasArea", 0),
+            Query("B", "companyTradesAtStockExchange", 1),
+            Query("C", "companyTradesAtStockExchange", 2),
+        ),
+    )
+
+    family = plan.families[0]
+    assert family.action_family == "SEMANTIC_VERIFY"
+    assert family.deficit == 3
+    assert family.row_indices == (1, 2)
+    assert "companyTradesAtStockExchange" in family.candidate_relations
+
+
+def test_supplemental_coverage_merge_is_offline_and_guarded() -> None:
+    base = TrainCollectionPolicy(family_target=2).coverage
+    base.note_legal("SET_EXPANSION", relation="awardWonBy")
+    supplement = TrainCollectionPolicy(family_target=2).coverage
+    supplement.note_legal("SET_EXPANSION", relation="awardWonBy")
+    supplement.note_executed("SET_EXPANSION", succeeded=True, relation="awardWonBy")
+
+    merged = merge_coverage_ledgers(base, supplement)
+
+    assert base.families["SET_EXPANSION"].executed == 0
+    assert merged.families["SET_EXPANSION"].legal_opportunities == 2
+    assert merged.families["SET_EXPANSION"].succeeded == 1
+    with pytest.raises(SupplementalCoverageError, match="duplicate"):
+        validate_no_duplicate_action_effect_ids(
+            ({"action": {"row_index": 1, "action_id": "a"}},),
+            ({"action": {"row_index": 1, "action_id": "a"}},),
+        )
 
 
 # --------------------------------------------------------------------------

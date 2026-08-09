@@ -33,6 +33,7 @@ from cover_kbc.controller_calibration.readiness import (
     evaluate_v3_core_readiness,
     evaluate_validation_readiness,
 )
+from cover_kbc.controller_calibration.collection_policy import TrainCollectionPolicy
 from cover_kbc.diagnostics.stages import FailureSearchState
 from cover_kbc.elicitation.engine import ElicitationEngine
 from cover_kbc.evidence.consensus_types import (
@@ -188,6 +189,98 @@ def _empty_hgraph(relation: str = "hasArea"):
     return graph, build_hypothesis_graph(
         _consensus_from_graph(graph), get_relation_profile(relation)
     )
+
+
+def _seed_graph(
+    subject: str, relation: str, row_index: int, view_id: str, output: str,
+):
+    query, contract = compile_query(subject, relation, row_index)
+    graph = build_graph(query, contract)
+    runtime = ScriptedRuntime(
+        {(view_id, subject, relation): [output]},
+        family="mistral",
+        role=ModelRole.ENUMERATOR.value,
+    )
+    from cover_kbc.elicitation.library import get_view
+
+    outcome = ElicitationEngine(runtime).run_view(
+        query, contract, get_view(relation, view_id)
+    )
+    if contract.output_type is OutputType.NUMBER:
+        graph.add_numeric_mentions(outcome.record, outcome.observations)
+    else:
+        graph.add_entity_mentions(outcome.record, outcome.entities)
+    return graph
+
+
+def _run_v3_collection_round(
+    graph,
+    policy: TrainCollectionPolicy,
+    *,
+    generations: dict[tuple[str, str, str], list[str]] | None = None,
+    label_scores: dict[tuple[str, str, str], dict[str, float]] | None = None,
+    annotations_by_key: dict[str, tuple[str, ...]] | None = None,
+    max_rounds: int = 1,
+) -> tuple[str, ...]:
+    enumerator = ScriptedRuntime(
+        generations or {},
+        model_id="offline/mistral24",
+        family="mistral",
+        role=ModelRole.ENUMERATOR.value,
+    )
+    verifier = ScriptedRuntime(
+        {},
+        label_scores=label_scores or {},
+        model_id="offline/qwen4",
+        family="qwen",
+        role=ModelRole.VERIFIER.value,
+    )
+
+    def selector(kind, catalogue, selectable=None):
+        if kind != "v3":
+            return ()
+        return policy.select(
+            catalogue,
+            family_key=lambda action: action.family.value,
+            relation_key=lambda action: action.relation,
+            selectable=tuple(selectable) if selectable is not None else tuple(catalogue),
+        )
+
+    pipeline = CoverPipeline(
+        enumerator,
+        PipelineConfig(
+            v3_core=V3CoreConfig(enabled=True, mode=V3CoreMode.TRAIN_COLLECTION),
+            max_control_rounds_per_catalogue=max_rounds,
+            max_steps_per_query=max_rounds,
+            max_calls_per_query=12,
+            max_generated_tokens_per_query=6000,
+        ),
+        verifier_runtime=verifier,
+        consensus_engine=object(),
+        integration_mode=IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY,
+        action_selector=selector,
+    )
+    snapshot = lambda g: _consensus_from_graph(  # noqa: E731
+        g, annotations_by_key=annotations_by_key
+    )
+    pipeline._build_consensus_snapshot = snapshot  # type: ignore[method-assign]
+    pipeline.consensus_results.append(snapshot(graph))
+    policy.begin_query()
+    pipeline._run_v3_control_loop(graph)
+
+    executed = []
+    for record in pipeline.action_records:
+        if not record["executed"]:
+            continue
+        action = record["projection"]
+        effect = record.get("effect") or {}
+        policy.coverage.note_executed(
+            action.family.value,
+            succeeded=not bool(effect.get("errors", ())),
+            relation=action.relation,
+        )
+        executed.append(action.family.value)
+    return tuple(executed)
 
 
 def _first_action(hgraph, graph, family: V3ActionFamily):
@@ -638,6 +731,234 @@ def test_v3_control_loop_refuses_generated_token_overrun_before_execution() -> N
 
     assert runtime.calls == 0
     assert pipeline.action_records == []
+
+
+def test_collect_v2_coverage_executes_all_v3_families_in_scripted_train_like_run() -> None:
+    policy = TrainCollectionPolicy(family_target=10)
+    observed: list[str] = []
+
+    graph, _ = _empty_hgraph("hasArea")
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_hasArea_definition_recall", graph.query.subject, graph.query.relation):
+                ["296 km2"]
+        },
+    ))
+
+    graph, _ = _empty_hgraph("hasCapacity")
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_hasCapacity_multi_view_recall", graph.query.subject, graph.query.relation):
+                ["52,000 current maximum spectators"]
+        },
+    ))
+
+    graph = _seed_graph(
+        "Area Alternative", "hasArea", 10, "area_direct_km2", "296 km2"
+    )
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_hasArea_alternative_recall", graph.query.subject, graph.query.relation):
+                ["250 km2"]
+        },
+    ))
+
+    graph = _seed_graph(
+        "Venue Independent", "hasCapacity", 11, "capacity_direct",
+        "52,000 current maximum spectators",
+    )
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_hasCapacity_independent_recall", graph.query.subject, graph.query.relation):
+                ["52,000 current maximum spectators"]
+        },
+    ))
+
+    graph = _seed_graph(
+        "Person Attribute", "personHasCityOfDeath", 12, "death_city_direct", "Paris"
+    )
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_death_attribute_decomposition", graph.query.subject, graph.query.relation):
+                ["birth location: Lyon\ndeath city: Paris\nburial location: Lyon"]
+        },
+    ))
+
+    graph = _seed_graph(
+        "Prize Expansion", "awardWonBy", 13, "award_direct", "Alice"
+    )
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_award_set_expansion", graph.query.subject, graph.query.relation):
+                ["Bob; Cara"]
+        },
+    ))
+
+    graph = _seed_graph("Prize Unary", "awardWonBy", 14, "award_direct", "Alice")
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        label_scores={
+            ("v3_unary_verify", graph.query.subject, graph.query.relation): {
+                "VALID": 3.0,
+                "INVALID": 0.0,
+                "UNKNOWN": -1.0,
+            }
+        },
+    ))
+
+    graph = _seed_graph(
+        "Company Listing", "companyTradesAtStockExchange", 15,
+        "stock_exchange_direct", "NASDAQ",
+    )
+    key = graph.contract.strict_key("NASDAQ")
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        annotations_by_key={key: ("mention_kind=PARENT_COMPANY_LISTING",)},
+        label_scores={
+            ("v3_listing_elimination", graph.query.subject, graph.query.relation): {
+                "VALID": -1.0,
+                "INVALID": 4.0,
+                "UNKNOWN": 0.0,
+            }
+        },
+    ))
+
+    graph = _seed_graph(
+        "Company Semantic", "companyTradesAtStockExchange", 16,
+        "stock_exchange_direct", "NASDAQ",
+    )
+    key = graph.contract.strict_key("NASDAQ")
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        annotations_by_key={key: ("mention_kind=PARENT_COMPANY_LISTING",)},
+        label_scores={
+            ("v3_semantic_verify", graph.query.subject, graph.query.relation): {
+                "VALID": 3.0,
+                "INVALID": 0.0,
+                "UNKNOWN": -1.0,
+            }
+        },
+    ))
+
+    graph = _seed_graph(
+        "Area Contrast", "hasArea", 17, "area_direct_km2", "296 km2; 250 km2"
+    )
+    observed.extend(_run_v3_collection_round(
+        graph,
+        policy,
+        label_scores={
+            ("v3_contrast_verify", graph.query.subject, graph.query.relation): {
+                "H1": 3.0,
+                "H2": 0.0,
+                "UNKNOWN": -1.0,
+            }
+        },
+    ))
+
+    assert set(observed) == {
+        "MULTI_VIEW_RECALL",
+        "INDEPENDENT_RECALL",
+        "DEFINITION_RECALL",
+        "ALTERNATIVE_RECALL",
+        "ATTRIBUTE_DECOMPOSITION",
+        "SET_EXPANSION",
+        "LISTING_ELIMINATION",
+        "UNARY_VERIFY",
+        "SEMANTIC_VERIFY",
+        "CONTRAST_VERIFY",
+    }
+    assert not {
+        "INDEPENDENT_RECALL",
+        "LISTING_ELIMINATION",
+        "SEMANTIC_VERIFY",
+        "SET_EXPANSION",
+        "UNARY_VERIFY",
+    } - set(observed)
+
+
+def test_has_area_coverage_scheduler_selects_independent_recall_when_legal() -> None:
+    graph = _seed_graph(
+        "Area Independent", "hasArea", 19, "area_direct_km2", "296 km2"
+    )
+    policy = TrainCollectionPolicy(family_target=3)
+    for family in ("ALTERNATIVE_RECALL", "DEFINITION_RECALL"):
+        for _ in range(3):
+            policy.coverage.note_legal(family, relation="hasArea")
+            policy.coverage.note_executed(family, succeeded=True, relation="hasArea")
+
+    observed = _run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_hasArea_independent_recall", graph.query.subject, graph.query.relation):
+                ["296 km2"]
+        },
+    )
+
+    assert observed == ("INDEPENDENT_RECALL",)
+
+
+def test_award_set_expansion_and_unary_verify_compete_under_three_round_bound() -> None:
+    graph = _seed_graph(
+        "Prize Bound", "awardWonBy", 20, "award_direct", "Alice"
+    )
+    policy = TrainCollectionPolicy(family_target=10)
+
+    observed = _run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_award_set_expansion", graph.query.subject, graph.query.relation):
+                ["Bob; Cara"]
+        },
+        label_scores={
+            ("v3_unary_verify", graph.query.subject, graph.query.relation): {
+                "VALID": 3.0,
+                "INVALID": 0.0,
+                "UNKNOWN": -1.0,
+            }
+        },
+        max_rounds=3,
+    )
+
+    assert "SET_EXPANSION" in observed
+    assert "UNARY_VERIFY" in observed
+
+
+def test_stock_broad_expansion_stays_blocked_under_coverage_policy() -> None:
+    graph = _seed_graph(
+        "Company Precision", "companyTradesAtStockExchange", 21,
+        "stock_exchange_direct", "NASDAQ",
+    )
+    key = graph.contract.strict_key("NASDAQ")
+    hgraph = build_hypothesis_graph(
+        _consensus_from_graph(
+            graph, annotations_by_key={key: ("mention_kind=PARENT_COMPANY_LISTING",)}
+        ),
+        get_relation_profile("companyTradesAtStockExchange"),
+    )
+
+    actions = build_v3_action_catalog(hgraph, graph, graph.contract)
+
+    assert V3ActionFamily.MULTI_VIEW_RECALL not in {action.family for action in actions}
+    assert {V3ActionFamily.LISTING_ELIMINATION, V3ActionFamily.SEMANTIC_VERIFY} <= {
+        action.family for action in actions
+    }
 
 
 def test_v3_actions_project_to_m21_and_can_be_ranked_by_v3_bins() -> None:

@@ -357,16 +357,30 @@ def reconcile_to_checkpoint(
     rebuilt = False
     if coverage is not None and (telemetry.suffix or pred_dropped or torn):
         executed: dict[str, int] = {}
+        relation_executed: dict[tuple[str, str], int] = {}
         for record in telemetry.records:
             if record.executed:
                 family = str(record.action_family)
                 executed[family] = executed.get(family, 0) + 1
+                key = (str(record.relation), family)
+                relation_executed[key] = relation_executed.get(key, 0) + 1
         for family, slot in coverage.families.items():
             slot.executed = executed.get(family, 0)
             slot.succeeded = executed.get(family, 0)
             slot.failed = 0
         for family, count in executed.items():
             slot = coverage._slot(family)
+            slot.surfaced = True
+            slot.executed = count
+            slot.succeeded = count
+        for relation, by_family in coverage.relation_families.items():
+            for family, slot in by_family.items():
+                count = relation_executed.get((relation, family), 0)
+                slot.executed = count
+                slot.succeeded = count
+                slot.failed = 0
+        for (relation, family), count in relation_executed.items():
+            slot = coverage._relation_slot(relation, family)
             slot.surfaced = True
             slot.executed = count
             slot.succeeded = count

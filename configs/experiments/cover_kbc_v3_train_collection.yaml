@@ -64,6 +64,10 @@ development_subset:
   selection: first_n_by_official_train_order
   rows: 24
 
+train_collection:
+  policy: collect-v2-coverage
+  coverage_target_per_family: 10
+
 v3_calibration_outputs:
   m20_relation_budget: configs/calibration/v3/m20_relation_budget.json
   m21_historical_bins: configs/calibration/v3/m21_historical_bins.json

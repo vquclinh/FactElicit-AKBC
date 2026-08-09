@@ -210,7 +210,6 @@ def action_region_for_failure_state(
         },
         FailureSearchState.NULL_UNRESOLVED: {
             V3ActionFamily.MULTI_VIEW_RECALL,
-            V3ActionFamily.SEMANTIC_VERIFY,
             V3ActionFamily.ATTRIBUTE_DECOMPOSITION,
         },
         FailureSearchState.STABLE_VERIFIED: {

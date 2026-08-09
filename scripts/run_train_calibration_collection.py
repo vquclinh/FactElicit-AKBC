@@ -29,6 +29,7 @@ offline, in a later milestone, by the derivation step.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import subprocess
 import sys
@@ -53,7 +54,9 @@ from cover_kbc.controller_calibration.checkpoint import (
 )
 from cover_kbc.controller_calibration.collection_policy import (
     COLLECTION_POLICY_VERSION,
+    DEFAULT_FAMILY_TARGET,
     CoverageLedger,
+    CollectionPolicyError,
     TrainCollectionPolicy,
     required_families,
 )
@@ -64,6 +67,7 @@ from cover_kbc.controller_calibration.progress import (
     summary_block,
 )
 from cover_kbc.controller_calibration.readiness import (
+    ReadinessState,
     evaluate_collection_readiness,
     evaluate_v3_core_readiness,
 )
@@ -207,12 +211,135 @@ def _required_v3_families() -> tuple[str, ...]:
     return tuple(sorted(families))
 
 
+def _coverage_target(config: dict) -> int:
+    block = dict(config.get("train_collection") or {})
+    return int(block.get("coverage_target_per_family", DEFAULT_FAMILY_TARGET))
+
+
+def _write_coverage_csv(path: Path, coverage: CoverageLedger) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = (
+        "relation",
+        "action_family",
+        "legal_opportunities",
+        "executed",
+        "successful",
+        "failed",
+        "target",
+        "coverage_ratio",
+        "status",
+    )
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in coverage.csv_rows():
+            writer.writerow({name: row.get(name, "") for name in fieldnames})
+
+
+def _write_coverage_artifacts(
+    out_dir: Path, coverage: CoverageLedger, *, v3_enabled: bool,
+) -> dict[str, str]:
+    payload = json.dumps(coverage.to_json(), indent=2)
+    action_path = out_dir / "action_coverage.json"
+    action_path.write_text(payload, encoding="utf-8")
+    written = {"action_coverage": str(action_path)}
+    if v3_enabled:
+        v3_json = out_dir / "v3_action_coverage.json"
+        v3_csv = out_dir / "v3_action_coverage.csv"
+        v3_json.write_text(payload, encoding="utf-8")
+        _write_coverage_csv(v3_csv, coverage)
+        written["v3_action_coverage"] = str(v3_json)
+        written["v3_action_coverage_csv"] = str(v3_csv)
+    return written
+
+
 def _write_jsonl(path: Path, rows) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             payload = row.to_json() if hasattr(row, "to_json") else row
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _check_output_root_writable(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    probe = path / ".train_collection_write_check"
+    try:
+        probe.write_text("ok\n", encoding="utf-8")
+        probe.unlink()
+    except OSError as error:
+        raise CollectionError(
+            f"output directory {path} is not writable: {error}"
+        ) from error
+
+
+def _v3_executable_owner_families() -> dict[str, tuple[str, ...]]:
+    return {
+        V3ActionFamily.MULTI_VIEW_RECALL.value: ("M12", "M13", "M18"),
+        V3ActionFamily.INDEPENDENT_RECALL.value: ("M12", "M14", "M18"),
+        V3ActionFamily.DEFINITION_RECALL.value: ("M12",),
+        V3ActionFamily.ALTERNATIVE_RECALL.value: ("M12", "M13"),
+        V3ActionFamily.ATTRIBUTE_DECOMPOSITION.value: ("M14",),
+        V3ActionFamily.SET_EXPANSION.value: ("M13",),
+        V3ActionFamily.LISTING_ELIMINATION.value: ("M17",),
+        V3ActionFamily.UNARY_VERIFY.value: ("M17",),
+        V3ActionFamily.SEMANTIC_VERIFY.value: ("M17",),
+        V3ActionFamily.CONTRAST_VERIFY.value: ("M17",),
+    }
+
+
+def _run_precheck(
+    *, config: dict, config_path: Path, output_dir: Path, split: str,
+) -> int:
+    """Cheap source/scripted readiness check. Loads no model weights."""
+    _check_output_root_writable(output_dir)
+    readiness = evaluate_v3_core_readiness(
+        config, base_dir=config_path.parent, split=split)
+    blockers = list(readiness.blockers)
+    dataset = load_dataset(CALIBRATION_SPLIT)
+    if len(dataset) != EXPECTED_TRAIN_ROWS:
+        blockers.append(
+            f"TRAIN has {len(dataset)} rows, expected {EXPECTED_TRAIN_ROWS}")
+
+    expected = set(_required_v3_families())
+    owners = _v3_executable_owner_families()
+    missing_owners = sorted(expected - set(owners))
+    if missing_owners:
+        blockers.append(
+            f"V3 executable owner registry missing {missing_owners}")
+
+    target = _coverage_target(config)
+    try:
+        policy = TrainCollectionPolicy(family_target=target)
+        policy.note_families(expected)
+    except CollectionPolicyError as error:
+        blockers.append(f"coverage target configuration invalid: {error}")
+    else:
+        recognized = set(policy.coverage.families)
+        missing = sorted(expected - recognized)
+        if missing:
+            blockers.append(f"coverage scheduler does not recognize {missing}")
+
+    if readiness.details.get("v3_production_calibration") != "NOT_READY":
+        blockers.append("V3 production readiness is not fail-closed")
+    test_readiness = evaluate_v3_core_readiness(
+        config, base_dir=config_path.parent, split="test")
+    if test_readiness.state is not ReadinessState.NOT_READY:
+        blockers.append("V3 TEST gate is not blocked")
+
+    print("V3 TRAIN collection precheck")
+    print(f"  policy: {COLLECTION_POLICY_VERSION}")
+    print(f"  coverage target: {target}")
+    print(f"  output root: {output_dir}")
+    print(f"  required families: {', '.join(sorted(expected))}")
+    if blockers:
+        print("  status: FAIL")
+        for blocker in blockers:
+            print(f"  BLOCKER {blocker}")
+        return 1
+    print("  status: PASS")
+    print("  model calls: 0")
+    return 0
 
 
 def build_pipeline(config: dict, selector):
@@ -396,6 +523,8 @@ def main() -> int:
                         help="development only; the real run must omit this")
     parser.add_argument("--resume", action="store_true",
                         help="continue a matching interrupted run")
+    parser.add_argument("--precheck-only", action="store_true",
+                        help="run cheap source/path checks without loading models")
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text()) or {}
@@ -405,6 +534,12 @@ def main() -> int:
     # Fails closed on VAL and TEST, from the canonical guard rather than a
     # local string comparison a new entry point could forget.
     require_split(IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY, split)
+
+    if args.precheck_only:
+        return _run_precheck(
+            config=config, config_path=args.config, output_dir=args.output_dir,
+            split=split,
+        )
 
     # The readiness verdict, from its owner. Evaluated **before any model is
     # built**, so a profile with the upgraded stack switched off refuses in a
@@ -434,32 +569,39 @@ def main() -> int:
         queries = queries[: args.limit]
     total = len(queries)
 
-    policy = TrainCollectionPolicy()
+    v3_enabled = _v3_enabled(config)
+    policy = TrainCollectionPolicy(
+        family_target=_coverage_target(config) if v3_enabled else 1)
     # The action-family vocabulary this run expects to be able to surface, read
     # from Layer 6's own adapters. A required family that never appears in any
     # catalogue now fails the integrity gate instead of quietly not existing.
     expected_families = (
         _required_v3_families()
-        if _v3_enabled(config) else required_families(LEGACY_COLLECTED_CATALOGUES)
+        if v3_enabled else required_families(LEGACY_COLLECTED_CATALOGUES)
     )
     policy.note_families(expected_families)
 
-    def selector(kind: str, catalogue):
+    def selector(kind: str, catalogue, selectable=None):
         """Bounded family-balanced selection, keyed on the canonical family.
 
         The coverage ledger and Module 21's bins must speak one vocabulary, so
         the family comes from the same Layer-6 adapter that stamps the telemetry
         rather than from a guess at the raw entry's attributes.
         """
+        selectable = tuple(selectable) if selectable is not None else tuple(catalogue)
         if kind == "v3":
             return policy.select(
                 catalogue,
                 family_key=lambda entry: entry.family.value,
+                relation_key=lambda entry: entry.relation,
+                selectable=selectable,
             )
         from cover_kbc.control.action_catalog import action_family_for
         return policy.select(
             catalogue,
-            family_key=lambda entry: action_family_for(kind, entry).value)
+            family_key=lambda entry: action_family_for(kind, entry).value,
+            selectable=selectable,
+        )
 
     pipeline, runtime, verifier_runtime = build_pipeline(config, selector)
 
@@ -516,6 +658,7 @@ def main() -> int:
 
     out_dir = args.output_dir / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
+    _check_output_root_writable(args.output_dir)
     predictions_path = out_dir / "predictions.jsonl"
     telemetry_path = out_dir / "train_telemetry.jsonl"
     diagnostics_block = dict(config.get("diagnostics") or {})
@@ -528,10 +671,19 @@ def main() -> int:
     if args.resume:
         # Carry the committed coverage forward; a fresh ledger would report only
         # post-restart rows and understate the support offline derivation checks.
-        coverage_path = out_dir / "action_coverage.json"
+        coverage_path = (
+            out_dir / "v3_action_coverage.json"
+            if v3_enabled else out_dir / "action_coverage.json"
+        )
         if coverage_path.is_file():
             policy.coverage = CoverageLedger.from_json(
                 json.loads(coverage_path.read_text(encoding="utf-8")))
+        elif completed:
+            raise ResumeRefused(
+                f"{coverage_path} is missing for a checkpoint with "
+                f"{len(completed)} committed row(s); refusing to resume without "
+                "the committed coverage state"
+            )
         policy.note_families(expected_families)
         # Roll the artifacts back to the checkpoint's commit boundary **before**
         # anything is opened for append. A process killed part-way through a row
@@ -560,6 +712,7 @@ def main() -> int:
     print(f"integration mode : {pipeline.integration_mode.value}")
     print(f"readiness        : {readiness.state.value}")
     print(f"policy           : {COLLECTION_POLICY_VERSION}")
+    print(f"coverage target  : {policy.family_target} successful observation(s)")
     print(f"telemetry schema : {TELEMETRY_SCHEMA_VERSION}")
     print(f"enumerator       : {runtime.spec.model_id}")
     print(f"verifier         : {verifier_runtime.spec.model_id}")
@@ -586,8 +739,8 @@ def main() -> int:
                                  checkpoint_path)
         (out_dir / "accounting.json").write_text(
             json.dumps(counters.to_json(), indent=2), encoding="utf-8")
-        (out_dir / "action_coverage.json").write_text(
-            json.dumps(policy.coverage.to_json(), indent=2), encoding="utf-8")
+        _write_coverage_artifacts(
+            out_dir, policy.coverage, v3_enabled=v3_enabled)
 
     try:
         for position, query in enumerate(queries, 1):
@@ -620,7 +773,14 @@ def main() -> int:
                             detail=f"{record['kind'].upper()} "
                                    f"{row_records[-1].action_family} "
                                    f"calls={record['cost']['physical_calls']}"))
-                        row_outcomes.append(row_records[-1].action_family)
+                        row_outcomes.append((
+                            row_records[-1].action_family,
+                            query.relation,
+                            (
+                                not bool(row_records[-1].outcome.errors)
+                                if v3_enabled else True
+                            ),
+                        ))
                 seen_records = len(pipeline.action_records)
             except BaseException as error:                   # noqa: BLE001
                 # The row transaction has committed nothing at this point, so a
@@ -660,8 +820,12 @@ def main() -> int:
             # interrupted row without leaving its half-written records behind.
             for telemetry_record in row_records:
                 writer.write(telemetry_record)
-            for family in row_outcomes:
-                policy.coverage.note_executed(family, succeeded=True)
+            for family, relation, succeeded in row_outcomes:
+                if v3_enabled:
+                    policy.coverage.note_executed(
+                        family, succeeded=succeeded, relation=relation)
+                else:
+                    policy.coverage.note_executed(family, succeeded=succeeded)
 
             predictions.write(json.dumps({
                 "SubjectEntity": prediction.subject,
@@ -754,7 +918,7 @@ def main() -> int:
     if pipeline.diagnostics is not None:
         InferenceTelemetryWriter(inference_telemetry_path).write_all(
             pipeline.diagnostics.records)
-    if _v3_enabled(config):
+    if v3_enabled:
         _write_jsonl(v3_pre_m8_path, pipeline.v3_pre_m8_results)
         _write_jsonl(v3_final_graph_path, pipeline.v3_core_results)
         _write_jsonl(v3_action_effect_path, pipeline.v3_action_effects)
@@ -785,20 +949,11 @@ def main() -> int:
             "telemetry artifact does not match checkpoint commit boundary: "
             f"{telemetry_integrity_error}")
     for family in policy.coverage.unobserved_families:
-        gate.append(f"action family {family} was legal in TRAIN but never executed")
-    for family in policy.coverage.never_surfaced_families:
-        # Which families are *legal* depends on the relation - Module 18 offers
-        # no reverse check for a numeric quantity - so this is only a wiring
-        # verdict when the run saw the whole split. A ``--limit`` slice covers
-        # one or two relations and cannot be a coverage sample; saying otherwise
-        # would be the same false confidence in the opposite direction.
-        message = (f"action family {family} was required but no catalogue ever "
-                   "offered it")
-        if args.limit:
-            print(f"\nnote: {message}; expected on a --limit slice, which does "
-                  "not cover every relation")
-        else:
-            gate.append(f"{message} - a wiring failure, not a dataset fact")
+        coverage = policy.coverage.families[family]
+        gate.append(
+            f"action family {family} was legal in TRAIN but under-covered "
+            f"({coverage.succeeded}/{coverage.target} successful observations; "
+            f"{coverage.legal_opportunities} legal opportunities)")
     gate.extend(sufficiency.blockers)
 
     manifest = {
@@ -821,16 +976,23 @@ def main() -> int:
         "prediction_rows": prediction_rows,
         "accounting": counters.to_json(),
         "coverage": policy.coverage.to_json(),
+        "action_coverage": str(out_dir / "action_coverage.json"),
+        "v3_action_coverage": (
+            str(out_dir / "v3_action_coverage.json")
+            if v3_enabled else None),
+        "v3_action_coverage_csv": (
+            str(out_dir / "v3_action_coverage.csv")
+            if v3_enabled else None),
         "sufficiency": sufficiency.to_json(),
         "inference_telemetry": (
             str(inference_telemetry_path)
             if pipeline.diagnostics is not None else None),
         "v3_pre_m8_hypothesis_graphs": (
-            str(v3_pre_m8_path) if _v3_enabled(config) else None),
+            str(v3_pre_m8_path) if v3_enabled else None),
         "v3_final_hypothesis_graphs": (
-            str(v3_final_graph_path) if _v3_enabled(config) else None),
+            str(v3_final_graph_path) if v3_enabled else None),
         "v3_action_effects": (
-            str(v3_action_effect_path) if _v3_enabled(config) else None),
+            str(v3_action_effect_path) if v3_enabled else None),
         "gate_blockers": gate,
         "action_bound_per_catalogue":
             pipeline.config.max_control_rounds_per_catalogue,
@@ -842,6 +1004,9 @@ def main() -> int:
         json.dumps(manifest, indent=2), encoding="utf-8")
 
     print("\n" + policy.coverage.table())
+    if v3_enabled:
+        print("\nrelation x action-family coverage")
+        print(policy.coverage.relation_table())
     if policy.coverage.families_absent_from_train:
         print("\nfamilies with zero legal TRAIN opportunities (dataset fact, "
               "not a failure):")
@@ -857,10 +1022,12 @@ def main() -> int:
     print(f"  telemetry:      {telemetry_path}")
     if pipeline.diagnostics is not None:
         print(f"  inference:      {inference_telemetry_path}")
-    if _v3_enabled(config):
+    if v3_enabled:
         print(f"  v3 pre-M8:      {v3_pre_m8_path}")
         print(f"  v3 final:       {v3_final_graph_path}")
         print(f"  v3 actions:     {v3_action_effect_path}")
+        print(f"  v3 coverage:    {out_dir / 'v3_action_coverage.json'}")
+        print(f"  v3 coverage csv:{out_dir / 'v3_action_coverage.csv'}")
     print(f"  manifest:       {out_dir / 'manifest.json'}")
 
     if gate:
@@ -878,6 +1045,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (CollectionError, ResumeRefused) as error:
+    except (CollectionError, CollectionPolicyError, ResumeRefused) as error:
         print(f"REFUSED: {error}", file=sys.stderr)
         sys.exit(2)

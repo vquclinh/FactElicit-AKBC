@@ -1050,6 +1050,7 @@ def evaluate_v3_core_readiness(
         V3ActionFamily.ATTRIBUTE_DECOMPOSITION,
         V3ActionFamily.SET_EXPANSION,
         V3ActionFamily.LISTING_ELIMINATION,
+        V3ActionFamily.UNARY_VERIFY,
         V3ActionFamily.SEMANTIC_VERIFY,
         V3ActionFamily.CONTRAST_VERIFY,
     }

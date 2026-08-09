@@ -10,10 +10,9 @@ Two properties matter more than cleverness here:
 
 **Family coverage.** Module 21 will later have to estimate the value of every
 action family. A family the collection never executed has no support, and a bin
-with no support cannot be calibrated - so the policy takes from *every* legally
-available family before taking a second instance of any one of them. A greedy
-policy that spent its whole budget on the cheapest family would leave exactly
-the verification families Table 6 hard-reserves budget for unestimated.
+with no support cannot be calibrated - so the policy chases explicit run-wide
+coverage deficits before falling back to the old deterministic catalogue walk.
+One observation is not enough when TRAIN keeps supplying opportunities.
 
 **Legality is not ours to decide.** The catalogue is the eligibility authority;
 this policy only ever selects a subset of what its owners already declared
@@ -31,12 +30,17 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 #: Bumped when selection behaviour changes. A resume across two different
 #: policy versions would splice incomparable observations into one bin.
-COLLECTION_POLICY_VERSION = "collect-v1"
+COLLECTION_POLICY_VERSION = "collect-v2-coverage"
 
 #: How many instances of one family the policy takes from a single query.
 #: Bounded because §16's budget accounting must stay meaningful: collection is
 #: a survey of the action space, not an exhaustive sweep of it.
 DEFAULT_PER_FAMILY_LIMIT = 2
+
+#: Successful observations sought for every family whose TRAIN opportunities
+#: are common enough to support that many observations. Rare families instead
+#: have target ``legal_opportunities_seen`` and must be exhausted.
+DEFAULT_FAMILY_TARGET = 10
 
 
 class CollectionPolicyError(RuntimeError):
@@ -71,6 +75,11 @@ def family_of(action: Any) -> str:
     return ""
 
 
+def relation_of(action: Any) -> str:
+    """Relation name published on an action, if the catalogue carries one."""
+    return str(getattr(action, "relation", "") or "")
+
+
 def required_families(kinds: Iterable[str]) -> tuple[str, ...]:
     """The canonical ``ActionFamily`` vocabulary the given catalogues can surface.
 
@@ -103,22 +112,25 @@ def required_families(kinds: Iterable[str]) -> tuple[str, ...]:
 class FamilyStatus(str, Enum):
     """What a run can honestly say about one action family.
 
-    Audit 0041 F-10 found the third and fourth of these collapsing into the
-    first: a family that was never *offered* simply never entered the ledger, so
-    a collection that surfaced one family out of four printed PASS. They are
-    kept apart here because they demand different responses - one is a dataset
-    fact, the other is a bug to fix before spending an A100 session.
+    The status is target-aware. One observation is not sufficient when TRAIN
+    keeps supplying opportunities, and a rare family is not penalised for
+    having fewer than the configured target when every available opportunity was
+    successfully observed.
     """
 
-    #: Offered and run. The only status that yields calibration support.
-    OBSERVED = "OBSERVED"
-    #: Offered by an owner, never selected. The policy under-explored.
-    LEGAL_BUT_UNEXECUTED = "LEGAL_BUT_UNEXECUTED"
-    #: Declared, and TRAIN never made it legal anywhere. A fact about TRAIN.
-    ABSENT_FROM_TRAIN = "ABSENT_FROM_TRAIN"
-    #: Declared as required, and never surfaced in any catalogue at all - the
-    #: module that owns it never ran, or was never wired. **Never a PASS.**
-    NEVER_SURFACED = "NEVER_SURFACED"
+    #: TRAIN supplied at least the configured target and the run met it.
+    OBSERVED_SUFFICIENT = "OBSERVED_SUFFICIENT"
+    #: TRAIN supplied fewer than the configured target, and every legal
+    #: opportunity seen so far was successfully observed.
+    OBSERVED_LIMITED_BY_AVAILABLE_OPPORTUNITIES = (
+        "OBSERVED_LIMITED_BY_AVAILABLE_OPPORTUNITIES"
+    )
+    #: TRAIN supplied legal opportunities, but the successful observations do
+    #: not meet the target semantics above.
+    LEGAL_BUT_UNDERCOVERED = "LEGAL_BUT_UNDERCOVERED"
+    #: The family is in the required vocabulary, but no legal TRAIN
+    #: opportunity has been observed.
+    NEVER_LEGAL = "NEVER_LEGAL"
 
 
 @dataclass
@@ -126,39 +138,68 @@ class FamilyCoverage:
     """Legal opportunities versus observed outcomes for one action family."""
 
     family: str
+    relation: str = ""
     legal_opportunities: int = 0
     executed: int = 0
     succeeded: int = 0
     failed: int = 0
-    #: True when the collection declared this family up front as one it expects
-    #: to be able to surface. A required family that never appears is a failure;
-    #: an undeclared one that never appears is merely absent.
+    configured_target: int = DEFAULT_FAMILY_TARGET
+    #: True when the collection declared this family up front as part of the
+    #: vocabulary the report must account for.
     required: bool = False
     #: True once any catalogue offered this family, even zero times legal.
     surfaced: bool = False
 
+    def __post_init__(self) -> None:
+        if self.configured_target < 1:
+            raise CollectionPolicyError(
+                f"configured_target must be at least 1 for {self.family}, got "
+                f"{self.configured_target}"
+            )
+
+    @property
+    def target(self) -> int:
+        return min(self.configured_target, self.legal_opportunities)
+
+    @property
+    def coverage_ratio(self) -> float:
+        if self.target <= 0:
+            return 0.0
+        return min(1.0, self.succeeded / self.target)
+
+    @property
+    def coverage_deficit(self) -> int:
+        return max(0, self.target - self.succeeded)
+
     @property
     def status(self) -> FamilyStatus:
-        if self.executed:
-            return FamilyStatus.OBSERVED
-        if self.legal_opportunities > 0:
-            return FamilyStatus.LEGAL_BUT_UNEXECUTED
-        if self.surfaced:
-            return FamilyStatus.ABSENT_FROM_TRAIN
-        return FamilyStatus.NEVER_SURFACED
+        if self.legal_opportunities <= 0:
+            return FamilyStatus.NEVER_LEGAL
+        if self.legal_opportunities < self.configured_target:
+            if self.succeeded >= self.legal_opportunities and not self.failed:
+                return FamilyStatus.OBSERVED_LIMITED_BY_AVAILABLE_OPPORTUNITIES
+            return FamilyStatus.LEGAL_BUT_UNDERCOVERED
+        if self.succeeded >= self.target:
+            return FamilyStatus.OBSERVED_SUFFICIENT
+        return FamilyStatus.LEGAL_BUT_UNDERCOVERED
 
     @property
     def unobserved(self) -> bool:
-        """Legal somewhere in TRAIN, yet never executed - an integrity failure."""
-        return self.status is FamilyStatus.LEGAL_BUT_UNEXECUTED
+        """Legal in TRAIN, yet target coverage is missing."""
+        return self.status is FamilyStatus.LEGAL_BUT_UNDERCOVERED
 
     def to_json(self) -> dict[str, Any]:
         return {
             "action_family": self.family,
+            "relation": self.relation,
             "legal_opportunities": self.legal_opportunities,
             "executed": self.executed,
+            "successful": self.succeeded,
             "succeeded": self.succeeded,
             "failed": self.failed,
+            "target": self.target,
+            "configured_target": self.configured_target,
+            "coverage_ratio": self.coverage_ratio,
             "required": self.required,
             "surfaced": self.surfaced,
             "status": self.status.value,
@@ -171,20 +212,54 @@ class CoverageLedger:
     """Run-wide coverage, and the integrity verdict derived from it."""
 
     families: dict[str, FamilyCoverage] = field(default_factory=dict)
+    relation_families: dict[str, dict[str, FamilyCoverage]] = field(
+        default_factory=dict
+    )
+    configured_target: int = DEFAULT_FAMILY_TARGET
+
+    def __post_init__(self) -> None:
+        if self.configured_target < 1:
+            raise CollectionPolicyError(
+                f"configured_target must be at least 1, got "
+                f"{self.configured_target}"
+            )
 
     def _slot(self, family: str) -> FamilyCoverage:
-        return self.families.setdefault(family, FamilyCoverage(family))
+        return self.families.setdefault(
+            family,
+            FamilyCoverage(family, configured_target=self.configured_target),
+        )
+
+    def _relation_slot(self, relation: str, family: str) -> FamilyCoverage:
+        relation_key = str(relation or "")
+        family_key = str(family)
+        by_family = self.relation_families.setdefault(relation_key, {})
+        return by_family.setdefault(
+            family_key,
+            FamilyCoverage(
+                family_key,
+                relation=relation_key,
+                configured_target=self.configured_target,
+            ),
+        )
 
     def note_surfaced(self, family: str) -> None:
         """A catalogue offered this family, whatever it then did with it."""
         self._slot(family).surfaced = True
 
-    def note_legal(self, family: str, count: int = 1) -> None:
+    def note_legal(self, family: str, count: int = 1, *,
+                   relation: str = "") -> None:
         slot = self._slot(family)
         slot.surfaced = True
         slot.legal_opportunities += count
+        if relation:
+            relation_slot = self._relation_slot(relation, family)
+            relation_slot.surfaced = True
+            relation_slot.legal_opportunities += count
 
-    def note_executed(self, family: str, *, succeeded: bool) -> None:
+    def note_executed(
+        self, family: str, *, succeeded: bool, relation: str = "",
+    ) -> None:
         slot = self._slot(family)
         slot.surfaced = True
         slot.executed += 1
@@ -192,6 +267,14 @@ class CoverageLedger:
             slot.succeeded += 1
         else:
             slot.failed += 1
+        if relation:
+            relation_slot = self._relation_slot(relation, family)
+            relation_slot.surfaced = True
+            relation_slot.executed += 1
+            if succeeded:
+                relation_slot.succeeded += 1
+            else:
+                relation_slot.failed += 1
 
     def _with_status(self, status: FamilyStatus) -> tuple[str, ...]:
         return tuple(sorted(
@@ -200,23 +283,23 @@ class CoverageLedger:
 
     @property
     def unobserved_families(self) -> tuple[str, ...]:
-        return self._with_status(FamilyStatus.LEGAL_BUT_UNEXECUTED)
+        return self._with_status(FamilyStatus.LEGAL_BUT_UNDERCOVERED)
 
     @property
     def families_absent_from_train(self) -> tuple[str, ...]:
         """Declared families TRAIN never made legal. A dataset fact, not a bug."""
-        return self._with_status(FamilyStatus.ABSENT_FROM_TRAIN)
+        return self._with_status(FamilyStatus.NEVER_LEGAL)
 
     @property
     def never_surfaced_families(self) -> tuple[str, ...]:
-        """Required families no catalogue ever offered. Always a failure."""
+        """Required families no catalogue ever offered."""
         return tuple(sorted(
             name for name, entry in self.families.items()
-            if entry.required and entry.status is FamilyStatus.NEVER_SURFACED))
+            if entry.required and not entry.surfaced))
 
     def integrity_ok(self) -> bool:
-        """Both failure modes, never only the one that happens to be visible."""
-        return not (self.unobserved_families or self.never_surfaced_families)
+        """Target undercoverage is a hard failure."""
+        return not self.unobserved_families
 
     @classmethod
     def from_json(cls, payload: Mapping[str, Any]) -> "CoverageLedger":
@@ -226,36 +309,104 @@ class CoverageLedger:
         coverage table describes only the rows that ran after the restart -
         under-reporting exactly the support the offline derivation checks.
         """
-        ledger = cls()
+        target = int(payload.get("configured_target", DEFAULT_FAMILY_TARGET))
+        ledger = cls(configured_target=target)
         for entry in payload.get("families", ()):
             family = str(entry.get("action_family", ""))
             if not family:
                 continue
             ledger.families[family] = FamilyCoverage(
                 family=family,
+                relation=str(entry.get("relation", "")),
                 legal_opportunities=int(entry.get("legal_opportunities", 0)),
                 executed=int(entry.get("executed", 0)),
-                succeeded=int(entry.get("succeeded", 0)),
+                succeeded=int(
+                    entry.get("succeeded", entry.get("successful", 0))
+                ),
                 failed=int(entry.get("failed", 0)),
+                configured_target=int(
+                    entry.get("configured_target", ledger.configured_target)
+                ),
                 required=bool(entry.get("required", False)),
                 surfaced=bool(entry.get("surfaced", False)),
+            )
+        for entry in payload.get("relation_families", ()):
+            relation = str(entry.get("relation", ""))
+            family = str(entry.get("action_family", ""))
+            if not relation or not family:
+                continue
+            ledger.relation_families.setdefault(relation, {})[family] = (
+                FamilyCoverage(
+                    family=family,
+                    relation=relation,
+                    legal_opportunities=int(
+                        entry.get("legal_opportunities", 0)
+                    ),
+                    executed=int(entry.get("executed", 0)),
+                    succeeded=int(
+                        entry.get("succeeded", entry.get("successful", 0))
+                    ),
+                    failed=int(entry.get("failed", 0)),
+                    configured_target=int(
+                        entry.get("configured_target", ledger.configured_target)
+                    ),
+                    required=bool(entry.get("required", False)),
+                    surfaced=bool(entry.get("surfaced", False)),
+                )
             )
         return ledger
 
     def table(self) -> str:
-        header = (f"{'action family':<26}{'legal':>7}{'executed':>9}{'ok':>5}"
-                  f"{'failed':>8}  {'status':<22}")
+        header = (
+            f"{'action family':<26}{'legal':>7}{'executed':>9}{'ok':>5}"
+            f"{'failed':>8}{'target':>8}{'ratio':>8}  {'status':<44}"
+        )
         lines = [header, "-" * len(header)]
         for family in sorted(self.families):
             c = self.families[family]
             lines.append(
                 f"{family:<26}{c.legal_opportunities:>7}{c.executed:>9}"
-                f"{c.succeeded:>5}{c.failed:>8}  {c.status.value:<22}")
+                f"{c.succeeded:>5}{c.failed:>8}{c.target:>8}"
+                f"{c.coverage_ratio:>8.3f}  {c.status.value:<44}")
         return "\n".join(lines)
+
+    def relation_table(self) -> str:
+        header = (
+            f"{'relation':<34}{'action family':<26}{'legal':>7}"
+            f"{'executed':>9}{'ok':>5}{'failed':>8}{'target':>8}"
+            f"{'ratio':>8}  {'status':<44}"
+        )
+        lines = [header, "-" * len(header)]
+        for relation in sorted(self.relation_families):
+            for family in sorted(self.relation_families[relation]):
+                c = self.relation_families[relation][family]
+                lines.append(
+                    f"{relation:<34}{family:<26}{c.legal_opportunities:>7}"
+                    f"{c.executed:>9}{c.succeeded:>5}{c.failed:>8}"
+                    f"{c.target:>8}{c.coverage_ratio:>8.3f}  "
+                    f"{c.status.value:<44}"
+                )
+        return "\n".join(lines)
+
+    def csv_rows(self) -> list[dict[str, Any]]:
+        rows = [self.families[family].to_json() for family in sorted(self.families)]
+        relation_rows = [
+            self.relation_families[relation][family].to_json()
+            for relation in sorted(self.relation_families)
+            for family in sorted(self.relation_families[relation])
+        ]
+        return rows + relation_rows
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "policy_version": COLLECTION_POLICY_VERSION,
+            "configured_target": self.configured_target,
             "families": [self.families[f].to_json() for f in sorted(self.families)],
+            "relation_families": [
+                self.relation_families[relation][family].to_json()
+                for relation in sorted(self.relation_families)
+                for family in sorted(self.relation_families[relation])
+            ],
             "unobserved_families": list(self.unobserved_families),
             "families_absent_from_train": list(self.families_absent_from_train),
             "never_surfaced_families": list(self.never_surfaced_families),
@@ -266,15 +417,23 @@ class CoverageLedger:
 class TrainCollectionPolicy:
     """Chooses which legal catalogue entries to execute. Ranks nothing."""
 
-    def __init__(self, *, per_family_limit: int = DEFAULT_PER_FAMILY_LIMIT) -> None:
+    def __init__(
+        self, *, per_family_limit: int = DEFAULT_PER_FAMILY_LIMIT,
+        family_target: int = DEFAULT_FAMILY_TARGET,
+    ) -> None:
         if per_family_limit < 1:
             raise CollectionPolicyError(
                 f"per_family_limit must be at least 1, got {per_family_limit}; "
                 "a limit of zero would collect no outcomes at all"
             )
+        if family_target < 1:
+            raise CollectionPolicyError(
+                f"family_target must be at least 1, got {family_target}"
+            )
         self.per_family_limit = per_family_limit
+        self.family_target = family_target
         self.version = COLLECTION_POLICY_VERSION
-        self.coverage = CoverageLedger()
+        self.coverage = CoverageLedger(configured_target=family_target)
         #: How many times each family has already been taken *for the query
         #: being processed*. The controller executes one action per round and
         #: re-asks with a fresh catalogue, so without this the round-robin
@@ -289,8 +448,10 @@ class TrainCollectionPolicy:
     def select(
         self, catalogue: Sequence[Any],
         *, family_key: "Callable[[Any], str]" = family_of,
+        relation_key: "Callable[[Any], str]" = relation_of,
+        selectable: Sequence[Any] | None = None,
     ) -> tuple[Any, ...]:
-        """Pick a bounded, deterministic, family-balanced subset.
+        """Pick a bounded, deterministic, coverage-deficit-aware subset.
 
         Every entry is recorded as a legal opportunity - including entries not
         selected, because a family that was legal and skipped is exactly what
@@ -301,37 +462,64 @@ class TrainCollectionPolicy:
         module can guess at. The coverage ledger and Module 21's bins must key
         on the same vocabulary or the support the bins claim is not the support
         the ledger measured.
+        ``selectable`` is the subset the caller has also proven executable and
+        physically affordable in the current state. Legal opportunities are
+        still counted from ``catalogue``; selection may only choose from
+        ``selectable``.
         """
         by_family: dict[str, list[tuple[str, int, Any]]] = {}
+        selectable_ids = (
+            {id(action) for action in selectable}
+            if selectable is not None else {id(action) for action in catalogue}
+        )
         for index, action in enumerate(catalogue):
             family = family_key(action)
-            self.coverage.note_legal(family)
-            by_family.setdefault(family, []).append((_identity(action, index), index, action))
+            relation = relation_key(action)
+            self.coverage.note_legal(family, relation=relation)
+            if id(action) in selectable_ids:
+                by_family.setdefault(family, []).append(
+                    (_identity(action, index), index, action)
+                )
 
         selected: list[tuple[str, int, Any]] = []
-        # Round-robin across families so a long family cannot crowd out a short
-        # one. Families already taken for this query go last, so the position
-        # survives the controller re-asking with a fresh catalogue each round.
-        # Within a family, order by published identity, and break ties on family
-        # name, so the same TRAIN row always yields the same selection.
-        order = sorted(
-            by_family, key=lambda family: (self._query_selected.get(family, 0), family))
-        for rank in range(self.per_family_limit):
-            for family in order:
-                entries = sorted(by_family[family], key=lambda item: (item[0], item[1]))
-                if rank < len(entries):
-                    selected.append(entries[rank])
-        # The round-robin order is *kept*, not re-sorted into catalogue order.
-        # The controller consumes the head of this tuple and re-asks, so this
-        # order is what decides which family each round gets; sorting by
-        # catalogue position undid the balancing one line after achieving it.
+        # Families with positive target deficit go first. Once every currently
+        # selectable family is sufficiently covered, the old deterministic
+        # round-robin order resumes for the remaining opportunities.
+        order = sorted(by_family, key=self._family_priority)
+        for family in order:
+            already = self._query_selected.get(family, 0)
+            remaining = max(0, self.per_family_limit - already)
+            if remaining <= 0:
+                continue
+            entries = sorted(by_family[family], key=lambda item: (item[0], item[1]))
+            selected.extend(entries[:remaining])
         if selected:
             head = family_key(selected[0][2])
             self._query_selected[head] = self._query_selected.get(head, 0) + 1
         return tuple(action for _, _, action in selected)
 
+    def _family_priority(self, family: str) -> tuple[object, ...]:
+        coverage = self.coverage._slot(family)
+        deficit = coverage.coverage_deficit
+        if deficit > 0:
+            return (
+                0,
+                coverage.coverage_ratio,
+                coverage.succeeded,
+                self._query_selected.get(family, 0),
+                -deficit,
+                family,
+            )
+        return (
+            1,
+            self._query_selected.get(family, 0),
+            coverage.succeeded,
+            family,
+        )
+
     def record_outcome(self, action: Any, *, succeeded: bool) -> None:
-        self.coverage.note_executed(family_of(action), succeeded=succeeded)
+        self.coverage.note_executed(
+            family_of(action), succeeded=succeeded, relation=relation_of(action))
 
     def note_families(self, families: Iterable[str], *, required: bool = True) -> None:
         """Declare the families this run expects to be able to surface.
@@ -344,10 +532,12 @@ class TrainCollectionPolicy:
         for family in families:
             slot = self.coverage._slot(str(family))
             slot.required = slot.required or required
+            slot.configured_target = self.family_target
 
 
 __all__ = [
     "COLLECTION_POLICY_VERSION",
+    "DEFAULT_FAMILY_TARGET",
     "DEFAULT_PER_FAMILY_LIMIT",
     "CollectionPolicyError",
     "CoverageLedger",
@@ -355,5 +545,6 @@ __all__ = [
     "FamilyStatus",
     "TrainCollectionPolicy",
     "family_of",
+    "relation_of",
     "required_families",
 ]

@@ -29,6 +29,7 @@ Two execution modes, both driving the same logic:
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping, Sequence
@@ -1919,12 +1920,16 @@ class CoverPipeline:
         self, kind: str, catalogue: "Sequence[Any]",
         consensus: QueryConsensusResult | None = None,
         graph: EvidenceGraph | None = None,
+        selectable_catalogue: "Sequence[Any] | None" = None,
     ) -> "Sequence[Any]":
         """Ask the injected selector which legal entries to execute.
 
         The catalogue is the eligibility authority; the selector may only
         return a subset of it. A selector that invented an entry would be
-        forcing eligibility, so that is refused rather than trusted.
+        forcing eligibility, so that is refused rather than trusted. TRAIN
+        collection may additionally pass the subset that is executable and
+        affordable in the current physical budget; a selector may then count
+        the full legal catalogue while choosing only from that subset.
         """
         if not catalogue:
             return ()
@@ -1939,15 +1944,50 @@ class CoverPipeline:
             return self._plan_next_action(kind, catalogue, consensus, graph)
         if self.action_selector is None:
             return ()
-        chosen = tuple(self.action_selector(kind, tuple(catalogue)) or ())
-        legal = {id(entry) for entry in catalogue}
+        legal_catalogue = tuple(catalogue)
+        selectable = (
+            tuple(selectable_catalogue)
+            if selectable_catalogue is not None else legal_catalogue
+        )
+        chosen = tuple(self._call_action_selector(
+            kind, legal_catalogue, selectable) or ())
+        legal = {id(entry) for entry in legal_catalogue}
+        selectable_ids = {id(entry) for entry in selectable}
         for entry in chosen:
             if id(entry) not in legal:
                 raise UnsupportedAction(
                     f"{kind}: selector returned an entry that is not in the "
                     "catalogue; legality is the catalogue's to declare"
                 )
+            if id(entry) not in selectable_ids:
+                raise UnsupportedAction(
+                    f"{kind}: selector returned an entry that is not executable "
+                    "or affordable in the current state"
+                )
         return chosen
+
+    def _call_action_selector(
+        self, kind: str, catalogue: "Sequence[Any]",
+        selectable: "Sequence[Any]",
+    ) -> "Sequence[Any]":
+        """Call a two-argument legacy selector or a coverage-aware selector."""
+        if self.action_selector is None:
+            return ()
+        signature = inspect.signature(self.action_selector)
+        positional = [
+            parameter for parameter in signature.parameters.values()
+            if parameter.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        variadic = any(
+            parameter.kind is inspect.Parameter.VAR_POSITIONAL
+            for parameter in signature.parameters.values()
+        )
+        if variadic or len(positional) >= 3:
+            return self.action_selector(kind, catalogue, selectable)
+        return self.action_selector(kind, selectable)
 
     def execute_action(
         self, kind: str, action: Any, consensus: QueryConsensusResult,
@@ -2622,6 +2662,22 @@ class CoverPipeline:
             "cost": cost,
         }
 
+    def _v3_action_affordable(
+        self, action: V3ActionCandidate, graph: EvidenceGraph,
+    ) -> bool:
+        """Physical per-query collection budget check before TRAIN selection."""
+        budget = self.config.budget(graph.contract)
+        snapshot = graph.budget_snapshot or {}
+        budget.charge(
+            calls=int(snapshot.get("calls_used", 0)),
+            generated_tokens=int(snapshot.get("generated_tokens_used", 0)),
+        )
+        planned = action.budget_descriptor.cost()
+        return (
+            planned.neural_calls <= budget.calls_left
+            and planned.generated_tokens <= budget.tokens_left
+        )
+
     def _run_v3_control_loop(self, graph: EvidenceGraph) -> None:
         """Run bounded V3 actions before Module 8 finalizes."""
         if not self._v3_control_loop_active():
@@ -2645,7 +2701,17 @@ class CoverPipeline:
                 break
             catalogue = build_v3_action_catalog(
                 hgraph, graph, graph.contract, history=history)
-            chosen = self._select_actions("v3", catalogue, consensus, graph)
+            selectable_catalogue = (
+                tuple(
+                    action for action in catalogue
+                    if self._v3_action_affordable(action, graph)
+                )
+                if self._v3_train_collection_active() else catalogue
+            )
+            chosen = self._select_actions(
+                "v3", catalogue, consensus, graph,
+                selectable_catalogue=selectable_catalogue,
+            )
             if not chosen:
                 break
 
