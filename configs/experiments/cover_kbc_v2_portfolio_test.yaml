@@ -137,19 +137,28 @@ budget_assertion:
 
 # Which collection and which derivation the portfolio artifacts must come from.
 # PENDING: filled in when the real portfolio collection and derivation run.
+#
+# `train_sha256` is PENDING rather than inherited. The baseline packages were
+# derived from TRAIN at cb344aa3..., but the organizer has since refreshed the
+# benchmark and TRAIN now hashes to ad37cd30... . A portfolio collection run
+# today would observe the new file, so asserting the old hash here would plant
+# an expectation the derivation is guaranteed to contradict. It is recorded by
+# the run that actually produces it, alongside the two repo SHAs.
+#
+# TRAIN is still 477 rows; only its contents moved.
 calibration_provenance:
   model_strategy: portfolio
   collection_repo_sha: ""       # PENDING
   derivation_repo_sha: ""       # PENDING
-  train_sha256: cb344aa3f153b30f4179f3c912ccfca19ae4e71288993292a093585d068a2c74
+  train_sha256: ""              # PENDING - recorded by the collection run
   train_rows: 477
 
 # The exact official blind split this submission answers.
 test_dataset:
   path: benchmark/data/test.jsonl
-  rows: 477
-  sha256: 849f565d6fcf53f60b74e53503d1ac119933e823f191030b34befe0df044fc1f
-  identity_sha256: 1bce6d40f843f7c743af6d896f2a390c4e210eac32d95f64d2887e5373fc2609
+  rows: 475
+  sha256: 67c31c8388c585634df55500612f522ad42da6735d4c89eb59a9ef5a39f043f1
+  identity_sha256: 69d7d7cbafed0a612a51c13ad42dafc448705af5d5522cd24ef6334e9ad78640
   blind: true
 
 # ---------------------------------------------------------------------------

@@ -46,9 +46,9 @@ VAL_DATA = REPO_ROOT / "benchmark" / "data" / "val.jsonl"
 
 #: The official blind split, as inspected. Pinned so a swapped or regenerated
 #: file is a test failure rather than a silent re-target.
-TEST_ROWS = 477
-TEST_SHA256 = "849f565d6fcf53f60b74e53503d1ac119933e823f191030b34befe0df044fc1f"
-TEST_IDENTITY = "1bce6d40f843f7c743af6d896f2a390c4e210eac32d95f64d2887e5373fc2609"
+TEST_ROWS = 475
+TEST_SHA256 = "67c31c8388c585634df55500612f522ad42da6735d4c89eb59a9ef5a39f043f1"
+TEST_IDENTITY = "69d7d7cbafed0a612a51c13ad42dafc448705af5d5522cd24ef6334e9ad78640"
 
 
 @pytest.fixture(scope="module")
@@ -120,7 +120,7 @@ def test_the_test_config_reaches_full_test_ready(test_config) -> None:
     assert list(report.blockers) == []
     satisfied = " | ".join(report.satisfied)
     for expected in ("split: test", "pipeline.mode: interleaved",
-                     "parameter budget", "test dataset: 477 rows",
+                     "parameter budget", f"test dataset: {TEST_ROWS} rows",
                      "test dataset: blind", "all six relations budgeted",
                      "M20 and M21 both declare production mode"):
         assert expected in satisfied, expected
@@ -156,7 +156,11 @@ def test_the_test_gate_refuses_val_data_under_a_test_label(
         test_config, base_dir=EXPERIMENTS, data_dir=tmp_path)
     assert report.state is ReadinessState.NOT_READY
     joined = " | ".join(report.blockers)
-    assert "sha256" in joined and "rows" in joined
+    # VAL and TEST happen to have the same row count in the current benchmark
+    # generation, so the byte hash and the ordered identity are what catch
+    # this - which is exactly why identity is pinned three ways and not one.
+    assert "sha256" in joined
+    assert "ordered identity" in joined or "ObjectEntities" in joined
 
 
 @pytest.mark.parametrize("field", ["rows", "sha256", "identity_sha256"])
@@ -514,7 +518,10 @@ def test_validation_packaging_is_unchanged(packager, tmp_path) -> None:
     predictions.write_text("\n".join(json.dumps(r) for r in payload) + "\n")
     summary = packager.validate(predictions, VAL_DATA)
     assert summary["split"] == "val"
-    assert summary["rows"] == 478
+    # Counted from the file rather than pinned to a constant. VAL is not the
+    # submission split and the packager pins no identity for it, so what this
+    # guards is the identity contract, not a row count the organizer moves.
+    assert summary["rows"] == len(rows)
 
 
 def test_the_packager_never_reads_gold_from_the_input() -> None:

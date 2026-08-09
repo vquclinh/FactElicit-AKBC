@@ -47,10 +47,10 @@ ARCHIVE_MEMBER = "predictions.jsonl"
 #: with `configs/experiments/cover_kbc_v2_test.yaml` by test.
 OFFICIAL_TEST = {
     "name": "test.jsonl",
-    "rows": 477,
-    "sha256": "849f565d6fcf53f60b74e53503d1ac119933e823f191030b34befe0df044fc1f",
+    "rows": 475,
+    "sha256": "67c31c8388c585634df55500612f522ad42da6735d4c89eb59a9ef5a39f043f1",
     "identity_sha256":
-        "1bce6d40f843f7c743af6d896f2a390c4e210eac32d95f64d2887e5373fc2609",
+        "69d7d7cbafed0a612a51c13ad42dafc448705af5d5522cd24ef6334e9ad78640",
 }
 
 #: The splits this packager will build a submission for.

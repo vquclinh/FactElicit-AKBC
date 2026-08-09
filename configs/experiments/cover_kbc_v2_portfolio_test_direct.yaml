@@ -163,9 +163,9 @@ budget_assertion:
 # no calibration to have provenance for.
 test_dataset:
   path: benchmark/data/test.jsonl
-  rows: 477
-  sha256: 849f565d6fcf53f60b74e53503d1ac119933e823f191030b34befe0df044fc1f
-  identity_sha256: 1bce6d40f843f7c743af6d896f2a390c4e210eac32d95f64d2887e5373fc2609
+  rows: 475
+  sha256: 67c31c8388c585634df55500612f522ad42da6735d4c89eb59a9ef5a39f043f1
+  identity_sha256: 69d7d7cbafed0a612a51c13ad42dafc448705af5d5522cd24ef6334e9ad78640
   blind: true
 
 pipeline:
