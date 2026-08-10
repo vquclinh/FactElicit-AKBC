@@ -50,6 +50,10 @@ from cover_kbc.controller import (
     choose_action,
     record_outcome,
 )
+from cover_kbc.controller_calibration.collection_policy import (
+    BLOCKED_OTHER,
+    BLOCKED_UNAFFORDABLE,
+)
 from cover_kbc.coverage import GateState, RCSEState, trusted_keys
 from cover_kbc.elicitation.engine import ElicitationEngine
 from cover_kbc.elicitation.library import get_view, views_for
@@ -238,6 +242,11 @@ class PipelineConfig:
     #: exactly the family-coverage failure the collection policy's round-robin
     #: exists to prevent.
     max_control_rounds_per_catalogue: int = 3
+    #: Collection-only reachability allowance for V3 supplemental coverage.
+    #: Ordinary acquisition and calibrated production planning do not see this
+    #: reserve. It only affects the V3 TRAIN collection affordability filter.
+    train_collection_extra_v3_calls_per_query: int = 0
+    train_collection_extra_v3_generated_tokens_per_query: int = 0
 
     # -- verification --------------------------------------------------------
     enable_verifier: bool = False
@@ -1921,6 +1930,7 @@ class CoverPipeline:
         consensus: QueryConsensusResult | None = None,
         graph: EvidenceGraph | None = None,
         selectable_catalogue: "Sequence[Any] | None" = None,
+        selection_block_reasons: "Mapping[int, str] | None" = None,
     ) -> "Sequence[Any]":
         """Ask the injected selector which legal entries to execute.
 
@@ -1950,7 +1960,8 @@ class CoverPipeline:
             if selectable_catalogue is not None else legal_catalogue
         )
         chosen = tuple(self._call_action_selector(
-            kind, legal_catalogue, selectable) or ())
+            kind, legal_catalogue, selectable,
+            selection_block_reasons or {}) or ())
         legal = {id(entry) for entry in legal_catalogue}
         selectable_ids = {id(entry) for entry in selectable}
         for entry in chosen:
@@ -1969,6 +1980,7 @@ class CoverPipeline:
     def _call_action_selector(
         self, kind: str, catalogue: "Sequence[Any]",
         selectable: "Sequence[Any]",
+        block_reasons: "Mapping[int, str]",
     ) -> "Sequence[Any]":
         """Call a two-argument legacy selector or a coverage-aware selector."""
         if self.action_selector is None:
@@ -1985,7 +1997,10 @@ class CoverPipeline:
             parameter.kind is inspect.Parameter.VAR_POSITIONAL
             for parameter in signature.parameters.values()
         )
-        if variadic or len(positional) >= 3:
+        if variadic or len(positional) >= 4:
+            return self.action_selector(
+                kind, catalogue, selectable, block_reasons)
+        if len(positional) >= 3:
             return self.action_selector(kind, catalogue, selectable)
         return self.action_selector(kind, selectable)
 
@@ -2662,21 +2677,79 @@ class CoverPipeline:
             "cost": cost,
         }
 
+    def _v3_action_selectability(
+        self, action: V3ActionCandidate, graph: EvidenceGraph,
+    ) -> tuple[bool, str]:
+        """Whether a V3 TRAIN action is executable inside the current budget."""
+        budget = self.config.budget(graph.contract)
+        snapshot = graph.budget_snapshot or {}
+        calls_used = int(snapshot.get("calls_used", 0))
+        tokens_used = int(snapshot.get("generated_tokens_used", 0))
+        planned = action.budget_descriptor.cost()
+        max_calls = budget.max_calls
+        max_tokens = budget.max_generated_tokens
+        if self._v3_train_collection_active():
+            max_calls += max(
+                0, int(self.config.train_collection_extra_v3_calls_per_query))
+            max_tokens += max(
+                0,
+                int(
+                    self.config
+                    .train_collection_extra_v3_generated_tokens_per_query
+                ),
+            )
+        calls_left = max(0, max_calls - calls_used)
+        tokens_left = max(0, max_tokens - tokens_used)
+        if planned.neural_calls > calls_left:
+            return (
+                False,
+                f"{BLOCKED_UNAFFORDABLE}: planned_calls="
+                f"{planned.neural_calls} calls_left={calls_left}",
+            )
+        if planned.generated_tokens > tokens_left:
+            return (
+                False,
+                f"{BLOCKED_UNAFFORDABLE}: planned_generated_tokens="
+                f"{planned.generated_tokens} tokens_left={tokens_left}",
+            )
+        return True, ""
+
     def _v3_action_affordable(
         self, action: V3ActionCandidate, graph: EvidenceGraph,
     ) -> bool:
-        """Physical per-query collection budget check before TRAIN selection."""
-        budget = self.config.budget(graph.contract)
-        snapshot = graph.budget_snapshot or {}
-        budget.charge(
-            calls=int(snapshot.get("calls_used", 0)),
-            generated_tokens=int(snapshot.get("generated_tokens_used", 0)),
-        )
-        planned = action.budget_descriptor.cost()
-        return (
-            planned.neural_calls <= budget.calls_left
-            and planned.generated_tokens <= budget.tokens_left
-        )
+        """Backward-compatible boolean affordability check."""
+        selectable, _ = self._v3_action_selectability(action, graph)
+        return selectable
+
+    def _v3_unexecuted_record(
+        self,
+        action: V3ActionCandidate,
+        graph: EvidenceGraph,
+        *,
+        round_index: int,
+        refusal: str,
+    ) -> dict[str, Any]:
+        state = self.control_state(graph)
+        before = self.physical_snapshot()
+        return {
+            "kind": "v3",
+            "round_index": round_index,
+            "action": action,
+            "projection": action,
+            "executed": False,
+            "admitted": not str(refusal).startswith(BLOCKED_UNAFFORDABLE),
+            "refusal": refusal,
+            "legal_not_selected": True,
+            "pre": before,
+            "post": None,
+            "state_before": state,
+            "state_after": None,
+            "entropy_before": state.entropy,
+            "entropy_after": None,
+            "effect": None,
+            "bridge": None,
+            "cost": self.physical_delta(before, before),
+        }
 
     def _run_v3_control_loop(self, graph: EvidenceGraph) -> None:
         """Run bounded V3 actions before Module 8 finalizes."""
@@ -2701,32 +2774,58 @@ class CoverPipeline:
                 break
             catalogue = build_v3_action_catalog(
                 hgraph, graph, graph.contract, history=history)
+            if hgraph.legal_action_families:
+                catalogue_families = tuple(sorted(
+                    {action.family for action in catalogue},
+                    key=lambda family: family.value,
+                ))
+                hgraph = replace(
+                    hgraph,
+                    legal_action_families=catalogue_families,
+                    action_family_mapping={
+                        **dict(hgraph.action_family_mapping),
+                        "legal_actions_after_owner_preconditions": [
+                            family.value for family in catalogue_families
+                        ],
+                    },
+                )
+                self.v3_pre_m8_results[-1] = hgraph
+            block_reasons = {
+                id(action): reason
+                for action in catalogue
+                for selectable, reason in (
+                    self._v3_action_selectability(action, graph),)
+                if not selectable
+            }
             selectable_catalogue = (
                 tuple(
                     action for action in catalogue
-                    if self._v3_action_affordable(action, graph)
+                    if id(action) not in block_reasons
                 )
                 if self._v3_train_collection_active() else catalogue
             )
             chosen = self._select_actions(
                 "v3", catalogue, consensus, graph,
                 selectable_catalogue=selectable_catalogue,
+                selection_block_reasons=block_reasons,
             )
             if not chosen:
+                if self._v3_train_collection_active():
+                    for action in catalogue:
+                        self.action_records.append(self._v3_unexecuted_record(
+                            action,
+                            graph,
+                            round_index=round_index,
+                            refusal=block_reasons.get(id(action), BLOCKED_OTHER),
+                        ))
                 break
 
             action = chosen[0]
-            budget = self.config.budget(graph.contract)
-            snapshot = graph.budget_snapshot or {}
-            budget.charge(
-                calls=int(snapshot.get("calls_used", 0)),
-                generated_tokens=int(snapshot.get("generated_tokens_used", 0)),
-            )
-            planned = action.budget_descriptor.cost()
-            if (
-                planned.neural_calls > budget.calls_left
-                or planned.generated_tokens > budget.tokens_left
-            ):
+            affordable, refusal = self._v3_action_selectability(action, graph)
+            if not affordable:
+                if self._v3_train_collection_active():
+                    self.action_records.append(self._v3_unexecuted_record(
+                        action, graph, round_index=round_index, refusal=refusal))
                 break
 
             record = self._execute_v3_action_record(
@@ -2742,8 +2841,11 @@ class CoverPipeline:
                 self.action_records.append({
                     "kind": "v3", "round_index": round_index,
                     "action": other, "projection": other,
-                    "executed": False, "admitted": True,
-                    "refusal": "", "legal_not_selected": True,
+                    "executed": False,
+                    "admitted": id(other) not in block_reasons,
+                    "refusal": block_reasons.get(
+                        id(other), "selectable_not_selected"),
+                    "legal_not_selected": True,
                     "pre": record["pre"], "post": None,
                     "state_before": record["state_before"],
                     "state_after": None,

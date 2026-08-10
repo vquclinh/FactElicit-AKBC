@@ -44,6 +44,9 @@ from cover_kbc.controller_calibration.checkpoint import (
     ResumeRefused,
     TelemetryCommitBoundary,
 )
+from cover_kbc.controller_calibration.collection_policy import (
+    BLOCKED_COUNTER_FIELDS,
+)
 from cover_kbc.controller_calibration.telemetry import (
     ActionTelemetryRecord,
     TelemetryError,
@@ -356,34 +359,91 @@ def reconcile_to_checkpoint(
     # -- coverage ----------------------------------------------------------
     rebuilt = False
     if coverage is not None and (telemetry.suffix or pred_dropped or torn):
+        legal: dict[str, int] = {}
+        selectable: dict[str, int] = {}
         executed: dict[str, int] = {}
+        blocked: dict[tuple[str, str], int] = {}
+        relation_legal: dict[tuple[str, str], int] = {}
+        relation_selectable: dict[tuple[str, str], int] = {}
         relation_executed: dict[tuple[str, str], int] = {}
+        relation_blocked: dict[tuple[str, str, str], int] = {}
         for record in telemetry.records:
+            family = str(record.action_family)
+            relation = str(record.relation)
+            if record.legal:
+                legal[family] = legal.get(family, 0) + 1
+                relation_key = (relation, family)
+                relation_legal[relation_key] = (
+                    relation_legal.get(relation_key, 0) + 1
+                )
+            reason_key = str(record.selection_reason).split(":", 1)[0]
+            blocked_field = BLOCKED_COUNTER_FIELDS.get(reason_key)
+            if blocked_field:
+                blocked[(family, blocked_field)] = (
+                    blocked.get((family, blocked_field), 0) + 1
+                )
+                relation_blocked[(relation, family, blocked_field)] = (
+                    relation_blocked.get((relation, family, blocked_field), 0) + 1
+                )
+            elif record.legal:
+                selectable[family] = selectable.get(family, 0) + 1
+                relation_key = (relation, family)
+                relation_selectable[relation_key] = (
+                    relation_selectable.get(relation_key, 0) + 1
+                )
             if record.executed:
-                family = str(record.action_family)
                 executed[family] = executed.get(family, 0) + 1
-                key = (str(record.relation), family)
+                key = (relation, family)
                 relation_executed[key] = relation_executed.get(key, 0) + 1
         for family, slot in coverage.families.items():
+            slot.legal_opportunities = legal.get(family, 0)
+            slot.selectable_opportunities = selectable.get(family, 0)
             slot.executed = executed.get(family, 0)
             slot.succeeded = executed.get(family, 0)
             slot.failed = 0
+            for field_name in BLOCKED_COUNTER_FIELDS.values():
+                setattr(slot, field_name, blocked.get((family, field_name), 0))
         for family, count in executed.items():
             slot = coverage._slot(family)
             slot.surfaced = True
             slot.executed = count
             slot.succeeded = count
+        for family, count in legal.items():
+            slot = coverage._slot(family)
+            slot.surfaced = True
+            slot.legal_opportunities = count
+        for family, count in selectable.items():
+            slot = coverage._slot(family)
+            slot.surfaced = True
+            slot.selectable_opportunities = count
         for relation, by_family in coverage.relation_families.items():
             for family, slot in by_family.items():
+                key = (relation, family)
+                slot.legal_opportunities = relation_legal.get(key, 0)
+                slot.selectable_opportunities = relation_selectable.get(key, 0)
                 count = relation_executed.get((relation, family), 0)
                 slot.executed = count
                 slot.succeeded = count
                 slot.failed = 0
+                for field_name in BLOCKED_COUNTER_FIELDS.values():
+                    setattr(
+                        slot,
+                        field_name,
+                        relation_blocked.get((relation, family, field_name), 0),
+                    )
         for (relation, family), count in relation_executed.items():
             slot = coverage._relation_slot(relation, family)
             slot.surfaced = True
             slot.executed = count
             slot.succeeded = count
+        for (relation, family), count in relation_legal.items():
+            slot = coverage._relation_slot(relation, family)
+            slot.surfaced = True
+            slot.legal_opportunities = count
+        for (relation, family), count in relation_selectable.items():
+            slot = coverage._relation_slot(relation, family)
+            slot.surfaced = True
+            slot.selectable_opportunities = count
         rebuilt = True
         notes.append("coverage: executed counts rebuilt from reconciled telemetry")
 

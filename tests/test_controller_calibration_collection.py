@@ -7,6 +7,7 @@ resume that merges two different systems into one set of bins.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -20,6 +21,7 @@ from cover_kbc.controller_calibration.checkpoint import (
 from cover_kbc.controller_calibration.collection_policy import (
     COLLECTION_POLICY_VERSION,
     CollectionPolicyError,
+    CoverageLedger,
     FamilyStatus,
     TrainCollectionPolicy,
     family_of,
@@ -27,9 +29,19 @@ from cover_kbc.controller_calibration.collection_policy import (
 )
 from cover_kbc.controller_calibration.supplemental_coverage import (
     SupplementalCoverageError,
+    merge_collections,
     merge_coverage_ledgers,
     plan_supplemental_coverage,
+    plan_supplemental_coverage_from_base,
+    supplemental_base_identity,
     validate_no_duplicate_action_effect_ids,
+)
+from cover_kbc.controller_calibration.telemetry import (
+    TELEMETRY_SCHEMA_VERSION,
+    ActionOutcome,
+    ActionTelemetryRecord,
+    ControlStateFeatures,
+    RedundancyStatus,
 )
 from cover_kbc.controller_calibration.progress import (
     MIN_ROWS_FOR_ETA,
@@ -208,6 +220,8 @@ def test_selector_counts_legal_but_only_returns_selectable_actions() -> None:
 
     assert chosen == (legal[1],)
     assert policy.coverage.families["LISTING_ELIMINATION"].legal_opportunities == 1
+    assert policy.coverage.families["SEMANTIC_VERIFY"].selectable_opportunities == 1
+    assert policy.coverage.families["LISTING_ELIMINATION"].selectable_opportunities == 0
     assert policy.coverage.families["LISTING_ELIMINATION"].executed == 0
 
 
@@ -302,13 +316,232 @@ def test_supplemental_coverage_merge_is_offline_and_guarded() -> None:
     merged = merge_coverage_ledgers(base, supplement)
 
     assert base.families["SET_EXPANSION"].executed == 0
-    assert merged.families["SET_EXPANSION"].legal_opportunities == 2
+    assert merged.families["SET_EXPANSION"].legal_opportunities == 1
     assert merged.families["SET_EXPANSION"].succeeded == 1
     with pytest.raises(SupplementalCoverageError, match="duplicate"):
         validate_no_duplicate_action_effect_ids(
             ({"action": {"row_index": 1, "action_id": "a"}},),
             ({"action": {"row_index": 1, "action_id": "a"}},),
         )
+
+
+def test_supplemental_planner_prefers_persisted_base_evidence(tmp_path) -> None:
+    run = tmp_path / "base"
+    run.mkdir()
+    coverage = TrainCollectionPolicy(family_target=2).coverage
+    for family, relation in (
+        ("SET_EXPANSION", "awardWonBy"),
+        ("UNARY_VERIFY", "awardWonBy"),
+        ("LISTING_ELIMINATION", "companyTradesAtStockExchange"),
+        ("SEMANTIC_VERIFY", "companyTradesAtStockExchange"),
+    ):
+        coverage.note_legal(family, relation=relation)
+    (run / "v3_action_coverage.json").write_text(
+        json.dumps(coverage.to_json()), encoding="utf-8")
+    (run / "manifest.json").write_text("{}", encoding="utf-8")
+    for name in (
+        "predictions.jsonl",
+        "train_telemetry.jsonl",
+        "inference_telemetry.jsonl",
+        "v3_final_hypothesis_graphs.jsonl",
+        "v3_action_effects.jsonl",
+    ):
+        (run / name).write_text("", encoding="utf-8")
+    (run / "v3_action_coverage.csv").write_text("", encoding="utf-8")
+    hgraphs = [
+        {
+            "row_index": 10,
+            "SubjectEntity": "Prize",
+            "Relation": "awardWonBy",
+            "failure_state": "SET_GROWING",
+            "legal_action_families": ["SET_EXPANSION", "UNARY_VERIFY"],
+            "hypotheses": [{
+                "status": "CHALLENGED",
+                "hypothesis_id": "h1",
+                "independent_support_count": 1,
+                "raw_support_count": 1,
+            }],
+        },
+        {
+            "row_index": 20,
+            "SubjectEntity": "Company",
+            "Relation": "companyTradesAtStockExchange",
+            "failure_state": "HIGH_FP_RISK",
+            "legal_action_families": ["LISTING_ELIMINATION", "SEMANTIC_VERIFY"],
+            "hypotheses": [{
+                "status": "CHALLENGED",
+                "hypothesis_id": "h2",
+                "independent_support_count": 1,
+                "raw_support_count": 1,
+            }],
+        },
+    ]
+    (run / "v3_pre_m8_hypothesis_graphs.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in hgraphs),
+        encoding="utf-8",
+    )
+
+    plan = plan_supplemental_coverage_from_base(
+        run,
+        (
+            Query("Prize", "awardWonBy", 10),
+            Query("Company", "companyTradesAtStockExchange", 20),
+        ),
+    )
+
+    by_family = {family.action_family: family.row_indices for family in plan.families}
+    assert by_family == {
+        "LISTING_ELIMINATION": (20,),
+        "SEMANTIC_VERIFY": (20,),
+        "SET_EXPANSION": (10,),
+        "UNARY_VERIFY": (10,),
+    }
+
+
+def _write_test_jsonl(path, rows) -> None:
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def _minimal_run_dir(path, *, coverage, telemetry=(), effects=(), manifest=None):
+    path.mkdir()
+    for name in (
+        "predictions.jsonl",
+        "inference_telemetry.jsonl",
+        "v3_pre_m8_hypothesis_graphs.jsonl",
+        "v3_final_hypothesis_graphs.jsonl",
+    ):
+        (path / name).write_text("", encoding="utf-8")
+    _write_test_jsonl(path / "train_telemetry.jsonl", [
+        record.to_json() for record in telemetry
+    ])
+    _write_test_jsonl(path / "v3_action_effects.jsonl", list(effects))
+    (path / "v3_action_coverage.json").write_text(
+        json.dumps(coverage.to_json()), encoding="utf-8")
+    (path / "v3_action_coverage.csv").write_text("", encoding="utf-8")
+    payload = {
+        "identity": {
+            "train_sha256": "train-sha",
+            "repo_sha": "repo-sha",
+        },
+        "status": "complete",
+    }
+    if manifest:
+        payload.update(manifest)
+    (path / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _telemetry_record(
+    *,
+    family: str,
+    relation: str,
+    round_index: int,
+    pre: ControlStateFeatures,
+    post: ControlStateFeatures,
+) -> ActionTelemetryRecord:
+    verifier = family.endswith("VERIFY") or family == "LISTING_ELIMINATION"
+    return ActionTelemetryRecord(
+        schema_version=TELEMETRY_SCHEMA_VERSION,
+        run_id="supplement",
+        row_index=10,
+        subject="Prize",
+        relation=relation,
+        program_type="LARGE_OPEN_SET",
+        round_index=round_index,
+        operation_id=f"10:{round_index}:{family}",
+        action_family=family,
+        target_class=family,
+        action_id=f"v3act-{family.lower()}",
+        model_role="verifier" if verifier else "enumerator",
+        spend_class="VERIFICATION" if verifier else "DISCOVERY",
+        selected=True,
+        executed=True,
+        pre_state=pre,
+        post_state=post,
+        outcome=ActionOutcome(
+            physical_calls=1,
+            enumerator_calls=0 if verifier else 1,
+            verifier_calls=1 if verifier else 0,
+            prompt_tokens=10,
+            generated_tokens=0 if verifier else 5,
+            candidates_named=("Bob",),
+            candidates_touched=("bob",),
+            candidate_effect_measured=True,
+            redundancy=0.5,
+            redundancy_status=RedundancyStatus.MEASURED,
+            verifier_outcome="VALID" if verifier else "",
+            structural_outcome="" if verifier else "ALTERNATIVE",
+        ),
+    )
+
+
+def test_supplemental_merge_end_to_end_is_deterministic(tmp_path) -> None:
+    base_coverage = TrainCollectionPolicy(family_target=2).coverage
+    for family in ("SET_EXPANSION", "UNARY_VERIFY"):
+        base_coverage.note_legal(family, relation="awardWonBy")
+    base = tmp_path / "base"
+    _minimal_run_dir(base, coverage=base_coverage)
+
+    s0 = ControlStateFeatures(residual=0.9, entropy=0.8, calls_used=12)
+    s1 = ControlStateFeatures(residual=0.7, entropy=0.5, calls_used=13)
+    s2 = ControlStateFeatures(residual=0.4, entropy=0.2, calls_used=14)
+    supplement_coverage = CoverageLedger.from_json(base_coverage.to_json())
+    for family in ("SET_EXPANSION", "UNARY_VERIFY"):
+        supplement_coverage.note_selectable(family, relation="awardWonBy")
+        supplement_coverage.note_executed(
+            family, succeeded=True, relation="awardWonBy")
+    supplement = tmp_path / "supplement"
+    base_id = supplemental_base_identity(base)
+    _minimal_run_dir(
+        supplement,
+        coverage=supplement_coverage,
+        telemetry=(
+            _telemetry_record(
+                family="SET_EXPANSION", relation="awardWonBy",
+                round_index=1, pre=s0, post=s1),
+            _telemetry_record(
+                family="UNARY_VERIFY", relation="awardWonBy",
+                round_index=2, pre=s1, post=s2),
+        ),
+        effects=(
+            {
+                "action_effect_id": "supplement:1",
+                "action": {"row_index": 10, "action_id": "v3act-set"},
+            },
+            {
+                "action_effect_id": "supplement:2",
+                "action": {"row_index": 10, "action_id": "v3act-unary"},
+            },
+        ),
+        manifest={
+            "supplemental": {
+                "base_collection_identity": base_id,
+                "base_inclusive_coverage": True,
+            }
+        },
+    )
+
+    first = tmp_path / "merged-a"
+    second = tmp_path / "merged-b"
+    first_manifest = merge_collections(
+        base_dir=base, supplement_dir=supplement, output_dir=first)
+    second_manifest = merge_collections(
+        base_dir=base, supplement_dir=supplement, output_dir=second)
+
+    assert first_manifest["sufficiency"]["ok"] is True
+    assert first_manifest["coverage"]["integrity_ok"] is True
+    assert first_manifest["calibration_derivation_blocked"] is False
+    assert (
+        first_manifest["merged_corpus_sha256"]
+        == second_manifest["merged_corpus_sha256"]
+    )
+    assert (
+        first / "SHA256SUMS.txt"
+    ).read_text(encoding="utf-8") == (
+        second / "SHA256SUMS.txt"
+    ).read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------

@@ -77,6 +77,15 @@ from cover_kbc.controller_calibration.recovery import (
     validate_committed_telemetry_prefix,
 )
 from cover_kbc.controller_calibration.sufficiency import evaluate_sufficiency
+from cover_kbc.controller_calibration.supplemental_coverage import (
+    EXPECTED_SUPPLEMENTAL_FAMILIES,
+    SupplementalCoverageError,
+    load_collection_coverage,
+    plan_supplemental_coverage_from_base,
+    resolve_collection_run_dir,
+    supplemental_base_identity,
+    write_supplemental_plan,
+)
 from cover_kbc.controller_calibration.telemetry import (
     TELEMETRY_SCHEMA_VERSION,
     ActionOutcome,
@@ -222,9 +231,16 @@ def _write_coverage_csv(path: Path, coverage: CoverageLedger) -> None:
         "relation",
         "action_family",
         "legal_opportunities",
+        "selectable_opportunities",
         "executed",
         "successful",
         "failed",
+        "blocked_unaffordable",
+        "blocked_execution_precondition",
+        "blocked_history",
+        "blocked_round_limit",
+        "blocked_missing_primary",
+        "blocked_other",
         "target",
         "coverage_ratio",
         "status",
@@ -261,6 +277,34 @@ def _write_jsonl(path: Path, rows) -> None:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def _supplement_action_effects(
+    rows: list[dict],
+    *,
+    run_id: str,
+    base_identity: str,
+) -> list[dict]:
+    """Stamp supplemental action effects with unique merge identities."""
+    stamped: list[dict] = []
+    for index, row in enumerate(rows):
+        payload = dict(row)
+        action = dict(payload.get("action") or {})
+        base_action_id = str(action.get("action_id", ""))
+        row_index = int(action.get("row_index", -1))
+        effect_id = (
+            f"supplement:{run_id}:{index}:{row_index}:{base_action_id}"
+        )
+        payload["action_effect_id"] = effect_id
+        payload["source_tag"] = "supplement"
+        payload["base_action_id"] = base_action_id
+        payload["supplemental_provenance"] = {
+            "base_collection_identity": base_identity,
+            "supplemental_run_id": run_id,
+            "original_train_row_index": row_index,
+        }
+        stamped.append(payload)
+    return stamped
+
+
 def _check_output_root_writable(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     probe = path / ".train_collection_write_check"
@@ -288,8 +332,25 @@ def _v3_executable_owner_families() -> dict[str, tuple[str, ...]]:
     }
 
 
+def _supplement_action_priority(entry) -> tuple[int, str, str]:
+    relation = getattr(entry, "relation", "")
+    family = getattr(getattr(entry, "family", None), "value", "")
+    relation_order = {
+        ("companyTradesAtStockExchange", "SEMANTIC_VERIFY"): 0,
+        ("companyTradesAtStockExchange", "LISTING_ELIMINATION"): 1,
+        ("awardWonBy", "SET_EXPANSION"): 0,
+        ("awardWonBy", "UNARY_VERIFY"): 1,
+    }
+    return (
+        relation_order.get((relation, family), 10),
+        family,
+        getattr(entry, "action_id", ""),
+    )
+
+
 def _run_precheck(
     *, config: dict, config_path: Path, output_dir: Path, split: str,
+    supplement_base: Path | None = None,
 ) -> int:
     """Cheap source/scripted readiness check. Loads no model weights."""
     _check_output_root_writable(output_dir)
@@ -327,11 +388,39 @@ def _run_precheck(
     if test_readiness.state is not ReadinessState.NOT_READY:
         blockers.append("V3 TEST gate is not blocked")
 
-    print("V3 TRAIN collection precheck")
+    supplemental_plan = None
+    if supplement_base is not None:
+        try:
+            base_coverage = load_collection_coverage(supplement_base)
+            supplemental_plan = plan_supplemental_coverage_from_base(
+                supplement_base, dataset.queries(), coverage=base_coverage)
+            deficits = set(base_coverage.unobserved_families)
+            unexpected = sorted(deficits - set(EXPECTED_SUPPLEMENTAL_FAMILIES))
+            if unexpected:
+                blockers.append(
+                    f"supplemental mode found unexpected under-covered "
+                    f"families: {unexpected}")
+            if not supplemental_plan.row_indices:
+                blockers.append(
+                    "supplemental planner found no deterministic TRAIN rows")
+        except (OSError, ValueError, SupplementalCoverageError) as error:
+            blockers.append(f"supplemental base refused: {error}")
+
+    print(
+        "V3 supplemental coverage precheck"
+        if supplement_base is not None else "V3 TRAIN collection precheck"
+    )
     print(f"  policy: {COLLECTION_POLICY_VERSION}")
     print(f"  coverage target: {target}")
     print(f"  output root: {output_dir}")
     print(f"  required families: {', '.join(sorted(expected))}")
+    if supplement_base is not None:
+        print(f"  supplement base: {supplement_base}")
+        if supplemental_plan is not None:
+            print(
+                "  supplement rows: "
+                + ", ".join(str(row) for row in supplemental_plan.row_indices)
+            )
     if blockers:
         print("  status: FAIL")
         for blocker in blockers:
@@ -525,6 +614,15 @@ def main() -> int:
                         help="continue a matching interrupted run")
     parser.add_argument("--precheck-only", action="store_true",
                         help="run cheap source/path checks without loading models")
+    parser.add_argument(
+        "--supplement-base",
+        type=Path,
+        default=None,
+        help=(
+            "existing V3 TRAIN base collection whose remaining coverage "
+            "deficits should be targeted"
+        ),
+    )
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text()) or {}
@@ -538,7 +636,7 @@ def main() -> int:
     if args.precheck_only:
         return _run_precheck(
             config=config, config_path=args.config, output_dir=args.output_dir,
-            split=split,
+            split=split, supplement_base=args.supplement_base,
         )
 
     # The readiness verdict, from its owner. Evaluated **before any model is
@@ -565,6 +663,53 @@ def main() -> int:
             f"TRAIN has {len(queries)} rows, expected {EXPECTED_TRAIN_ROWS}; "
             "the benchmark snapshot has changed"
         )
+    supplement_plan = None
+    supplement_base_id = ""
+    supplement_base_run_dir = None
+    supplement_targets: set[str] = set()
+    supplement_base_coverage = None
+    if args.supplement_base is not None:
+        try:
+            supplement_base_run_dir = resolve_collection_run_dir(
+                args.supplement_base)
+            supplement_base_coverage = load_collection_coverage(
+                supplement_base_run_dir)
+            supplement_plan = plan_supplemental_coverage_from_base(
+                supplement_base_run_dir, queries, coverage=supplement_base_coverage)
+            supplement_base_id = supplemental_base_identity(
+                supplement_base_run_dir)
+        except SupplementalCoverageError as error:
+            raise CollectionError(f"supplemental base refused: {error}") from error
+        deficits = set(supplement_base_coverage.unobserved_families)
+        unexpected = sorted(deficits - set(EXPECTED_SUPPLEMENTAL_FAMILIES))
+        if unexpected:
+            raise CollectionError(
+                "supplemental mode currently supports only the Stock/Award "
+                f"deficit families; unexpected deficits: {unexpected}"
+            )
+        supplement_targets = {
+            family.action_family for family in supplement_plan.families
+            if family.deficit > 0
+        }
+        planned_rows = set(supplement_plan.row_indices)
+        if not planned_rows:
+            raise CollectionError(
+                "supplemental planner found no deterministic TRAIN rows")
+        by_row = {query.row_index: query for query in queries}
+        queries = tuple(by_row[row] for row in supplement_plan.row_indices)
+        pipeline_block = dict(config.get("pipeline") or {})
+        pipeline_block["train_collection_extra_v3_calls_per_query"] = int(
+            pipeline_block.get("train_collection_extra_v3_calls_per_query", 2)
+            or 2
+        )
+        pipeline_block[
+            "train_collection_extra_v3_generated_tokens_per_query"
+        ] = int(
+            pipeline_block.get(
+                "train_collection_extra_v3_generated_tokens_per_query", 512)
+            or 512
+        )
+        config["pipeline"] = pipeline_block
     if args.limit:
         queries = queries[: args.limit]
     total = len(queries)
@@ -572,6 +717,8 @@ def main() -> int:
     v3_enabled = _v3_enabled(config)
     policy = TrainCollectionPolicy(
         family_target=_coverage_target(config) if v3_enabled else 1)
+    if supplement_base_coverage is not None:
+        policy.coverage = supplement_base_coverage
     # The action-family vocabulary this run expects to be able to surface, read
     # from Layer 6's own adapters. A required family that never appears in any
     # catalogue now fails the integrity gate instead of quietly not existing.
@@ -581,7 +728,7 @@ def main() -> int:
     )
     policy.note_families(expected_families)
 
-    def selector(kind: str, catalogue, selectable=None):
+    def selector(kind: str, catalogue, selectable=None, block_reasons=None):
         """Bounded family-balanced selection, keyed on the canonical family.
 
         The coverage ledger and Module 21's bins must speak one vocabulary, so
@@ -590,12 +737,31 @@ def main() -> int:
         """
         selectable = tuple(selectable) if selectable is not None else tuple(catalogue)
         if kind == "v3":
-            return policy.select(
-                catalogue,
+            policy_catalogue = tuple(catalogue)
+            if supplement_targets:
+                active_targets = {
+                    family for family in supplement_targets
+                    if policy.coverage.families[family].coverage_deficit > 0
+                }
+                policy_catalogue = tuple(
+                    entry for entry in catalogue
+                    if entry.family.value in active_targets
+                )
+                selectable = tuple(
+                    entry for entry in selectable
+                    if entry.family.value in active_targets
+                )
+            chosen = policy.select(
+                policy_catalogue,
                 family_key=lambda entry: entry.family.value,
                 relation_key=lambda entry: entry.relation,
                 selectable=selectable,
+                block_reasons=block_reasons,
+                count_legal=supplement_base_coverage is None,
             )
+            if supplement_targets:
+                return tuple(sorted(chosen, key=_supplement_action_priority))
+            return chosen
         from cover_kbc.control.action_catalog import action_family_for
         return policy.select(
             catalogue,
@@ -613,12 +779,19 @@ def main() -> int:
         enumerator_revision=str(enumerator_cfg.get("revision", "")),
         verifier_model_id=verifier_cfg.get("model_id", ""),
         verifier_revision=str(verifier_cfg.get("revision", "")),
-        collection_policy_version=COLLECTION_POLICY_VERSION,
+        collection_policy_version=(
+            f"{COLLECTION_POLICY_VERSION}+supplement:{supplement_base_id}"
+            if supplement_base_id else COLLECTION_POLICY_VERSION
+        ),
         telemetry_schema_version=TELEMETRY_SCHEMA_VERSION,
         total_rows=total,
     )
 
-    run_id = new_run_id(experiment.get("name", "cover"), "train-collect")
+    run_kind = (
+        "train-supplement" if args.supplement_base is not None
+        else "train-collect"
+    )
+    run_id = new_run_id(experiment.get("name", "cover"), run_kind)
     completed: set[int] = set()
     # Rows that failed and have **not** since completed. This is what the exit
     # gate reads. It is deliberately not the same thing as `failure_history`:
@@ -659,6 +832,9 @@ def main() -> int:
     out_dir = args.output_dir / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     _check_output_root_writable(args.output_dir)
+    if supplement_plan is not None:
+        write_supplemental_plan(out_dir / "v3_supplemental_plan.json",
+                                supplement_plan)
     predictions_path = out_dir / "predictions.jsonl"
     telemetry_path = out_dir / "train_telemetry.jsonl"
     diagnostics_block = dict(config.get("diagnostics") or {})
@@ -722,9 +898,16 @@ def main() -> int:
 
     aborted: dict | None = None
     seen_records = 0
+    supplement_stopped_after_targets = False
     writer = TelemetryWriter(telemetry_path, run_id=run_id,
                              resume=bool(args.resume))
     predictions = predictions_path.open("a", encoding="utf-8")
+
+    def supplement_targets_complete() -> bool:
+        return bool(supplement_targets) and all(
+            policy.coverage.families[family].coverage_deficit <= 0
+            for family in supplement_targets
+        )
 
     def persist() -> None:
         state = counters.to_json()
@@ -744,6 +927,9 @@ def main() -> int:
 
     try:
         for position, query in enumerate(queries, 1):
+            if supplement_targets_complete():
+                supplement_stopped_after_targets = True
+                break
             if query.row_index in completed:
                 continue
             print(query_line(position, total, relation=query.relation,
@@ -921,7 +1107,14 @@ def main() -> int:
     if v3_enabled:
         _write_jsonl(v3_pre_m8_path, pipeline.v3_pre_m8_results)
         _write_jsonl(v3_final_graph_path, pipeline.v3_core_results)
-        _write_jsonl(v3_action_effect_path, pipeline.v3_action_effects)
+        v3_effects = list(pipeline.v3_action_effects)
+        if args.supplement_base is not None:
+            v3_effects = _supplement_action_effects(
+                v3_effects,
+                run_id=run_id,
+                base_identity=supplement_base_id,
+            )
+        _write_jsonl(v3_action_effect_path, v3_effects)
 
     gate: list[str] = []
     if aborted:
@@ -937,7 +1130,10 @@ def main() -> int:
         gate.append(
             f"{len(unresolved_failed)} row(s) failed and are still missing from "
             f"telemetry: {sorted(unresolved_failed)}")
-    if not aborted and counters.rows_completed != total:
+    if (
+        not aborted and counters.rows_completed != total
+        and not supplement_stopped_after_targets
+    ):
         gate.append(
             f"{counters.rows_completed}/{total} rows completed")
     if prediction_rows != counters.rows_completed:
@@ -974,6 +1170,8 @@ def main() -> int:
         "resume_reconciliation": (
             reconciliation.to_json() if reconciliation is not None else None),
         "prediction_rows": prediction_rows,
+        "planned_rows": total,
+        "supplement_stopped_after_targets": supplement_stopped_after_targets,
         "accounting": counters.to_json(),
         "coverage": policy.coverage.to_json(),
         "action_coverage": str(out_dir / "action_coverage.json"),
@@ -1000,6 +1198,37 @@ def main() -> int:
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "aborted": aborted,
     }
+    if args.supplement_base is not None and supplement_plan is not None:
+        base_manifest_path = (
+            Path(supplement_base_run_dir) / "manifest.json"
+            if supplement_base_run_dir is not None else None
+        )
+        base_manifest = (
+            json.loads(base_manifest_path.read_text(encoding="utf-8"))
+            if base_manifest_path is not None and base_manifest_path.is_file()
+            else {}
+        )
+        manifest["supplemental"] = {
+            "schema_version": "v3-supplemental-run-v1",
+            "base_collection": str(args.supplement_base),
+            "base_collection_run_dir": str(supplement_base_run_dir or ""),
+            "base_collection_identity": supplement_base_id,
+            "base_source_commit": (
+                dict(base_manifest.get("identity", {}) or {}).get("repo_sha", "")
+            ),
+            "supplement_source_commit": _repo_sha(),
+            "target_families": sorted(supplement_targets),
+            "plan": supplement_plan.to_json(),
+            "base_inclusive_coverage": True,
+            "extra_v3_calls_per_query": (
+                config.get("pipeline", {})
+                .get("train_collection_extra_v3_calls_per_query", 0)
+            ),
+            "extra_v3_generated_tokens_per_query": (
+                config.get("pipeline", {})
+                .get("train_collection_extra_v3_generated_tokens_per_query", 0)
+            ),
+        }
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8")
 

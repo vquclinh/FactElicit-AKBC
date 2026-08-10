@@ -42,6 +42,22 @@ DEFAULT_PER_FAMILY_LIMIT = 2
 #: have target ``legal_opportunities_seen`` and must be exhausted.
 DEFAULT_FAMILY_TARGET = 10
 
+BLOCKED_UNAFFORDABLE = "blocked_unaffordable"
+BLOCKED_EXECUTION_PRECONDITION = "blocked_execution_precondition"
+BLOCKED_HISTORY = "blocked_history"
+BLOCKED_ROUND_LIMIT = "blocked_round_limit"
+BLOCKED_MISSING_PRIMARY = "blocked_missing_primary"
+BLOCKED_OTHER = "blocked_other"
+
+BLOCKED_COUNTER_FIELDS = {
+    BLOCKED_UNAFFORDABLE: "blocked_unaffordable",
+    BLOCKED_EXECUTION_PRECONDITION: "blocked_execution_precondition",
+    BLOCKED_HISTORY: "blocked_history",
+    BLOCKED_ROUND_LIMIT: "blocked_round_limit",
+    BLOCKED_MISSING_PRIMARY: "blocked_missing_primary",
+    BLOCKED_OTHER: "blocked_other",
+}
+
 
 class CollectionPolicyError(RuntimeError):
     """The collection policy was asked for something it must not do."""
@@ -140,9 +156,16 @@ class FamilyCoverage:
     family: str
     relation: str = ""
     legal_opportunities: int = 0
+    selectable_opportunities: int = 0
     executed: int = 0
     succeeded: int = 0
     failed: int = 0
+    blocked_unaffordable: int = 0
+    blocked_execution_precondition: int = 0
+    blocked_history: int = 0
+    blocked_round_limit: int = 0
+    blocked_missing_primary: int = 0
+    blocked_other: int = 0
     configured_target: int = DEFAULT_FAMILY_TARGET
     #: True when the collection declared this family up front as part of the
     #: vocabulary the report must account for.
@@ -193,10 +216,18 @@ class FamilyCoverage:
             "action_family": self.family,
             "relation": self.relation,
             "legal_opportunities": self.legal_opportunities,
+            "selectable_opportunities": self.selectable_opportunities,
             "executed": self.executed,
             "successful": self.succeeded,
             "succeeded": self.succeeded,
             "failed": self.failed,
+            "blocked_unaffordable": self.blocked_unaffordable,
+            "blocked_execution_precondition":
+                self.blocked_execution_precondition,
+            "blocked_history": self.blocked_history,
+            "blocked_round_limit": self.blocked_round_limit,
+            "blocked_missing_primary": self.blocked_missing_primary,
+            "blocked_other": self.blocked_other,
             "target": self.target,
             "configured_target": self.configured_target,
             "coverage_ratio": self.coverage_ratio,
@@ -256,6 +287,32 @@ class CoverageLedger:
             relation_slot = self._relation_slot(relation, family)
             relation_slot.surfaced = True
             relation_slot.legal_opportunities += count
+
+    def note_selectable(self, family: str, count: int = 1, *,
+                        relation: str = "") -> None:
+        slot = self._slot(family)
+        slot.surfaced = True
+        slot.selectable_opportunities += count
+        if relation:
+            relation_slot = self._relation_slot(relation, family)
+            relation_slot.surfaced = True
+            relation_slot.selectable_opportunities += count
+
+    def note_blocked(
+        self, family: str, reason: str, count: int = 1, *, relation: str = "",
+    ) -> None:
+        reason_key = str(reason).split(":", 1)[0]
+        field_name = BLOCKED_COUNTER_FIELDS.get(reason_key, "blocked_other")
+        slot = self._slot(family)
+        slot.surfaced = True
+        setattr(slot, field_name, getattr(slot, field_name) + count)
+        if relation:
+            relation_slot = self._relation_slot(relation, family)
+            relation_slot.surfaced = True
+            setattr(
+                relation_slot, field_name,
+                getattr(relation_slot, field_name) + count,
+            )
 
     def note_executed(
         self, family: str, *, succeeded: bool, relation: str = "",
@@ -319,11 +376,26 @@ class CoverageLedger:
                 family=family,
                 relation=str(entry.get("relation", "")),
                 legal_opportunities=int(entry.get("legal_opportunities", 0)),
+                selectable_opportunities=int(
+                    entry.get("selectable_opportunities", 0)
+                ),
                 executed=int(entry.get("executed", 0)),
                 succeeded=int(
                     entry.get("succeeded", entry.get("successful", 0))
                 ),
                 failed=int(entry.get("failed", 0)),
+                blocked_unaffordable=int(
+                    entry.get("blocked_unaffordable", 0)
+                ),
+                blocked_execution_precondition=int(
+                    entry.get("blocked_execution_precondition", 0)
+                ),
+                blocked_history=int(entry.get("blocked_history", 0)),
+                blocked_round_limit=int(entry.get("blocked_round_limit", 0)),
+                blocked_missing_primary=int(
+                    entry.get("blocked_missing_primary", 0)
+                ),
+                blocked_other=int(entry.get("blocked_other", 0)),
                 configured_target=int(
                     entry.get("configured_target", ledger.configured_target)
                 ),
@@ -342,11 +414,28 @@ class CoverageLedger:
                     legal_opportunities=int(
                         entry.get("legal_opportunities", 0)
                     ),
+                    selectable_opportunities=int(
+                        entry.get("selectable_opportunities", 0)
+                    ),
                     executed=int(entry.get("executed", 0)),
                     succeeded=int(
                         entry.get("succeeded", entry.get("successful", 0))
                     ),
                     failed=int(entry.get("failed", 0)),
+                    blocked_unaffordable=int(
+                        entry.get("blocked_unaffordable", 0)
+                    ),
+                    blocked_execution_precondition=int(
+                        entry.get("blocked_execution_precondition", 0)
+                    ),
+                    blocked_history=int(entry.get("blocked_history", 0)),
+                    blocked_round_limit=int(
+                        entry.get("blocked_round_limit", 0)
+                    ),
+                    blocked_missing_primary=int(
+                        entry.get("blocked_missing_primary", 0)
+                    ),
+                    blocked_other=int(entry.get("blocked_other", 0)),
                     configured_target=int(
                         entry.get("configured_target", ledger.configured_target)
                     ),
@@ -358,14 +447,16 @@ class CoverageLedger:
 
     def table(self) -> str:
         header = (
-            f"{'action family':<26}{'legal':>7}{'executed':>9}{'ok':>5}"
-            f"{'failed':>8}{'target':>8}{'ratio':>8}  {'status':<44}"
+            f"{'action family':<26}{'legal':>7}{'select':>8}"
+            f"{'executed':>9}{'ok':>5}{'failed':>8}{'target':>8}"
+            f"{'ratio':>8}  {'status':<44}"
         )
         lines = [header, "-" * len(header)]
         for family in sorted(self.families):
             c = self.families[family]
             lines.append(
-                f"{family:<26}{c.legal_opportunities:>7}{c.executed:>9}"
+                f"{family:<26}{c.legal_opportunities:>7}"
+                f"{c.selectable_opportunities:>8}{c.executed:>9}"
                 f"{c.succeeded:>5}{c.failed:>8}{c.target:>8}"
                 f"{c.coverage_ratio:>8.3f}  {c.status.value:<44}")
         return "\n".join(lines)
@@ -373,8 +464,8 @@ class CoverageLedger:
     def relation_table(self) -> str:
         header = (
             f"{'relation':<34}{'action family':<26}{'legal':>7}"
-            f"{'executed':>9}{'ok':>5}{'failed':>8}{'target':>8}"
-            f"{'ratio':>8}  {'status':<44}"
+            f"{'select':>8}{'executed':>9}{'ok':>5}{'failed':>8}"
+            f"{'target':>8}{'ratio':>8}  {'status':<44}"
         )
         lines = [header, "-" * len(header)]
         for relation in sorted(self.relation_families):
@@ -382,8 +473,9 @@ class CoverageLedger:
                 c = self.relation_families[relation][family]
                 lines.append(
                     f"{relation:<34}{family:<26}{c.legal_opportunities:>7}"
-                    f"{c.executed:>9}{c.succeeded:>5}{c.failed:>8}"
-                    f"{c.target:>8}{c.coverage_ratio:>8.3f}  "
+                    f"{c.selectable_opportunities:>8}{c.executed:>9}"
+                    f"{c.succeeded:>5}{c.failed:>8}{c.target:>8}"
+                    f"{c.coverage_ratio:>8.3f}  "
                     f"{c.status.value:<44}"
                 )
         return "\n".join(lines)
@@ -450,6 +542,8 @@ class TrainCollectionPolicy:
         *, family_key: "Callable[[Any], str]" = family_of,
         relation_key: "Callable[[Any], str]" = relation_of,
         selectable: Sequence[Any] | None = None,
+        block_reasons: Mapping[int, str] | None = None,
+        count_legal: bool = True,
     ) -> tuple[Any, ...]:
         """Pick a bounded, deterministic, coverage-deficit-aware subset.
 
@@ -472,14 +566,20 @@ class TrainCollectionPolicy:
             {id(action) for action in selectable}
             if selectable is not None else {id(action) for action in catalogue}
         )
+        reasons = dict(block_reasons or {})
         for index, action in enumerate(catalogue):
             family = family_key(action)
             relation = relation_key(action)
-            self.coverage.note_legal(family, relation=relation)
+            if count_legal:
+                self.coverage.note_legal(family, relation=relation)
             if id(action) in selectable_ids:
+                self.coverage.note_selectable(family, relation=relation)
                 by_family.setdefault(family, []).append(
                     (_identity(action, index), index, action)
                 )
+            else:
+                reason = reasons.get(id(action), BLOCKED_OTHER)
+                self.coverage.note_blocked(family, reason, relation=relation)
 
         selected: list[tuple[str, int, Any]] = []
         # Families with positive target deficit go first. Once every currently
@@ -537,6 +637,13 @@ class TrainCollectionPolicy:
 
 __all__ = [
     "COLLECTION_POLICY_VERSION",
+    "BLOCKED_COUNTER_FIELDS",
+    "BLOCKED_EXECUTION_PRECONDITION",
+    "BLOCKED_HISTORY",
+    "BLOCKED_MISSING_PRIMARY",
+    "BLOCKED_OTHER",
+    "BLOCKED_ROUND_LIMIT",
+    "BLOCKED_UNAFFORDABLE",
     "DEFAULT_FAMILY_TARGET",
     "DEFAULT_PER_FAMILY_LIMIT",
     "CollectionPolicyError",

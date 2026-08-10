@@ -33,7 +33,10 @@ from cover_kbc.controller_calibration.readiness import (
     evaluate_v3_core_readiness,
     evaluate_validation_readiness,
 )
-from cover_kbc.controller_calibration.collection_policy import TrainCollectionPolicy
+from cover_kbc.controller_calibration.collection_policy import (
+    BLOCKED_UNAFFORDABLE,
+    TrainCollectionPolicy,
+)
 from cover_kbc.diagnostics.stages import FailureSearchState
 from cover_kbc.elicitation.engine import ElicitationEngine
 from cover_kbc.evidence.consensus_types import (
@@ -236,7 +239,7 @@ def _run_v3_collection_round(
         role=ModelRole.VERIFIER.value,
     )
 
-    def selector(kind, catalogue, selectable=None):
+    def selector(kind, catalogue, selectable=None, block_reasons=None):
         if kind != "v3":
             return ()
         return policy.select(
@@ -244,6 +247,7 @@ def _run_v3_collection_round(
             family_key=lambda action: action.family.value,
             relation_key=lambda action: action.relation,
             selectable=tuple(selectable) if selectable is not None else tuple(catalogue),
+            block_reasons=block_reasons,
         )
 
     pipeline = CoverPipeline(
@@ -730,7 +734,90 @@ def test_v3_control_loop_refuses_generated_token_overrun_before_execution() -> N
     pipeline._run_v3_control_loop(graph)
 
     assert runtime.calls == 0
-    assert pipeline.action_records == []
+    assert len(pipeline.action_records) == 2
+    assert {record["projection"].family for record in pipeline.action_records} == {
+        V3ActionFamily.MULTI_VIEW_RECALL,
+        V3ActionFamily.DEFINITION_RECALL,
+    }
+    assert all(record["executed"] is False for record in pipeline.action_records)
+    assert all(
+        record["refusal"].startswith(BLOCKED_UNAFFORDABLE)
+        for record in pipeline.action_records
+    )
+
+
+def test_stock_rare_families_are_recorded_unselectable_when_budget_is_exhausted() -> None:
+    graph = _seed_graph(
+        "Company Exhausted", "companyTradesAtStockExchange", 118,
+        "stock_exchange_direct", "NASDAQ",
+    )
+    graph.budget_snapshot = {"calls_used": 5, "generated_tokens_used": 200}
+    key = graph.contract.strict_key("NASDAQ")
+    policy = TrainCollectionPolicy(family_target=3)
+
+    observed = _run_v3_collection_round(
+        graph,
+        policy,
+        annotations_by_key={key: ("mention_kind=PARENT_COMPANY_LISTING",)},
+        label_scores={
+            ("v3_listing_elimination", graph.query.subject, graph.query.relation): {
+                "VALID": -1.0,
+                "INVALID": 4.0,
+                "UNKNOWN": 0.0,
+            },
+            ("v3_semantic_verify", graph.query.subject, graph.query.relation): {
+                "VALID": 3.0,
+                "INVALID": 0.0,
+                "UNKNOWN": -1.0,
+            },
+        },
+        max_rounds=1,
+    )
+
+    assert observed == ()
+    listing = policy.coverage.families["LISTING_ELIMINATION"]
+    semantic = policy.coverage.families["SEMANTIC_VERIFY"]
+    assert listing.legal_opportunities == 1
+    assert semantic.legal_opportunities == 1
+    assert listing.selectable_opportunities == 0
+    assert semantic.selectable_opportunities == 0
+    assert listing.blocked_unaffordable == 1
+    assert semantic.blocked_unaffordable == 1
+
+
+def test_award_rare_families_are_recorded_unselectable_when_budget_is_exhausted() -> None:
+    graph = _seed_graph(
+        "Prize Exhausted", "awardWonBy", 119, "award_direct", "Alice"
+    )
+    graph.budget_snapshot = {"calls_used": 12, "generated_tokens_used": 500}
+    policy = TrainCollectionPolicy(family_target=3)
+
+    observed = _run_v3_collection_round(
+        graph,
+        policy,
+        generations={
+            ("v3_award_set_expansion", graph.query.subject, graph.query.relation):
+                ["Bob; Cara"]
+        },
+        label_scores={
+            ("v3_unary_verify", graph.query.subject, graph.query.relation): {
+                "VALID": 3.0,
+                "INVALID": 0.0,
+                "UNKNOWN": -1.0,
+            },
+        },
+        max_rounds=1,
+    )
+
+    assert observed == ()
+    expansion = policy.coverage.families["SET_EXPANSION"]
+    unary = policy.coverage.families["UNARY_VERIFY"]
+    assert expansion.legal_opportunities == 1
+    assert unary.legal_opportunities == 1
+    assert expansion.selectable_opportunities == 0
+    assert unary.selectable_opportunities == 0
+    assert expansion.blocked_unaffordable == 1
+    assert unary.blocked_unaffordable == 1
 
 
 def test_collect_v2_coverage_executes_all_v3_families_in_scripted_train_like_run() -> None:
