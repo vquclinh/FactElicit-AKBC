@@ -43,6 +43,8 @@ from cover_kbc.control.historical_bins import (
     HISTORY_SCHEMA_VERSION,
     HistoricalActionBin,
     HistoricalBinPackage,
+    POOLED_PROGRAM_FALLBACK,
+    POOLED_RELATION_FALLBACK,
     StateBinningSpec,
     SuccessorStat,
 )
@@ -174,6 +176,11 @@ class DerivationSettings:
     #: about TRAIN F1 informs it, and raising it can only make the derivation
     #: refuse more often.
     minimum_denominator: float = 1.0
+    #: V3 production can legally encounter relation/family combinations that
+    #: TRAIN never exercised for that exact relation. When this is enabled, the
+    #: derivation writes observed pooled fallback bins in addition to exact and
+    #: relation-local fallback bins. Existing V2 derivations leave this off.
+    pooled_fallbacks: bool = False
 
     def __post_init__(self) -> None:
         if not 0.0 < self.budget_quantile <= 1.0:
@@ -197,6 +204,7 @@ class DerivationSettings:
             "state_numeric_features": list(self.state_numeric_features),
             "state_categorical_features": list(self.state_categorical_features),
             "minimum_denominator": self.minimum_denominator,
+            "pooled_fallbacks": self.pooled_fallbacks,
             "float_precision": FLOAT_PRECISION,
         }
 
@@ -549,6 +557,26 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def parse_calibration_action_family(value: object) -> Any:
+    """Parse an executable V2 or V3 calibration action-family value."""
+    raw = str(getattr(value, "value", value))
+    try:
+        return ActionFamily(raw)
+    except ValueError:
+        pass
+    try:
+        from cover_kbc.v3_core.relation_programs import V3ActionFamily
+
+        family = V3ActionFamily(raw)
+    except ValueError:
+        raise DerivationError(
+            f"action_family {raw!r} is not a known V2 or V3 action family"
+        ) from None
+    if family.value == "STOP":
+        raise DerivationError("STOP is not an executable calibration action")
+    return family
+
+
 def derive_m21(
     records: Sequence[ActionTelemetryRecord],
     effects: Mapping[str, ActionGoldEffect],
@@ -558,11 +586,12 @@ def derive_m21(
 ) -> tuple[HistoricalBinPackage, dict[str, Any]]:
     """Historical bins for §17's six estimates, plus successor frequencies.
 
-    Every executed action contributes to exactly two accumulators: its own
-    state bin, and its relation's fallback bin. A bin that ends below the
-    settings' minimum support is not shipped - its observations are already in
-    the fallback, so dropping it loses nothing and shipping it would present a
-    mean of two observations as an estimate.
+    Every executed action contributes to its own state bin and its relation's
+    fallback bin. V3 derivations may additionally request observed pooled
+    fallbacks, which are still aggregates of real actions rather than defaults.
+    A bin that ends below the settings' minimum support is not shipped - its
+    observations are already in a fallback, so dropping it loses nothing and
+    shipping it would present a mean of two observations as an estimate.
 
     Returns:
         The package, and a diagnostics mapping recording what was aggregated,
@@ -592,13 +621,7 @@ def derive_m21(
             all_redundancy.append(value)
 
     for record in executed:
-        try:
-            family = ActionFamily(record.action_family)
-        except ValueError:
-            raise DerivationError(
-                f"{record.operation_id}: action_family "
-                f"{record.action_family!r} is not a canonical ActionFamily"
-            ) from None
+        family = parse_calibration_action_family(record.action_family)
         state_key = offline_state_bin_key(
             record.pre_state, program_type=record.program_type,
             relation=record.relation, binning=binning)
@@ -613,16 +636,32 @@ def derive_m21(
         delta_h = _finite(record.delta_entropy or 0.0, "delta_entropy")
         delta_h_values.append(delta_h)
 
-        for table, key in (
+        accumulator_keys = [
             (exact, (record.relation, record.program_type, state_key,
                      family.value)),
             (fallback, (record.relation, record.program_type,
                         FALLBACK_STATE_BIN, family.value)),
-        ):
+        ]
+        if settings.pooled_fallbacks:
+            accumulator_keys.extend((
+                (fallback, (
+                    POOLED_RELATION_FALLBACK,
+                    record.program_type,
+                    FALLBACK_STATE_BIN,
+                    family.value,
+                )),
+                (fallback, (
+                    POOLED_RELATION_FALLBACK,
+                    POOLED_PROGRAM_FALLBACK,
+                    FALLBACK_STATE_BIN,
+                    family.value,
+                )),
+            ))
+        for table, key in accumulator_keys:
             acc = table.get(key)
             if acc is None:
                 acc = _BinAccumulator(
-                    relation=record.relation, program_type=record.program_type,
+                    relation=key[0], program_type=key[1],
                     state_bin_key=key[2], family=family)
                 table[key] = acc
             acc.support += 1
@@ -651,10 +690,18 @@ def derive_m21(
                 steps, steps[1:]):
             key_b = step_b[1]
             transitions += 1
-            for table_key in (
+            successor_keys = [
                 (relation, program_type, key_a, family_value),
                 (relation, program_type, FALLBACK_STATE_BIN, family_value),
-            ):
+            ]
+            if settings.pooled_fallbacks:
+                successor_keys.extend((
+                    (POOLED_RELATION_FALLBACK, program_type,
+                     FALLBACK_STATE_BIN, family_value),
+                    (POOLED_RELATION_FALLBACK, POOLED_PROGRAM_FALLBACK,
+                     FALLBACK_STATE_BIN, family_value),
+                ))
+            for table_key in successor_keys:
                 counts = successor_counts.setdefault(table_key, {})
                 counts[key_b] = counts.get(key_b, 0) + 1
 
@@ -740,6 +787,21 @@ def derive_m21(
         "dropped_bin_keys": sorted(
             f"{a.relation}|{a.state_bin_key}|{a.family.value}" for a in dropped),
         "fallback_bins": len(fallback),
+        "pooled_fallbacks": settings.pooled_fallbacks,
+        "relation_fallback_bins": len([
+            acc for acc in fallback.values()
+            if acc.relation != POOLED_RELATION_FALLBACK
+        ]),
+        "program_fallback_bins": len([
+            acc for acc in fallback.values()
+            if acc.relation == POOLED_RELATION_FALLBACK
+            and acc.program_type != POOLED_PROGRAM_FALLBACK
+        ]),
+        "global_family_fallback_bins": len([
+            acc for acc in fallback.values()
+            if acc.relation == POOLED_RELATION_FALLBACK
+            and acc.program_type == POOLED_PROGRAM_FALLBACK
+        ]),
         "observed_transitions": transitions,
         "minimum_bin_support": settings.minimum_bin_support,
         # C-02, recorded as a measurement rather than asserted as a belief.
@@ -1095,6 +1157,23 @@ class CalibrationProvenance:
     collection_policy_version: str
     settings: DerivationSettings
     support_counts: Mapping[str, int]
+    merged_corpus_sha256: str = ""
+    merged_manifest_schema_version: str = ""
+    base_collection_identity: str = ""
+    base_collection_run: str = ""
+    supplement_identities: tuple[str, ...] = ()
+    supplement_runs: tuple[str, ...] = ()
+    supplement_repo_shas: tuple[str, ...] = ()
+    action_policy_version: str = ""
+    v3_core_schema_version: str = ""
+    v3_action_effect_schema_version: str = ""
+    v3_action_effects_sha256: str = ""
+    v3_collection_run_id: str = ""
+    m20_derivation_method: str = ""
+    m21_derivation_method: str = ""
+    minimum_bin_support: int = 0
+    fallback_hierarchy: tuple[str, ...] = ()
+    inherited_m20_source_sha256: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -1116,6 +1195,23 @@ class CalibrationProvenance:
             "collection_policy_version": self.collection_policy_version,
             "derivation_settings": self.settings.to_json(),
             "support_counts": dict(sorted(self.support_counts.items())),
+            "merged_corpus_sha256": self.merged_corpus_sha256,
+            "merged_manifest_schema_version": self.merged_manifest_schema_version,
+            "base_collection_identity": self.base_collection_identity,
+            "base_collection_run": self.base_collection_run,
+            "supplement_identities": list(self.supplement_identities),
+            "supplement_runs": list(self.supplement_runs),
+            "supplement_repo_shas": list(self.supplement_repo_shas),
+            "action_policy_version": self.action_policy_version,
+            "v3_core_schema_version": self.v3_core_schema_version,
+            "v3_action_effect_schema_version": self.v3_action_effect_schema_version,
+            "v3_action_effects_sha256": self.v3_action_effects_sha256,
+            "v3_collection_run_id": self.v3_collection_run_id,
+            "m20_derivation_method": self.m20_derivation_method,
+            "m21_derivation_method": self.m21_derivation_method,
+            "minimum_bin_support": self.minimum_bin_support,
+            "fallback_hierarchy": list(self.fallback_hierarchy),
+            "inherited_m20_source_sha256": self.inherited_m20_source_sha256,
         }
 
 
@@ -1229,6 +1325,7 @@ __all__ = [
     "derive_planner_calibration",
     "observe_relation_spend",
     "offline_state_bin_key",
+    "parse_calibration_action_family",
     "supports_depth_two",
     "resolve_derivation_source",
     "telemetry_numeric_feature",

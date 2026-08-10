@@ -46,7 +46,6 @@ ensure_src_on_path()
 
 import yaml
 
-from cover_kbc.control.planner_types import ActionFamily
 from cover_kbc.controller_calibration.derivation import (
     BINNING_SPEC_VERSION,
     DERIVATION_SCHEMA_VERSION,
@@ -63,6 +62,7 @@ from cover_kbc.controller_calibration.derivation import (
     derive_planner_calibration,
     observe_relation_spend,
     offline_state_bin_key,
+    parse_calibration_action_family,
     require_supported_schema,
     resolve_derivation_source,
 )
@@ -409,11 +409,11 @@ def main() -> int:
 
     for record in records:
         try:
-            ActionFamily(record.action_family)
-        except ValueError:
+            parse_calibration_action_family(record.action_family)
+        except DerivationError as error:
             raise CalibrationDerivationError(
                 f"{record.operation_id}: unknown action family "
-                f"{record.action_family!r}")
+                f"{record.action_family!r}: {error}")
 
     print(f"reading TRAIN gold : {args.train_gold}")
     gold = load_gold(args.train_gold, expected_rows=EXPECTED_TRAIN_ROWS)

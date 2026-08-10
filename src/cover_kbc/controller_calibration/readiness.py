@@ -333,6 +333,21 @@ def _check_v3_production_readiness(
         return
 
     provenance = dict(getattr(calibration, "provenance", {}) or {})
+    expected = dict(config.get("calibration_provenance") or {})
+    for provenance_field in ("merged_corpus_sha256", "train_sha256"):
+        configured = str(expected.get(provenance_field, ""))
+        actual = str(provenance.get(provenance_field, ""))
+        if configured and actual != configured:
+            blockers.append(
+                f"V3 calibration provenance: {provenance_field} is "
+                f"{actual!r}, but the config expects {configured!r}"
+            )
+    if not str(provenance.get("merged_corpus_sha256", "")):
+        blockers.append(
+            "V3 calibration provenance: merged_corpus_sha256 is missing")
+    if not str(provenance.get("action_policy_version", "")):
+        blockers.append(
+            "V3 calibration provenance: action_policy_version is missing")
     required_provenance = {
         "v3_core_schema_version": str(v3.get("schema_version", "")),
         "v3_action_effect_schema_version": "v3-action-effect-v1",
@@ -350,8 +365,61 @@ def _check_v3_production_readiness(
     if not str(provenance.get("v3_action_effects_sha256", "")):
         blockers.append(
             "V3 calibration provenance: v3_action_effects_sha256 is missing")
+    if str(provenance.get("m21_derivation_method", "")) != (
+            "v3_action_effect_utility_with_pooled_fallbacks_and_"
+            "inert_unestimable_state_movement"):
+        blockers.append(
+            "V3 calibration provenance: m21_derivation_method does not declare "
+            "the V3 pooled-fallback estimator")
+    if str(provenance.get("m20_derivation_method", "")) not in {
+        "inherited_frozen_v2_m20",
+        "v3_action_corpus_reestimate",
+    }:
+        blockers.append(
+            "V3 calibration provenance: m20_derivation_method is missing or "
+            "unsupported")
+
+    collection = dict(config.get("train_collection") or {})
+    if collection.get("policy"):
+        blockers.append(
+            "V3 production config: train_collection policy is configured; "
+            "collection-only scheduling must not be present in production")
+
+    try:
+        from cover_kbc.models.registry import model_blocks
+
+        enumerator, verifier = model_blocks(config)
+    except Exception as error:                                  # noqa: BLE001
+        blockers.append(f"V3 model profile: unreadable ({error})")
+        enumerator, verifier = {}, {}
+    for role, block, model_id, revision in (
+        ("enumerator", enumerator, FROZEN_ENUMERATOR_ID,
+         FROZEN_ENUMERATOR_REVISION),
+        ("verifier", verifier, FROZEN_VERIFIER_ID, FROZEN_VERIFIER_REVISION),
+    ):
+        actual_id = str(block.get("model_id", ""))
+        actual_revision = str(block.get("revision", ""))
+        if actual_id != model_id:
+            blockers.append(
+                f"V3 model profile: {role} model_id is {actual_id!r}, "
+                f"expected {model_id!r}")
+        if actual_revision != revision:
+            blockers.append(
+                f"V3 model profile: {role} revision is {actual_revision!r}, "
+                f"expected {revision!r}")
+    assertion = config.get("budget_assertion") or {}
+    total = int(assertion.get("total_published_parameters", 0) or 0)
+    limit = int(assertion.get("limit", 0) or 0)
+    if total != FROZEN_PARAMETER_TOTAL or limit != PARAMETER_LIMIT:
+        blockers.append(
+            f"V3 model budget: {total} / {limit}, expected "
+            f"{FROZEN_PARAMETER_TOTAL} / {PARAMETER_LIMIT}")
+    else:
+        satisfied.append(
+            f"V3 model budget: {FROZEN_PARAMETER_TOTAL} / {PARAMETER_LIMIT}")
 
     from cover_kbc.contracts.relation_profile import all_relation_profiles
+    from cover_kbc.contracts.registry import CONTRACTS
     from cover_kbc.v3_core.relation_programs import relation_train_collection_actions
 
     required_families = {
@@ -373,6 +441,31 @@ def _check_v3_production_readiness(
         )
     else:
         satisfied.append("V3 calibration coverage: required action families binned")
+
+    unresolved_regions: list[str] = []
+    for relation, contract in sorted(CONTRACTS.items()):
+        program_type = getattr(contract.program_type, "value", contract.program_type)
+        for family in relation_train_collection_actions(relation):
+            try:
+                calibration.history.lookup(
+                    relation=relation,
+                    program_type=str(program_type),
+                    state_bin_key="__readiness_unseen_state__",
+                    family=family,
+                )
+            except Exception as error:                          # noqa: BLE001
+                unresolved_regions.append(
+                    f"{relation}/{program_type}/{family.value}: {error}")
+    details["v3_unresolved_calibration_regions"] = unresolved_regions
+    if unresolved_regions:
+        blockers.append(
+            "V3 fallback coverage: production-legal planner region(s) cannot "
+            f"resolve to a historical bin, e.g. {unresolved_regions[:3]}"
+        )
+    else:
+        satisfied.append(
+            "V3 fallback coverage: every production-legal relation/family "
+            "resolves to an exact or fallback bin")
 
     if not any(blocker.startswith("V3 ") for blocker in blockers):
         details["v3_production_calibration"] = "READY"

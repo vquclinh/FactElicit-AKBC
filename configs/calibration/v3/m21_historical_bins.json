@@ -1,0 +1,1061 @@
+{
+  "artifact": "m21-historical-bins",
+  "binning": {
+    "categorical_features": [
+      "program_type"
+    ],
+    "numeric_boundaries": [
+      {
+        "cuts": [
+          0.615,
+          1.0
+        ],
+        "feature": "residual"
+      },
+      {
+        "cuts": [
+          1.0
+        ],
+        "feature": "unresolved_mass"
+      }
+    ],
+    "spec_version": "m21-state-binning-v1"
+  },
+  "bins": [
+    {
+      "Relation": "awardWonBy",
+      "action_family": "SET_EXPANSION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.001283,
+      "expected_delta_r": 0.002731,
+      "expected_fp": 0.233658,
+      "expected_redundancy": 0.474576,
+      "expected_verified_gain": 24.875,
+      "program_type": "LARGE_OPEN_SET",
+      "state_bin_key": "program_type=LARGE_OPEN_SET|residual=b0|unresolved_mass=b1",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b0|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 8,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "ALTERNATIVE_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.505063,
+      "expected_delta_r": -0.055,
+      "expected_fp": 0.4,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.6,
+      "program_type": "NUMERIC",
+      "state_bin_key": "program_type=NUMERIC|residual=b0|unresolved_mass=b1",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b0|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 20,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "CONTRAST_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.15,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.85,
+      "program_type": "NUMERIC",
+      "state_bin_key": "program_type=NUMERIC|residual=b0|unresolved_mass=b1",
+      "successors": [],
+      "support_count": 20,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "DEFINITION_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.211914,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.230769,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "program_type=NUMERIC|residual=b2|unresolved_mass=NA",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 13,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "MULTI_VIEW_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.076525,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.083333,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "program_type=NUMERIC|residual=b2|unresolved_mass=NA",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 12,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasCapacity",
+      "action_family": "DEFINITION_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.0,
+      "expected_redundancy": 0.6,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "program_type=NUMERIC|residual=b2|unresolved_mass=NA",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 20,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasCapacity",
+      "action_family": "MULTI_VIEW_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.349827,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.380952,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "program_type=NUMERIC|residual=b2|unresolved_mass=NA",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 21,
+      "target_class": ""
+    },
+    {
+      "Relation": "personHasCityOfDeath",
+      "action_family": "ATTRIBUTE_DECOMPOSITION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.49741,
+      "expected_delta_r": -0.000992,
+      "expected_fp": 0.354167,
+      "expected_redundancy": 0.218627,
+      "expected_verified_gain": 0.208333,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "program_type=NULL_SINGLE|residual=b1|unresolved_mass=b1",
+      "successors": [],
+      "support_count": 24,
+      "target_class": ""
+    },
+    {
+      "Relation": "personHasCityOfDeath",
+      "action_family": "CONTRAST_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.0,
+      "expected_redundancy": 0.242,
+      "expected_verified_gain": 0.0,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "program_type=NULL_SINGLE|residual=b1|unresolved_mass=b1",
+      "successors": [],
+      "support_count": 8,
+      "target_class": ""
+    },
+    {
+      "Relation": "personHasCityOfDeath",
+      "action_family": "INDEPENDENT_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.0,
+      "expected_redundancy": 0.242,
+      "expected_verified_gain": 0.0,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "program_type=NULL_SINGLE|residual=b1|unresolved_mass=b1",
+      "successors": [],
+      "support_count": 30,
+      "target_class": ""
+    },
+    {
+      "Relation": "personHasCityOfDeath",
+      "action_family": "ATTRIBUTE_DECOMPOSITION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.247233,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.230769,
+      "expected_redundancy": 0.291667,
+      "expected_verified_gain": 0.038462,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "program_type=NULL_SINGLE|residual=b2|unresolved_mass=b1",
+      "successors": [],
+      "support_count": 26,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "SET_EXPANSION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.007749,
+      "expected_delta_r": 0.007934,
+      "expected_fp": 0.323779,
+      "expected_redundancy": 0.479661,
+      "expected_verified_gain": 18.454545,
+      "program_type": "LARGE_OPEN_SET",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.666667,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.333333,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 11,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "UNARY_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.2,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.6,
+      "program_type": "LARGE_OPEN_SET",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.6,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.4,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 10,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "ATTRIBUTE_DECOMPOSITION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.367318,
+      "expected_delta_r": -0.000476,
+      "expected_fp": 0.29,
+      "expected_redundancy": 0.242,
+      "expected_verified_gain": 0.12,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 50,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "CONTRAST_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.0,
+      "expected_redundancy": 0.609262,
+      "expected_verified_gain": 0.0,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 15,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "INDEPENDENT_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.0,
+      "expected_redundancy": 0.609262,
+      "expected_verified_gain": 0.0,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 30,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "ALTERNATIVE_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.459148,
+      "expected_delta_r": -0.045833,
+      "expected_fp": 0.458333,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.541667,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.958333,
+          "successor_state_bin": "program_type=NUMERIC|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.041667,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 24,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "CONTRAST_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.208333,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.791667,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 24,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "DEFINITION_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.083481,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.090909,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 33,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "INDEPENDENT_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 1.0,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 4,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "MULTI_VIEW_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.250444,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.272727,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 33,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "LISTING_ELIMINATION",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.333333,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.333333,
+      "program_type": "SMALL_SET",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 6,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "SEMANTIC_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.166667,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.166667,
+      "program_type": "SMALL_SET",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.75,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b1|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.25,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b2|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 6,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "ALTERNATIVE_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.459148,
+      "expected_delta_r": -0.045833,
+      "expected_fp": 0.458333,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.541667,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.958333,
+          "successor_state_bin": "program_type=NUMERIC|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.041667,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 24,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "ATTRIBUTE_DECOMPOSITION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.367318,
+      "expected_delta_r": -0.000476,
+      "expected_fp": 0.29,
+      "expected_redundancy": 0.242,
+      "expected_verified_gain": 0.12,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 50,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "CONTRAST_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.128205,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.487179,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 39,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "DEFINITION_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.083481,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.090909,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 33,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "INDEPENDENT_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.117647,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 34,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "LISTING_ELIMINATION",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.333333,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.333333,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 6,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "MULTI_VIEW_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.250444,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.272727,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 33,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "SEMANTIC_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.166667,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.166667,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.75,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b1|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.25,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b2|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 6,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "SET_EXPANSION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.007749,
+      "expected_delta_r": 0.007934,
+      "expected_fp": 0.323779,
+      "expected_redundancy": 0.479661,
+      "expected_verified_gain": 18.454545,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.666667,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.333333,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 11,
+      "target_class": ""
+    },
+    {
+      "Relation": "__any_relation__",
+      "action_family": "UNARY_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.2,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.6,
+      "program_type": "__any_program__",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.6,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.4,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 10,
+      "target_class": ""
+    },
+    {
+      "Relation": "awardWonBy",
+      "action_family": "SET_EXPANSION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.007749,
+      "expected_delta_r": 0.007934,
+      "expected_fp": 0.323779,
+      "expected_redundancy": 0.479661,
+      "expected_verified_gain": 18.454545,
+      "program_type": "LARGE_OPEN_SET",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.666667,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.333333,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 11,
+      "target_class": ""
+    },
+    {
+      "Relation": "awardWonBy",
+      "action_family": "UNARY_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.2,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.6,
+      "program_type": "LARGE_OPEN_SET",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.6,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.4,
+          "successor_state_bin": "program_type=LARGE_OPEN_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 10,
+      "target_class": ""
+    },
+    {
+      "Relation": "companyTradesAtStockExchange",
+      "action_family": "LISTING_ELIMINATION",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.333333,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.333333,
+      "program_type": "SMALL_SET",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b1|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 6,
+      "target_class": ""
+    },
+    {
+      "Relation": "companyTradesAtStockExchange",
+      "action_family": "SEMANTIC_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.166667,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.166667,
+      "program_type": "SMALL_SET",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.75,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b1|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.25,
+          "successor_state_bin": "program_type=SMALL_SET|residual=b2|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 6,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "ALTERNATIVE_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.52474,
+      "expected_delta_r": -0.052381,
+      "expected_fp": 0.380952,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.619048,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 0.952381,
+          "successor_state_bin": "program_type=NUMERIC|residual=b0|unresolved_mass=b1"
+        },
+        {
+          "probability": 0.047619,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 21,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "CONTRAST_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.142857,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.857143,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 21,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "DEFINITION_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.211914,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.230769,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 13,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "INDEPENDENT_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 1.0,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 3,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasArea",
+      "action_family": "MULTI_VIEW_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.076525,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.083333,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 12,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasCapacity",
+      "action_family": "ALTERNATIVE_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 1.0,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b0|unresolved_mass=b1"
+        }
+      ],
+      "support_count": 3,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasCapacity",
+      "action_family": "CONTRAST_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.666667,
+      "expected_redundancy": 1.0,
+      "expected_verified_gain": 0.333333,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 3,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasCapacity",
+      "action_family": "DEFINITION_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.0,
+      "expected_redundancy": 0.6,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 20,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasCapacity",
+      "action_family": "INDEPENDENT_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 1.0,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 1,
+      "target_class": ""
+    },
+    {
+      "Relation": "hasCapacity",
+      "action_family": "MULTI_VIEW_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.349827,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.380952,
+      "expected_redundancy": 0.5,
+      "expected_verified_gain": 0.0,
+      "program_type": "NUMERIC",
+      "state_bin_key": "__fallback__",
+      "successors": [
+        {
+          "probability": 1.0,
+          "successor_state_bin": "program_type=NUMERIC|residual=b2|unresolved_mass=NA"
+        }
+      ],
+      "support_count": 21,
+      "target_class": ""
+    },
+    {
+      "Relation": "personHasCityOfDeath",
+      "action_family": "ATTRIBUTE_DECOMPOSITION",
+      "expected_cost": 1.0,
+      "expected_delta_h": -0.367318,
+      "expected_delta_r": -0.000476,
+      "expected_fp": 0.29,
+      "expected_redundancy": 0.242,
+      "expected_verified_gain": 0.12,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 50,
+      "target_class": ""
+    },
+    {
+      "Relation": "personHasCityOfDeath",
+      "action_family": "CONTRAST_VERIFY",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.0,
+      "expected_redundancy": 0.242,
+      "expected_verified_gain": 0.0,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 15,
+      "target_class": ""
+    },
+    {
+      "Relation": "personHasCityOfDeath",
+      "action_family": "INDEPENDENT_RECALL",
+      "expected_cost": 1.0,
+      "expected_delta_h": 0.0,
+      "expected_delta_r": 0.0,
+      "expected_fp": 0.0,
+      "expected_redundancy": 0.242,
+      "expected_verified_gain": 0.0,
+      "program_type": "NULL_SINGLE",
+      "state_bin_key": "__fallback__",
+      "successors": [],
+      "support_count": 30,
+      "target_class": ""
+    }
+  ],
+  "fallback_state_bin": "__fallback__",
+  "history_version": "m21-v3-derivation-v1",
+  "minimum_bin_support": null,
+  "provenance": {
+    "action_policy_version": "collect-v2-coverage-r2",
+    "base_collection_identity": "3576a7d8259c504759d5edf60f6eabf027643ff31841c96f48e595e8ee1e74ea",
+    "base_collection_run": "/content/drive/MyDrive/AKBC/Submissions-AKBC/v3_train_collect_v2_coverage_a11d75d2_20260809T232041Z/collection/cover_kbc_v3_train_collection_train-collect_20260809T232616Z",
+    "binning_spec_version": "m21-state-binning-v1",
+    "collection_policy_version": "collect-v2-coverage-r2",
+    "collection_repo_sha": "ae33b2ee4e3f437dab74cc95034958773e3cb675",
+    "derivation_repo_sha": "ae33b2ee4e3f437dab74cc95034958773e3cb675",
+    "derivation_schema_version": "v3-calibration-derivation-v1",
+    "derivation_settings": {
+      "budget_quantile": 0.95,
+      "float_precision": 6,
+      "minimum_bin_support": 8,
+      "minimum_denominator": 1.0,
+      "pooled_fallbacks": true,
+      "state_categorical_features": [
+        "program_type"
+      ],
+      "state_numeric_features": [
+        "residual",
+        "unresolved_mass"
+      ],
+      "state_quantiles": [
+        0.3333333333333333,
+        0.6666666666666666
+      ]
+    },
+    "evaluator_sha256": "2d592ae177c7b230922bb959da7a8ee1c4c662bf72a99d4dbd0cf62170ff9e22",
+    "experiment_config_sha256": "590a30ab5bc42d255531c8993c0b2664fe4dd4cd81bd2849ea311838b5e3e0fa",
+    "fallback_hierarchy": [
+      "exact: relation/program_type/state_bin/family/target_class",
+      "relation fallback: relation/program_type/__fallback__/family",
+      "program pooled fallback: __any_relation__/program_type/__fallback__/family",
+      "global family fallback: __any_relation__/__any_program__/__fallback__/family"
+    ],
+    "inherited_m20_source_sha256": "8110fccb4c3e85a942f5fc89a50f680bea72e8b6d1e83b1fa2c47d670ec15c68",
+    "m20_derivation_method": "inherited_frozen_v2_m20",
+    "m20_derivation_version": "m20-derivation-v1",
+    "m21_derivation_method": "v3_action_effect_utility_with_pooled_fallbacks_and_inert_unestimable_state_movement",
+    "m21_derivation_version": "m21-v3-derivation-v1",
+    "manifest_sha256": "10f61017a80c4d43c5a973aab613f60b96db480e06b89177978e35faa88fb323",
+    "merged_corpus_sha256": "50be66dc88419f88ac811243244d534f0a8a160bdf2a48d02eb77295a58c33af",
+    "merged_manifest_schema_version": "merged-v3-calibration-corpus-v1",
+    "minimum_bin_support": 8,
+    "predictions_sha256": "",
+    "relation_catalogue": [
+      "awardWonBy",
+      "companyTradesAtStockExchange",
+      "countryLandBordersCountry",
+      "hasArea",
+      "hasCapacity",
+      "personHasCityOfDeath"
+    ],
+    "supplement_identities": [
+      "9dea82ebea944ae6ea8a6bae3ab3a9f5a4702d453be665f47f3e90f5da4f3b63",
+      "935735e05d8a21440ce61871a39b859d85cf3230d04780ead02a0f2382615d82"
+    ],
+    "supplement_repo_shas": [
+      "16ebbbf646c0924e825ff95dae96a0d74320ecc1",
+      "ae33b2ee4e3f437dab74cc95034958773e3cb675"
+    ],
+    "supplement_runs": [
+      "/content/drive/MyDrive/AKBC/Submissions-AKBC/v3_supplement_16ebbbf6_20260810T070529Z/supplement/cover_kbc_v3_train_collection_train-supplement_20260810T071043Z",
+      "/content/drive/MyDrive/AKBC/Submissions-AKBC/v3_supplement2_ae33b2ee_20260810T084303Z/supplement2/cover_kbc_v3_train_collection_train-supplement_20260810T084847Z"
+    ],
+    "support_counts": {
+      "committed_action_effects": 246,
+      "considered_actions": 446,
+      "executed_actions": 246,
+      "historical_bins": 50,
+      "observed_transitions": 76,
+      "queries": 170
+    },
+    "telemetry_schema_version": "train-telemetry-v3",
+    "telemetry_sha256": "880ac9514237b73c3701bea96875478192165812ed337f87a6430da447d4b6cd",
+    "train_rows": 477,
+    "train_sha256": "ad37cd30d1ff4b9f1ef2579b25e64093b202c40da11e8c412e13386f1e5d332e",
+    "v3_action_effect_schema_version": "v3-action-effect-v1",
+    "v3_action_effects_sha256": "32304ec2fa4cc09697147af5d3185552700e47d8eef79d63f82de9086c6ca41e",
+    "v3_collection_run_id": "merged:50be66dc88419f88",
+    "v3_core_schema_version": "v3-core-v1"
+  },
+  "schema_version": "m21-history-v1",
+  "source": "TRAIN_CALIBRATED"
+}

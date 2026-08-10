@@ -1375,7 +1375,19 @@ def test_v3_collection_artifact_schema_paths_are_not_fake_calibration(tmp_path: 
         "m21_planner_calibration",
     }
     for path in outputs.values():
-        assert not (ROOT / path).exists()
+        assert "/calibration/v3/" in str(path)
+    assert config["relation_budget_scheduler"]["enabled"] is False
+    assert config["micro_planner"]["enabled"] is False
+    assert config["layer6_integration"]["enabled"] is False
+
+    for path in outputs.values():
+        artifact = ROOT / path
+        if artifact.exists():
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            provenance = payload.get("provenance") or {}
+            assert provenance.get("merged_corpus_sha256")
+            assert provenance.get("v3_action_effect_schema_version") == (
+                "v3-action-effect-v1")
 
     payload = {"schema_version": "v3-action-effect-v1", "ok": True}
     target = tmp_path / "v3_action_effects.jsonl"

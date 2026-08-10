@@ -1899,6 +1899,15 @@ class CoverPipeline:
 
         query = graph.query
         ledger = self._budget_ledger_for(graph)
+        executed_actions = ()
+        if kind == "v3":
+            history = self._v3_action_histories.get(self._query_key(graph))
+            if history is not None:
+                executed_actions = tuple(
+                    entry.action_identity
+                    for entry in history.entries
+                    if entry.action_identity
+                )
         state = PlannerStateSnapshot(
             subject=query.subject, relation=query.relation,
             row_index=query.row_index,
@@ -1912,6 +1921,7 @@ class CoverPipeline:
             # the ledger it came from.
             budget_plan=(ledger.plan if ledger is not None else None),
             budget_ledger=ledger,
+            executed_actions=executed_actions,
         )
         decision = self.micro_planner.plan(
             state, [c.to_planner_action() for c in candidates])

@@ -1,0 +1,95 @@
+{
+  "alpha": 1.0,
+  "artifact": "m21-planner-calibration",
+  "beta": 0.0,
+  "calibration_version": "m21-v3-derivation-v1",
+  "delta": 1.01626,
+  "eta": 1.01626,
+  "gamma": 22.634228,
+  "kappa": 1.0,
+  "lookahead_depth": 1,
+  "provenance": {
+    "action_policy_version": "collect-v2-coverage-r2",
+    "base_collection_identity": "3576a7d8259c504759d5edf60f6eabf027643ff31841c96f48e595e8ee1e74ea",
+    "base_collection_run": "/content/drive/MyDrive/AKBC/Submissions-AKBC/v3_train_collect_v2_coverage_a11d75d2_20260809T232041Z/collection/cover_kbc_v3_train_collection_train-collect_20260809T232616Z",
+    "binning_spec_version": "m21-state-binning-v1",
+    "collection_policy_version": "collect-v2-coverage-r2",
+    "collection_repo_sha": "ae33b2ee4e3f437dab74cc95034958773e3cb675",
+    "derivation_repo_sha": "ae33b2ee4e3f437dab74cc95034958773e3cb675",
+    "derivation_schema_version": "v3-calibration-derivation-v1",
+    "derivation_settings": {
+      "budget_quantile": 0.95,
+      "float_precision": 6,
+      "minimum_bin_support": 8,
+      "minimum_denominator": 1.0,
+      "pooled_fallbacks": true,
+      "state_categorical_features": [
+        "program_type"
+      ],
+      "state_numeric_features": [
+        "residual",
+        "unresolved_mass"
+      ],
+      "state_quantiles": [
+        0.3333333333333333,
+        0.6666666666666666
+      ]
+    },
+    "evaluator_sha256": "2d592ae177c7b230922bb959da7a8ee1c4c662bf72a99d4dbd0cf62170ff9e22",
+    "experiment_config_sha256": "590a30ab5bc42d255531c8993c0b2664fe4dd4cd81bd2849ea311838b5e3e0fa",
+    "fallback_hierarchy": [
+      "exact: relation/program_type/state_bin/family/target_class",
+      "relation fallback: relation/program_type/__fallback__/family",
+      "program pooled fallback: __any_relation__/program_type/__fallback__/family",
+      "global family fallback: __any_relation__/__any_program__/__fallback__/family"
+    ],
+    "inherited_m20_source_sha256": "8110fccb4c3e85a942f5fc89a50f680bea72e8b6d1e83b1fa2c47d670ec15c68",
+    "m20_derivation_method": "inherited_frozen_v2_m20",
+    "m20_derivation_version": "m20-derivation-v1",
+    "m21_derivation_method": "v3_action_effect_utility_with_pooled_fallbacks_and_inert_unestimable_state_movement",
+    "m21_derivation_version": "m21-v3-derivation-v1",
+    "manifest_sha256": "10f61017a80c4d43c5a973aab613f60b96db480e06b89177978e35faa88fb323",
+    "merged_corpus_sha256": "50be66dc88419f88ac811243244d534f0a8a160bdf2a48d02eb77295a58c33af",
+    "merged_manifest_schema_version": "merged-v3-calibration-corpus-v1",
+    "minimum_bin_support": 8,
+    "predictions_sha256": "",
+    "relation_catalogue": [
+      "awardWonBy",
+      "companyTradesAtStockExchange",
+      "countryLandBordersCountry",
+      "hasArea",
+      "hasCapacity",
+      "personHasCityOfDeath"
+    ],
+    "supplement_identities": [
+      "9dea82ebea944ae6ea8a6bae3ab3a9f5a4702d453be665f47f3e90f5da4f3b63",
+      "935735e05d8a21440ce61871a39b859d85cf3230d04780ead02a0f2382615d82"
+    ],
+    "supplement_repo_shas": [
+      "16ebbbf646c0924e825ff95dae96a0d74320ecc1",
+      "ae33b2ee4e3f437dab74cc95034958773e3cb675"
+    ],
+    "supplement_runs": [
+      "/content/drive/MyDrive/AKBC/Submissions-AKBC/v3_supplement_16ebbbf6_20260810T070529Z/supplement/cover_kbc_v3_train_collection_train-supplement_20260810T071043Z",
+      "/content/drive/MyDrive/AKBC/Submissions-AKBC/v3_supplement2_ae33b2ee_20260810T084303Z/supplement2/cover_kbc_v3_train_collection_train-supplement_20260810T084847Z"
+    ],
+    "support_counts": {
+      "committed_action_effects": 246,
+      "considered_actions": 446,
+      "executed_actions": 246,
+      "historical_bins": 50,
+      "observed_transitions": 76,
+      "queries": 170
+    },
+    "telemetry_schema_version": "train-telemetry-v3",
+    "telemetry_sha256": "880ac9514237b73c3701bea96875478192165812ed337f87a6430da447d4b6cd",
+    "train_rows": 477,
+    "train_sha256": "ad37cd30d1ff4b9f1ef2579b25e64093b202c40da11e8c412e13386f1e5d332e",
+    "v3_action_effect_schema_version": "v3-action-effect-v1",
+    "v3_action_effects_sha256": "32304ec2fa4cc09697147af5d3185552700e47d8eef79d63f82de9086c6ca41e",
+    "v3_collection_run_id": "merged:50be66dc88419f88",
+    "v3_core_schema_version": "v3-core-v1"
+  },
+  "source": "TRAIN_CALIBRATED",
+  "tau_continue": 0.0
+}

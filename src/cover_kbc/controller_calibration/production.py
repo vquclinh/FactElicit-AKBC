@@ -54,6 +54,9 @@ SHARED_PROVENANCE_FIELDS = (
     "train_sha256",
     "telemetry_sha256",
     "derivation_schema_version",
+    "merged_corpus_sha256",
+    "v3_core_schema_version",
+    "v3_action_effect_schema_version",
 )
 
 

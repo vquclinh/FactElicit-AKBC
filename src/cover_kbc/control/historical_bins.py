@@ -39,6 +39,11 @@ from cover_kbc.control.planner_types import (
 #: Bumped when the bin schema changes shape.
 HISTORY_SCHEMA_VERSION = "m21-history-v1"
 
+# Optional pooled fallback keys. Older V2 packages do not ship these entries,
+# so this only changes behavior when a calibration explicitly derives them.
+POOLED_RELATION_FALLBACK = "__any_relation__"
+POOLED_PROGRAM_FALLBACK = "__any_program__"
+
 #: The six §17 estimates. Every bin must carry all of them.
 REQUIRED_ESTIMATES = (
     "expected_verified_gain",
@@ -341,23 +346,36 @@ class HistoricalBinPackage:
         does not. Two equally specific matches are an error rather than a
         coin-flip, because which one wins would then depend on ordering.
         """
-        matches = [
-            entry for entry in self.bins
-            if entry.relation == relation
-            and entry.program_type == program_type
-            and entry.state_bin_key == state_bin_key
-            and _family_value(entry.action_family) == _family_value(family)
-            and entry.target_class in ("", target_class)
-        ]
-        if not matches and self.fallback_state_bin:
-            matches = [
+        def matches_for(
+            candidate_relation: str, candidate_program: str,
+            candidate_state: str,
+        ) -> list[HistoricalActionBin]:
+            return [
                 entry for entry in self.bins
-                if entry.relation == relation
-                and entry.program_type == program_type
-                and entry.state_bin_key == self.fallback_state_bin
+                if entry.relation == candidate_relation
+                and entry.program_type == candidate_program
+                and entry.state_bin_key == candidate_state
                 and _family_value(entry.action_family) == _family_value(family)
                 and entry.target_class in ("", target_class)
             ]
+
+        lookup_steps = [(relation, program_type, state_bin_key)]
+        if self.fallback_state_bin:
+            lookup_steps.extend((
+                (relation, program_type, self.fallback_state_bin),
+                (POOLED_RELATION_FALLBACK, program_type, self.fallback_state_bin),
+                (
+                    POOLED_RELATION_FALLBACK,
+                    POOLED_PROGRAM_FALLBACK,
+                    self.fallback_state_bin,
+                ),
+            ))
+        matches: list[HistoricalActionBin] = []
+        for candidate_relation, candidate_program, candidate_state in lookup_steps:
+            matches = matches_for(
+                candidate_relation, candidate_program, candidate_state)
+            if matches:
+                break
         if not matches:
             raise PlannerError(
                 f"no historical bin matches {relation}/{program_type}/"
@@ -512,6 +530,8 @@ def validate_bins(bins: Sequence[HistoricalActionBin]) -> None:
 __all__ = [
     "ESTIMATE_UNITS",
     "HISTORY_SCHEMA_VERSION",
+    "POOLED_PROGRAM_FALLBACK",
+    "POOLED_RELATION_FALLBACK",
     "REQUIRED_ESTIMATES",
     "HistoricalActionBin",
     "HistoricalBinPackage",
