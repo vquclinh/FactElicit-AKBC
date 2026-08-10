@@ -46,6 +46,15 @@ from cover_kbc.types import (
     VerificationLabel,
     VerificationTier,
 )
+from cover_kbc.v3_1.config import DEFAULT_V31, V31Config
+from cover_kbc.v3_1.entity_finalization import (
+    STOCK_RELATION,
+    apply_support_dominance,
+    reject_structurally_invalid_listings,
+)
+from cover_kbc.v3_1.numeric_recovery import canonicalize_numeric_output
+from cover_kbc.v3_1.output_repair import repair_values
+from cover_kbc.v3_1.retention import is_retainable, retained_pool
 
 
 @dataclass(frozen=True)
@@ -58,6 +67,14 @@ class SelectionConfig:
     capacity_support_ratio: float = 1.0
     #: hasCapacity: a cluster verified VALID may win regardless of the ratio.
     capacity_trust_verified: bool = True
+    #: V3.1 (Audit 0076). Every flag defaults off, so a config that does not
+    #: mention V3.1 selects exactly what frozen V3 selected.
+    v3_1: V31Config = DEFAULT_V31
+
+    @property
+    def v3_1_safe(self):
+        """The active Class A feature set - all-off unless V3.1 is enabled."""
+        return self.v3_1.safe if self.v3_1.enabled else DEFAULT_V31.safe
 
 
 DEFAULT_SELECTION = SelectionConfig()
@@ -154,6 +171,18 @@ def select_small_set(graph: EvidenceGraph, config: SelectionConfig) -> list[Cand
     if graph.gate_negative:
         return []
     accepted = _accepted(_resolve(graph, config))
+    if graph.contract.relation == STOCK_RELATION:
+        # Rejection-first, stock only. Borders share this programme and must
+        # not inherit either rule - see audit 0076's frozen-relation gate.
+        safe = config.v3_1_safe
+        accepted = reject_structurally_invalid_listings(
+            accepted, graph.query.subject, enabled=safe.stock_structural_validation
+        )
+        accepted = apply_support_dominance(
+            accepted,
+            lambda c: _acquisition_support(c, graph.contract, config),
+            enabled=safe.stock_support_dominance,
+        )
     accepted.sort(key=lambda c: _rank_key(c, graph.contract, config))
     limit = graph.contract.max_objects
     return accepted[:limit] if limit else accepted
@@ -294,6 +323,12 @@ def select_numeric_robust(graph: EvidenceGraph, config: SelectionConfig) -> list
     if not clusters:
         return []
 
+    # FINAL_CANDIDATE_RETENTION. Cluster order breaks size/dispersion ties on
+    # the *smallest representative*, which knows nothing about acceptance - so
+    # a query whose only accepted candidate is the larger singleton emitted
+    # nothing at all. Restricting the pool first keeps the ordering intact.
+    clusters = retained_pool(clusters, enabled=config.v3_1_safe.final_candidate_retention)
+
     cluster, members = clusters[0]
     if not members or not _cluster_is_emittable(members):
         return []
@@ -343,6 +378,12 @@ def select_numeric_highest_valid(
     # Only clusters the evidence policy accepted may be emitted; a bigger
     # number is not a better answer if nothing supports it.
     qualifying = [(c, m) for c, m in qualifying if _cluster_is_emittable(m)]
+    if not qualifying and config.v3_1_safe.final_candidate_retention:
+        # FINAL_CANDIDATE_RETENTION: the support-ratio gate can empty the pool
+        # while an accepted, uncontradicted cluster is still standing. Fall
+        # back to those rather than abstaining. (No TRAIN row reaches this;
+        # capacity's failures are recall, not selection.)
+        qualifying = [(c, m) for c, m in clusters if m and is_retainable(m)]
     if not qualifying:
         return []
 
@@ -426,6 +467,31 @@ def select(graph: EvidenceGraph, config: SelectionConfig = DEFAULT_SELECTION) ->
     return _check_cardinality(selector(graph, config), graph.contract)
 
 
+def _final_values(
+    chosen: list[Candidate], contract: RelationContract, config: SelectionConfig
+) -> list[str]:
+    """The strings the row actually carries, after V3.1 structural repair.
+
+    Repair runs on output *values*, never on candidates: the candidate list is
+    the trace of what the pipeline believed, and rewriting it to match a
+    serialisation fix would erase the evidence that the fix was needed.
+    """
+    safe = config.v3_1_safe
+    values = [c.output_value for c in chosen]
+    if contract.program_type is ProgramType.NUMERIC:
+        values = [
+            canonicalize_numeric_output(
+                value,
+                integer_only=contract.selection.numeric_integer_only,
+                enabled=safe.numeric_output_canonicalization,
+            )
+            for value in values
+        ]
+    else:
+        values = repair_values(values, enabled=safe.enumeration_label_repair)
+    return values
+
+
 def finalize(
     graph: EvidenceGraph,
     *,
@@ -448,15 +514,19 @@ def finalize(
         )
     chosen = select(graph, config)
     candidates = graph.active_candidates()
+    values = _final_values(chosen, graph.contract, config)
 
     empty_reason = EmptyReason.NOT_EMPTY
-    if not chosen:
+    if not values:
+        # Read from the graph, not from ``chosen``: structural repair can empty
+        # a row whose selector did choose something, and the reason for *that*
+        # emptiness is still the evidence state, not a new category.
         empty_reason = _empty_reason(graph, candidates)
 
     return Prediction(
         subject=graph.query.subject,
         relation=graph.query.relation,
-        object_entities=[c.output_value for c in chosen],
+        object_entities=values,
         candidates=candidates,
         row_index=graph.query.row_index,
         stopped_reason=stopped_reason,

@@ -20,6 +20,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+from cover_kbc.v3_1.compatibility import SAFE as V3_1_SAFE, compatibility_of
+from cover_kbc.v3_1.config import V31Config
+
 FROZEN_ENUMERATOR_ID = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
 FROZEN_ENUMERATOR_REVISION = "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
 FROZEN_VERIFIER_ID = "Qwen/Qwen3.5-4B"
@@ -871,8 +874,79 @@ def evaluate_test_readiness(
 
     blockers, satisfied, details = _check_blind_test_dataset(
         config, data_dir, blockers, satisfied, details)
+    blockers, satisfied, details = _check_v3_1_calibration_compatibility(
+        config, blockers, satisfied, details)
 
     return _test_verdict(blockers, satisfied, details)
+
+
+def _check_v3_1_calibration_compatibility(
+    config: Mapping[str, Any],
+    blockers: list[str],
+    satisfied: list[str],
+    details: dict[str, Any],
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    """Refuse TEST for a V3.1 profile whose calibration no longer describes it.
+
+    Two independent refusals, because they fail for different reasons:
+
+    * a **Class B** feature is on. Prompts, recall and action semantics change
+      the action-effect distribution the Audit 0073 M20/M21 calibration was
+      derived from, so reusing that calibration is a false claim about the run.
+      The profile is reported ``CALIBRATION_REVIEW_REQUIRED`` and never
+      ``FULL_TEST_READY``.
+    * an enabled feature is **not declared** in
+      :mod:`cover_kbc.v3_1.compatibility`, or is declared as anything other
+      than ``SAFE_WITH_EXISTING_CALIBRATION``. A feature inherits nothing from
+      the block it was written in; safety is a property of where the code runs,
+      and that has to be stated before it can be believed.
+    """
+    pipeline = config.get("pipeline") or {}
+    selection = pipeline.get("selection") or {}
+    raw = selection.get("v3_1") or pipeline.get("v3_1")
+    if not raw:
+        details["v3_1"] = "absent"
+        return blockers, satisfied, details
+
+    try:
+        v3_1 = V31Config.from_mapping(raw)
+    except ValueError as error:
+        blockers.append(f"selection.v3_1: {error}")
+        details["v3_1"] = "invalid"
+        return blockers, satisfied, details
+
+    details["v3_1_enabled"] = v3_1.enabled
+    details["v3_1_safe_features"] = list(v3_1.safe.enabled_features)
+    details["v3_1_aggressive_features"] = list(v3_1.aggressive.enabled_features)
+    details["v3_1_calibration_status"] = v3_1.calibration_status
+
+    if not v3_1.enabled:
+        satisfied.append("selection.v3_1: present but disabled")
+        return blockers, satisfied, details
+
+    if v3_1.aggressive_active:
+        blockers.append(
+            "selection.v3_1: CALIBRATION_REVIEW_REQUIRED - calibration-shifting "
+            f"feature(s) {list(v3_1.aggressive.enabled_features)} are enabled. "
+            "These change recall, prompt or action semantics, so the Audit 0073 "
+            "M20/M21 calibration no longer describes this run and must be "
+            "re-derived from a TRAIN collection made with them.")
+
+    for feature in v3_1.safe.enabled_features:
+        try:
+            compatibility = compatibility_of(feature)
+        except KeyError as error:
+            blockers.append(f"selection.v3_1.safe: {error.args[0]}")
+            continue
+        if compatibility != V3_1_SAFE:
+            blockers.append(
+                f"selection.v3_1.safe.{feature} is classified {compatibility}, "
+                "not SAFE_WITH_EXISTING_CALIBRATION; it may not run under the "
+                "existing calibration")
+        else:
+            satisfied.append(f"selection.v3_1.safe.{feature}: {compatibility}")
+
+    return blockers, satisfied, details
 
 
 

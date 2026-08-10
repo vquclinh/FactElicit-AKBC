@@ -132,6 +132,7 @@ from cover_kbc.scoring import (
     verification_targets,
 )
 from cover_kbc.selection import DEFAULT_SELECTION, SelectionConfig, finalize
+from cover_kbc.v3_1.config import V31Config
 from cover_kbc.types import (
     Budget,
     EmptyReason,
@@ -310,10 +311,16 @@ class PipelineConfig:
         controller = ControllerConfig.from_mapping(config.pop("controller", None))
         v3_core = V3CoreConfig.from_mapping(config.pop("v3_core", None))
         selection_cfg = dict(config.pop("selection", None) or {})
+        # V3.1 (audit 0076) is a selection-time block, so it is read here and
+        # nowhere else: nothing upstream of Module 8 may branch on it.
+        v3_1 = V31Config.from_mapping(
+            selection_cfg.pop("v3_1", None) or config.pop("v3_1", None)
+        )
         selection = SelectionConfig(
             scoring=scoring,
             capacity_support_ratio=float(selection_cfg.get("capacity_support_ratio", 1.0)),
             capacity_trust_verified=bool(selection_cfg.get("capacity_trust_verified", True)),
+            v3_1=v3_1,
         )
         if "mode" in config:
             config["mode"] = ExecutionMode(config["mode"])
