@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from cover_kbc.contracts.relation_profile import get_relation_profile
@@ -34,6 +35,7 @@ from cover_kbc.controller_calibration.readiness import (
     evaluate_validation_readiness,
 )
 from cover_kbc.controller_calibration.collection_policy import (
+    BLOCKED_HISTORY,
     BLOCKED_UNAFFORDABLE,
     TrainCollectionPolicy,
 )
@@ -57,11 +59,15 @@ from cover_kbc.pipeline import CoverPipeline, PipelineConfig
 from cover_kbc.types import (
     Budget,
     CandidateStatus,
+    DecodeProfile,
+    GenerationRecord,
+    IndependenceGroup,
     ModelRole,
     OutputType,
     Prediction,
     Query,
     VerificationLabel,
+    ViewFamily,
 )
 from cover_kbc.v3_core import (
     PromptFamily,
@@ -818,6 +824,174 @@ def test_award_rare_families_are_recorded_unselectable_when_budget_is_exhausted(
     assert unary.selectable_opportunities == 0
     assert expansion.blocked_unaffordable == 1
     assert unary.blocked_unaffordable == 1
+
+
+def _v3_verifier_edges_for(graph, candidate_key: str):
+    candidate = graph.candidates[candidate_key]
+    edges = []
+    for group in candidate.groups.values():
+        edges.extend(edge for edge in group.supports if edge.record_id.startswith("v3ver:"))
+        edges.extend(
+            edge for edge in group.contradictions
+            if edge.record_id.startswith("v3ver:")
+        )
+        edges.extend(edge for edge in group.unknowns if edge.record_id.startswith("v3ver:"))
+    return edges
+
+
+def _run_one_shot_verifier_duplicate_case(
+    *,
+    graph,
+    family: V3ActionFamily,
+    label_scores: dict[tuple[str, str, str], dict[str, float]],
+    annotations_by_key: dict[str, tuple[str, ...]] | None = None,
+) -> tuple[CoverPipeline, Any]:
+    enumerator = ScriptedRuntime(
+        {}, model_id="offline/mistral24", family="mistral",
+        role=ModelRole.ENUMERATOR.value)
+    verifier = ScriptedRuntime(
+        {}, label_scores=label_scores, model_id="offline/qwen4",
+        family="qwen", role=ModelRole.VERIFIER.value)
+
+    def selector(kind, catalogue, selectable=None, block_reasons=None):
+        del catalogue, block_reasons
+        if kind != "v3":
+            return ()
+        return tuple(
+            action for action in tuple(selectable or ())
+            if action.family is family
+        )[:1]
+
+    pipeline = CoverPipeline(
+        enumerator,
+        PipelineConfig(
+            v3_core=V3CoreConfig(enabled=True, mode=V3CoreMode.TRAIN_COLLECTION),
+            max_control_rounds_per_catalogue=2,
+            max_steps_per_query=2,
+            max_calls_per_query=12,
+            max_generated_tokens_per_query=6000,
+        ),
+        verifier_runtime=verifier,
+        consensus_engine=object(),
+        integration_mode=IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY,
+        action_selector=selector,
+    )
+    snapshot = lambda g: _consensus_from_graph(  # noqa: E731
+        g, annotations_by_key=annotations_by_key
+    )
+    pipeline._build_consensus_snapshot = snapshot  # type: ignore[method-assign]
+    pipeline.consensus_results.append(snapshot(graph))
+    pipeline._run_v3_control_loop(graph)
+    return pipeline, verifier
+
+
+def test_award_unary_verify_is_not_reexecuted_with_same_edge_identity() -> None:
+    graph = _seed_graph(
+        "Time Person of the Year", "awardWonBy", 206,
+        "award_direct", "Elon Musk; Jeff Bezos",
+    )
+    graph.add_entity_mentions(
+        GenerationRecord(
+            record_id="scripted-extra-elon",
+            query=graph.query,
+            view_id="scripted_extra_award_support",
+            view_family=ViewFamily.STRUCTURAL,
+            independence_group=IndependenceGroup.STRUCTURAL_DECOMPOSITION,
+            run_id=1,
+            model_id="offline/mistral24",
+            prompt="",
+            prompt_hash="extra",
+            raw_output="Elon Musk",
+            decode_profile=DecodeProfile(),
+            model_family="mistral",
+            model_role=ModelRole.ENUMERATOR,
+        ),
+        ["Elon Musk"],
+    )
+    key = graph.contract.strict_key("Elon Musk")
+    pipeline, verifier = _run_one_shot_verifier_duplicate_case(
+        graph=graph,
+        family=V3ActionFamily.UNARY_VERIFY,
+        label_scores={
+            ("v3_unary_verify", graph.query.subject, graph.query.relation): {
+                "VALID": 3.0,
+                "INVALID": 0.0,
+                "UNKNOWN": -1.0,
+            },
+        },
+    )
+
+    executed = [record for record in pipeline.action_records if record["executed"]]
+    assert [record["projection"].family for record in executed] == [
+        V3ActionFamily.UNARY_VERIFY
+    ]
+    assert verifier.calls == 1
+    edges = _v3_verifier_edges_for(graph, key)
+    assert len(edges) == 1
+    assert edges[0].edge_id == "7f52aa44e3761208"
+    blocked = [
+        record for record in pipeline.action_records
+        if not record["executed"]
+        and record["projection"].family is V3ActionFamily.UNARY_VERIFY
+    ]
+    assert any(
+        record["refusal"].startswith(BLOCKED_HISTORY) for record in blocked
+    )
+    with pytest.raises(ValueError, match="duplicate evidence edge 7f52aa44e3761208"):
+        execute_v3_action(
+            executed[0]["projection"],
+            graph,
+            graph.contract,
+            enumerator_engine=ElicitationEngine(verifier),
+            verifier_runtime=verifier,
+            run_id=2,
+        )
+
+
+def test_stock_semantic_verify_is_not_reexecuted_with_same_edge_identity() -> None:
+    graph = _seed_graph(
+        "Korean Air", "companyTradesAtStockExchange", 262,
+        "stock_exchange_direct", "Korea Exchange",
+    )
+    key = graph.contract.strict_key("Korea Exchange")
+    pipeline, verifier = _run_one_shot_verifier_duplicate_case(
+        graph=graph,
+        family=V3ActionFamily.SEMANTIC_VERIFY,
+        annotations_by_key={key: ("mention_kind=PARENT_COMPANY_LISTING",)},
+        label_scores={
+            ("v3_semantic_verify", graph.query.subject, graph.query.relation): {
+                "VALID": 3.0,
+                "INVALID": 0.0,
+                "UNKNOWN": -1.0,
+            },
+        },
+    )
+
+    executed = [record for record in pipeline.action_records if record["executed"]]
+    assert [record["projection"].family for record in executed] == [
+        V3ActionFamily.SEMANTIC_VERIFY
+    ]
+    assert verifier.calls == 1
+    edges = _v3_verifier_edges_for(graph, key)
+    assert len(edges) == 1
+    assert edges[0].edge_id == "7419af9b2f399602"
+    blocked = [
+        record for record in pipeline.action_records
+        if not record["executed"]
+        and record["projection"].family is V3ActionFamily.SEMANTIC_VERIFY
+    ]
+    assert any(
+        record["refusal"].startswith(BLOCKED_HISTORY) for record in blocked
+    )
+    with pytest.raises(ValueError, match="duplicate evidence edge 7419af9b2f399602"):
+        execute_v3_action(
+            executed[0]["projection"],
+            graph,
+            graph.contract,
+            enumerator_engine=ElicitationEngine(verifier),
+            verifier_runtime=verifier,
+            run_id=2,
+        )
 
 
 def test_collect_v2_coverage_executes_all_v3_families_in_scripted_train_like_run() -> None:

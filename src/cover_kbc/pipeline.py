@@ -51,6 +51,7 @@ from cover_kbc.controller import (
     record_outcome,
 )
 from cover_kbc.controller_calibration.collection_policy import (
+    BLOCKED_HISTORY,
     BLOCKED_OTHER,
     BLOCKED_UNAFFORDABLE,
 )
@@ -2790,13 +2791,21 @@ class CoverPipeline:
                     },
                 )
                 self.v3_pre_m8_results[-1] = hgraph
-            block_reasons = {
-                id(action): reason
-                for action in catalogue
-                for selectable, reason in (
-                    self._v3_action_selectability(action, graph),)
-                if not selectable
-            }
+            block_reasons = {}
+            for action in catalogue:
+                if (
+                    self._v3_train_collection_active()
+                    and not action.repeatable
+                    and history.action_executed(action.identity)
+                ):
+                    block_reasons[id(action)] = (
+                        f"{BLOCKED_HISTORY}: "
+                        "exact_non_repeatable_action_already_executed"
+                    )
+                    continue
+                selectable, reason = self._v3_action_selectability(action, graph)
+                if not selectable:
+                    block_reasons[id(action)] = reason
             selectable_catalogue = (
                 tuple(
                     action for action in catalogue
@@ -2833,7 +2842,12 @@ class CoverPipeline:
             self.action_records.append(record)
             effect = record.get("effect") or {}
             novelty = self._v3_novelty_from_effect(action, effect)
-            history.record(hgraph.failure_state, action.family, novelty)
+            history.record(
+                hgraph.failure_state,
+                action.family,
+                novelty,
+                action_identity=action.identity,
+            )
 
             for other in catalogue:
                 if other is action:

@@ -30,7 +30,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 #: Bumped when selection behaviour changes. A resume across two different
 #: policy versions would splice incomparable observations into one bin.
-COLLECTION_POLICY_VERSION = "collect-v2-coverage"
+COLLECTION_POLICY_VERSION = "collect-v2-coverage-r2"
 
 #: How many instances of one family the policy takes from a single query.
 #: Bounded because §16's budget accounting must stay meaningful: collection is

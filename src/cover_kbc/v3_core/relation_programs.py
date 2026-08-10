@@ -98,6 +98,7 @@ class ExecutedV3Action:
     failure_state: FailureSearchState
     action_family: V3ActionFamily
     novelty: NoveltyChange = field(default_factory=NoveltyChange)
+    action_identity: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -105,6 +106,7 @@ class ExecutedV3Action:
             "action_family": self.action_family.value,
             "novelty": self.novelty.to_json(),
             "material": self.novelty.is_material,
+            "action_identity": list(self.action_identity),
         }
 
 
@@ -117,14 +119,22 @@ class ActionHistory:
     def record(
         self, failure_state: FailureSearchState, action_family: V3ActionFamily,
         novelty: NoveltyChange | None = None,
+        action_identity: Iterable[object] | None = None,
     ) -> None:
         self.entries.append(
             ExecutedV3Action(
                 failure_state=failure_state,
                 action_family=action_family,
                 novelty=novelty or NoveltyChange(),
+                action_identity=tuple(str(part) for part in (action_identity or ())),
             )
         )
+
+    def action_executed(self, action_identity: Iterable[object]) -> bool:
+        identity = tuple(str(part) for part in action_identity)
+        if not identity:
+            return False
+        return any(entry.action_identity == identity for entry in self.entries)
 
     def redundant(self, failure_state: FailureSearchState,
                   action_family: V3ActionFamily) -> bool:

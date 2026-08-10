@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -88,6 +89,13 @@ class SupplementalCoveragePlan:
             "notes": list(self.notes),
         }
 
+    def families_for_row(self, row_index: int) -> tuple[str, ...]:
+        return tuple(sorted(
+            family.action_family
+            for family in self.families
+            if row_index in family.row_indices
+        ))
+
 
 def _load_json(path: Path) -> dict[str, Any]:
     try:
@@ -141,10 +149,33 @@ def supplemental_base_identity(collection_dir: str | Path) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def supplemental_run_identity(collection_dir: str | Path) -> str:
+    """Stable identity hash for one supplement artifact directory."""
+    run_dir = resolve_collection_run_dir(collection_dir)
+    pieces = []
+    for name in ("manifest.json", "v3_action_coverage.json", "train_telemetry.jsonl"):
+        path = run_dir / name
+        pieces.append(hashlib.sha256(path.read_bytes()).hexdigest())
+    raw = "|".join(pieces).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def load_collection_coverage(collection_dir: str | Path) -> CoverageLedger:
     run_dir = resolve_collection_run_dir(collection_dir)
     payload = _load_json(run_dir / "v3_action_coverage.json")
     return CoverageLedger.from_json(payload)
+
+
+def load_chained_coverage(
+    base_dir: str | Path,
+    supplement_dirs: Sequence[str | Path] = (),
+) -> CoverageLedger:
+    """Coverage ledger for BASE plus already-committed supplements."""
+    coverage = load_collection_coverage(base_dir)
+    for supplement_dir in supplement_dirs:
+        coverage = merge_coverage_ledgers(
+            coverage, load_collection_coverage(supplement_dir))
+    return coverage
 
 
 def family_relations() -> dict[str, tuple[str, ...]]:
@@ -211,6 +242,53 @@ def observed_catalogue_rows(collection_dir: str | Path) -> dict[str, tuple[int, 
     }
 
 
+def successful_observation_rows_by_family(
+    collection_dirs: Sequence[str | Path],
+) -> dict[str, Counter[int]]:
+    """Committed successful observations keyed by family and TRAIN row."""
+    by_family: dict[str, Counter[int]] = defaultdict(Counter)
+    for collection_dir in collection_dirs:
+        run_dir = resolve_collection_run_dir(collection_dir)
+        for record in read_telemetry(run_dir / "train_telemetry.jsonl"):
+            if not record.executed or record.outcome.errors:
+                continue
+            by_family[record.action_family][record.row_index] += 1
+    return by_family
+
+
+def unresolved_failed_rows_by_relation(
+    collection_dirs: Sequence[str | Path],
+) -> dict[str, set[int]]:
+    """Rows that a prior supplement attempted but never committed."""
+    by_relation: dict[str, set[int]] = defaultdict(set)
+    for collection_dir in collection_dirs:
+        run_dir = resolve_collection_run_dir(collection_dir)
+        manifest = _load_json(run_dir / "manifest.json")
+        unresolved = {int(row) for row in manifest.get("unresolved_failed_rows", ())}
+        for entry in manifest.get("failure_history", ()):
+            row = int(entry.get("row_index", -1))
+            if row not in unresolved or bool(entry.get("resolved", False)):
+                continue
+            relation = str(entry.get("relation", ""))
+            if relation:
+                by_relation[relation].add(row)
+    return by_relation
+
+
+def _failed_priority_rows_by_family(
+    prior_supplement_dirs: Sequence[str | Path],
+) -> dict[str, set[int]]:
+    rows = unresolved_failed_rows_by_relation(prior_supplement_dirs)
+    return {
+        "SET_EXPANSION": set(rows.get("awardWonBy", set())),
+        "UNARY_VERIFY": set(rows.get("awardWonBy", set())),
+        "LISTING_ELIMINATION": set(
+            rows.get("companyTradesAtStockExchange", set())),
+        "SEMANTIC_VERIFY": set(
+            rows.get("companyTradesAtStockExchange", set())),
+    }
+
+
 def plan_supplemental_coverage(
     coverage: CoverageLedger,
     queries: Sequence[Query],
@@ -260,9 +338,11 @@ def plan_supplemental_coverage_from_base(
     *,
     coverage: CoverageLedger | None = None,
     max_rows_per_family: int | None = None,
+    prior_supplement_dirs: Sequence[str | Path] = (),
 ) -> SupplementalCoveragePlan:
     """Plan from under-covered base families, preferring real base evidence."""
-    base_coverage = coverage or load_collection_coverage(collection_dir)
+    base_coverage = coverage or load_chained_coverage(
+        collection_dir, prior_supplement_dirs)
     unexpected = sorted(
         set(base_coverage.unobserved_families) - set(EXPECTED_SUPPLEMENTAL_FAMILIES)
     )
@@ -271,6 +351,10 @@ def plan_supplemental_coverage_from_base(
             f"unexpected under-covered family/families in base: {unexpected}"
         )
     evidence_rows = observed_catalogue_rows(collection_dir)
+    prior_successes = successful_observation_rows_by_family(
+        tuple(prior_supplement_dirs))
+    failed_priority_rows = _failed_priority_rows_by_family(
+        tuple(prior_supplement_dirs))
     relations_by_family = family_relations()
     by_index = {query.row_index: query for query in queries}
     family_plans: list[SupplementalFamilyPlan] = []
@@ -281,6 +365,8 @@ def plan_supplemental_coverage_from_base(
         if deficit <= 0:
             continue
         candidates = [row for row in evidence_rows.get(family, ()) if row in by_index]
+        already_successful = set(prior_successes.get(family, Counter()))
+        candidates = [row for row in candidates if row not in already_successful]
         if not candidates:
             notes.append(
                 f"{family}: no persisted base graph reached an executable catalogue"
@@ -291,6 +377,13 @@ def plan_supplemental_coverage_from_base(
                 if item.action_family == family:
                     candidates = list(item.row_indices)
                     break
+        candidates = sorted(
+            candidates,
+            key=lambda row: (
+                0 if row in failed_priority_rows.get(family, set()) else 1,
+                row,
+            ),
+        )
         limit = deficit if max_rows_per_family is None else min(
             deficit, max_rows_per_family)
         family_plans.append(SupplementalFamilyPlan(
@@ -407,6 +500,50 @@ def validate_no_duplicate_action_effect_ids(
             seen.add(identity)
 
 
+def committed_action_effects(
+    run_dir: str | Path,
+    effects: Iterable[Mapping[str, Any]] | None = None,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Split action effects into committed and uncommitted row-transaction tails.
+
+    Supplement row failures can leave an owner effect in memory and eventually
+    on disk even though the row never committed telemetry. Calibration merges
+    must preserve the raw file untouched but count only effects backed by an
+    executed committed telemetry record.
+    """
+    resolved = resolve_collection_run_dir(run_dir)
+    remaining: Counter[tuple[int, str]] = Counter()
+    for record in read_telemetry(resolved / "train_telemetry.jsonl"):
+        if not record.executed:
+            continue
+        remaining[(record.row_index, record.action_id)] += 1
+    kept: list[Mapping[str, Any]] = []
+    ignored: list[Mapping[str, Any]] = []
+    source_effects = list(effects) if effects is not None else list(
+        _jsonl(resolved / "v3_action_effects.jsonl"))
+    for effect in source_effects:
+        action = dict(effect.get("action") or {})
+        key = (
+            int(action.get("row_index", -1)),
+            str(action.get("action_id", "")),
+        )
+        if remaining[key] > 0:
+            kept.append(effect)
+            remaining[key] -= 1
+        else:
+            ignored.append(effect)
+    missing = {
+        f"{row}:{action_id}": count
+        for (row, action_id), count in sorted(remaining.items())
+        if count > 0
+    }
+    if missing:
+        raise SupplementalCoverageError(
+            f"{resolved}: committed telemetry is missing action effects {missing}"
+        )
+    return kept, ignored
+
+
 def _coverage_csv_rows(coverage: CoverageLedger) -> list[dict[str, Any]]:
     return coverage.csv_rows()
 
@@ -452,35 +589,52 @@ def sha256_file(path: Path) -> str:
 def merge_collections(
     *,
     base_dir: str | Path,
-    supplement_dir: str | Path,
+    supplement_dir: str | Path | None = None,
+    supplement_dirs: Sequence[str | Path] = (),
     output_dir: str | Path,
 ) -> dict[str, Any]:
-    """Merge BASE + SUPPLEMENT into a derived calibration corpus directory."""
+    """Merge BASE plus one or more supplements into a derived corpus."""
     base_run = resolve_collection_run_dir(base_dir)
-    supplement_run = resolve_collection_run_dir(supplement_dir)
+    supplement_inputs = tuple(
+        item for item in ((supplement_dir,) if supplement_dir is not None else ())
+        if item is not None
+    ) + tuple(supplement_dirs)
+    if not supplement_inputs:
+        raise SupplementalCoverageError("at least one supplement is required")
+    supplement_runs = tuple(resolve_collection_run_dir(path) for path in supplement_inputs)
     base_manifest = _load_json(base_run / "manifest.json")
-    supplement_manifest = _load_json(supplement_run / "manifest.json")
     base_identity = base_manifest.get("identity", {})
-    supplement_identity = supplement_manifest.get("identity", {})
-    if base_identity.get("train_sha256") != supplement_identity.get("train_sha256"):
-        raise SupplementalCoverageError("base and supplement TRAIN SHA mismatch")
     base_expected = supplemental_base_identity(base_run)
-    supplement_declared = (
-        supplement_manifest.get("supplemental", {})
-        .get("base_collection_identity", "")
-    )
-    if supplement_declared and supplement_declared != base_expected:
-        raise SupplementalCoverageError(
-            "supplement declares a different base collection identity"
+    supplement_manifests = []
+    for supplement_run in supplement_runs:
+        supplement_manifest = _load_json(supplement_run / "manifest.json")
+        supplement_manifests.append(supplement_manifest)
+        supplement_identity = supplement_manifest.get("identity", {})
+        if base_identity.get("train_sha256") != supplement_identity.get("train_sha256"):
+            raise SupplementalCoverageError("base and supplement TRAIN SHA mismatch")
+        supplement_declared = (
+            supplement_manifest.get("supplemental", {})
+            .get("base_collection_identity", "")
         )
+        if supplement_declared and supplement_declared != base_expected:
+            raise SupplementalCoverageError(
+                "supplement declares a different base collection identity"
+            )
 
     base_effects = list(_jsonl(base_run / "v3_action_effects.jsonl"))
-    supplement_effects = list(_jsonl(supplement_run / "v3_action_effects.jsonl"))
+    supplement_effects: list[Mapping[str, Any]] = []
+    ignored_effects: dict[str, int] = {}
+    for supplement_run in supplement_runs:
+        committed, ignored = committed_action_effects(supplement_run)
+        supplement_effects.extend(committed)
+        ignored_effects[str(supplement_run)] = len(ignored)
     validate_no_duplicate_action_effect_ids(base_effects, supplement_effects)
 
     base_coverage = load_collection_coverage(base_run)
-    supplement_coverage = load_collection_coverage(supplement_run)
-    merged_coverage = merge_coverage_ledgers(base_coverage, supplement_coverage)
+    merged_coverage = base_coverage
+    for supplement_run in supplement_runs:
+        merged_coverage = merge_coverage_ledgers(
+            merged_coverage, load_collection_coverage(supplement_run))
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -495,7 +649,11 @@ def merge_collections(
     write_jsonl(action_effects_path, merged_effects)
 
     base_telemetry = list(read_telemetry(base_run / "train_telemetry.jsonl"))
-    supplement_telemetry = list(read_telemetry(supplement_run / "train_telemetry.jsonl"))
+    supplement_telemetry = [
+        record
+        for supplement_run in supplement_runs
+        for record in read_telemetry(supplement_run / "train_telemetry.jsonl")
+    ]
     sufficiency = evaluate_sufficiency(
         [*base_telemetry, *supplement_telemetry],
         expect_transitions=True,
@@ -515,11 +673,22 @@ def merge_collections(
     manifest = {
         "schema_version": "merged-v3-calibration-corpus-v1",
         "base_run": str(base_run),
-        "supplement_run": str(supplement_run),
+        "supplement_run": str(supplement_runs[0]),
+        "supplement_runs": [str(path) for path in supplement_runs],
         "base_identity": base_expected,
+        "supplement_identities": [
+            supplemental_run_identity(path) for path in supplement_runs
+        ],
+        "ignored_uncommitted_action_effects": ignored_effects,
         "train_sha256": base_identity.get("train_sha256", ""),
         "base_repo_sha": base_identity.get("repo_sha", ""),
-        "supplement_repo_sha": supplement_identity.get("repo_sha", ""),
+        "supplement_repo_sha": (
+            supplement_manifests[-1].get("identity", {}).get("repo_sha", "")
+        ),
+        "supplement_repo_shas": [
+            manifest.get("identity", {}).get("repo_sha", "")
+            for manifest in supplement_manifests
+        ],
         "coverage": merged_coverage.to_json(),
         "sufficiency": sufficiency.to_json(),
         "merged_corpus_sha256": corpus_sha,
@@ -557,7 +726,12 @@ __all__ = [
     "plan_supplemental_coverage",
     "plan_supplemental_coverage_from_base",
     "resolve_collection_run_dir",
+    "committed_action_effects",
+    "load_chained_coverage",
+    "successful_observation_rows_by_family",
     "supplemental_base_identity",
+    "supplemental_run_identity",
+    "unresolved_failed_rows_by_relation",
     "validate_no_duplicate_action_effect_ids",
     "write_supplemental_plan",
 ]

@@ -80,10 +80,12 @@ from cover_kbc.controller_calibration.sufficiency import evaluate_sufficiency
 from cover_kbc.controller_calibration.supplemental_coverage import (
     EXPECTED_SUPPLEMENTAL_FAMILIES,
     SupplementalCoverageError,
+    load_chained_coverage,
     load_collection_coverage,
     plan_supplemental_coverage_from_base,
     resolve_collection_run_dir,
     supplemental_base_identity,
+    supplemental_run_identity,
     write_supplemental_plan,
 )
 from cover_kbc.controller_calibration.telemetry import (
@@ -305,6 +307,42 @@ def _supplement_action_effects(
     return stamped
 
 
+def _effects_backed_by_committed_telemetry(
+    rows: list[dict],
+    committed: list[ActionTelemetryRecord],
+) -> list[dict]:
+    """Keep only effects whose row transaction committed telemetry."""
+    from collections import Counter
+
+    remaining: Counter[tuple[int, str]] = Counter(
+        (record.row_index, record.action_id)
+        for record in committed
+        if record.executed and record.action_id
+    )
+    kept: list[dict] = []
+    for row in rows:
+        action = dict(row.get("action") or {})
+        key = (
+            int(action.get("row_index", -1)),
+            str(action.get("action_id", "")),
+        )
+        if remaining[key] <= 0:
+            continue
+        kept.append(row)
+        remaining[key] -= 1
+    missing = {
+        f"{row_index}:{action_id}": count
+        for (row_index, action_id), count in sorted(remaining.items())
+        if count > 0
+    }
+    if missing:
+        raise CollectionError(
+            "committed V3 telemetry is missing matching action effects: "
+            f"{missing}"
+        )
+    return kept
+
+
 def _check_output_root_writable(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     probe = path / ".train_collection_write_check"
@@ -351,6 +389,7 @@ def _supplement_action_priority(entry) -> tuple[int, str, str]:
 def _run_precheck(
     *, config: dict, config_path: Path, output_dir: Path, split: str,
     supplement_base: Path | None = None,
+    prior_supplements: tuple[Path, ...] = (),
 ) -> int:
     """Cheap source/scripted readiness check. Loads no model weights."""
     _check_output_root_writable(output_dir)
@@ -389,11 +428,17 @@ def _run_precheck(
         blockers.append("V3 TEST gate is not blocked")
 
     supplemental_plan = None
+    base_coverage = None
     if supplement_base is not None:
         try:
-            base_coverage = load_collection_coverage(supplement_base)
+            base_coverage = load_chained_coverage(
+                supplement_base, prior_supplements)
             supplemental_plan = plan_supplemental_coverage_from_base(
-                supplement_base, dataset.queries(), coverage=base_coverage)
+                supplement_base,
+                dataset.queries(),
+                coverage=base_coverage,
+                prior_supplement_dirs=prior_supplements,
+            )
             deficits = set(base_coverage.unobserved_families)
             unexpected = sorted(deficits - set(EXPECTED_SUPPLEMENTAL_FAMILIES))
             if unexpected:
@@ -416,6 +461,22 @@ def _run_precheck(
     print(f"  required families: {', '.join(sorted(expected))}")
     if supplement_base is not None:
         print(f"  supplement base: {supplement_base}")
+        if prior_supplements:
+            print(
+                "  prior supplements: "
+                + ", ".join(str(path) for path in prior_supplements)
+            )
+        if base_coverage is not None:
+            print("  remaining deficits:")
+            for family in sorted(base_coverage.unobserved_families):
+                entry = base_coverage.families[family]
+                print(f"    {family}: {entry.coverage_deficit}")
+            active_owners = {
+                family: owners[family]
+                for family in sorted(base_coverage.unobserved_families)
+                if family in owners
+            }
+            print(f"  required owners: {active_owners}")
         if supplemental_plan is not None:
             print(
                 "  supplement rows: "
@@ -623,6 +684,16 @@ def main() -> int:
             "deficits should be targeted"
         ),
     )
+    parser.add_argument(
+        "--prior-supplement",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "already downloaded supplemental run to preserve and account for "
+            "when planning a continuation; may be passed more than once"
+        ),
+    )
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text()) or {}
@@ -637,6 +708,7 @@ def main() -> int:
         return _run_precheck(
             config=config, config_path=args.config, output_dir=args.output_dir,
             split=split, supplement_base=args.supplement_base,
+            prior_supplements=tuple(args.prior_supplement),
         )
 
     # The readiness verdict, from its owner. Evaluated **before any model is
@@ -668,16 +740,35 @@ def main() -> int:
     supplement_base_run_dir = None
     supplement_targets: set[str] = set()
     supplement_base_coverage = None
+    supplement_prior_run_dirs: tuple[Path, ...] = ()
+    supplement_prior_ids: tuple[str, ...] = ()
     if args.supplement_base is not None:
         try:
             supplement_base_run_dir = resolve_collection_run_dir(
                 args.supplement_base)
+            supplement_prior_run_dirs = tuple(
+                resolve_collection_run_dir(path)
+                for path in args.prior_supplement
+            )
             supplement_base_coverage = load_collection_coverage(
                 supplement_base_run_dir)
+            if supplement_prior_run_dirs:
+                supplement_base_coverage = load_chained_coverage(
+                    supplement_base_run_dir,
+                    supplement_prior_run_dirs,
+                )
             supplement_plan = plan_supplemental_coverage_from_base(
-                supplement_base_run_dir, queries, coverage=supplement_base_coverage)
+                supplement_base_run_dir,
+                queries,
+                coverage=supplement_base_coverage,
+                prior_supplement_dirs=supplement_prior_run_dirs,
+            )
             supplement_base_id = supplemental_base_identity(
                 supplement_base_run_dir)
+            supplement_prior_ids = tuple(
+                supplemental_run_identity(path)
+                for path in supplement_prior_run_dirs
+            )
         except SupplementalCoverageError as error:
             raise CollectionError(f"supplemental base refused: {error}") from error
         deficits = set(supplement_base_coverage.unobserved_families)
@@ -727,6 +818,14 @@ def main() -> int:
         if v3_enabled else required_families(LEGACY_COLLECTED_CATALOGUES)
     )
     policy.note_families(expected_families)
+    supplement_row_targets = (
+        {
+            row: set(supplement_plan.families_for_row(row))
+            for row in supplement_plan.row_indices
+        }
+        if supplement_plan is not None else {}
+    )
+    current_supplement_row: int | None = None
 
     def selector(kind: str, catalogue, selectable=None, block_reasons=None):
         """Bounded family-balanced selection, keyed on the canonical family.
@@ -739,8 +838,13 @@ def main() -> int:
         if kind == "v3":
             policy_catalogue = tuple(catalogue)
             if supplement_targets:
+                row_targets = supplement_row_targets.get(
+                    int(current_supplement_row)
+                    if current_supplement_row is not None else -1,
+                    set(),
+                )
                 active_targets = {
-                    family for family in supplement_targets
+                    family for family in row_targets
                     if policy.coverage.families[family].coverage_deficit > 0
                 }
                 policy_catalogue = tuple(
@@ -781,6 +885,10 @@ def main() -> int:
         verifier_revision=str(verifier_cfg.get("revision", "")),
         collection_policy_version=(
             f"{COLLECTION_POLICY_VERSION}+supplement:{supplement_base_id}"
+            + (
+                ":prior:" + ",".join(supplement_prior_ids)
+                if supplement_prior_ids else ""
+            )
             if supplement_base_id else COLLECTION_POLICY_VERSION
         ),
         telemetry_schema_version=TELEMETRY_SCHEMA_VERSION,
@@ -932,6 +1040,7 @@ def main() -> int:
                 break
             if query.row_index in completed:
                 continue
+            current_supplement_row = query.row_index
             print(query_line(position, total, relation=query.relation,
                              subject=query.subject))
             before_physical = pipeline.physical_snapshot()
@@ -998,6 +1107,8 @@ def main() -> int:
                       file=sys.stderr)
                 persist()
                 continue
+            finally:
+                current_supplement_row = None
 
             # ---- row commit ------------------------------------------------
             # Nothing above this line is durable. A row is a transaction: its
@@ -1107,7 +1218,10 @@ def main() -> int:
     if v3_enabled:
         _write_jsonl(v3_pre_m8_path, pipeline.v3_pre_m8_results)
         _write_jsonl(v3_final_graph_path, pipeline.v3_core_results)
-        v3_effects = list(pipeline.v3_action_effects)
+        v3_effects = _effects_backed_by_committed_telemetry(
+            list(pipeline.v3_action_effects),
+            committed,
+        )
         if args.supplement_base is not None:
             v3_effects = _supplement_action_effects(
                 v3_effects,
@@ -1213,6 +1327,11 @@ def main() -> int:
             "base_collection": str(args.supplement_base),
             "base_collection_run_dir": str(supplement_base_run_dir or ""),
             "base_collection_identity": supplement_base_id,
+            "prior_supplements": [str(path) for path in args.prior_supplement],
+            "prior_supplement_run_dirs": [
+                str(path) for path in supplement_prior_run_dirs
+            ],
+            "prior_supplement_identities": list(supplement_prior_ids),
             "base_source_commit": (
                 dict(base_manifest.get("identity", {}) or {}).get("repo_sha", "")
             ),

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -29,10 +30,13 @@ from cover_kbc.controller_calibration.collection_policy import (
 )
 from cover_kbc.controller_calibration.supplemental_coverage import (
     SupplementalCoverageError,
+    committed_action_effects,
+    load_chained_coverage,
     merge_collections,
     merge_coverage_ledgers,
     plan_supplemental_coverage,
     plan_supplemental_coverage_from_base,
+    resolve_collection_run_dir,
     supplemental_base_identity,
     validate_no_duplicate_action_effect_ids,
 )
@@ -52,6 +56,8 @@ from cover_kbc.controller_calibration.progress import (
     summary_block,
 )
 from cover_kbc.types import Query
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -398,6 +404,255 @@ def test_supplemental_planner_prefers_persisted_base_evidence(tmp_path) -> None:
     }
 
 
+def _coverage_with_stock_award_deficits() -> CoverageLedger:
+    coverage = TrainCollectionPolicy(family_target=10).coverage
+    for _ in range(10):
+        coverage.note_legal("SET_EXPANSION", relation="awardWonBy")
+        coverage.note_legal("UNARY_VERIFY", relation="awardWonBy")
+    for _ in range(6):
+        coverage.note_legal(
+            "LISTING_ELIMINATION",
+            relation="companyTradesAtStockExchange",
+        )
+        coverage.note_legal(
+            "SEMANTIC_VERIFY",
+            relation="companyTradesAtStockExchange",
+        )
+    return coverage
+
+
+def _stock_award_hgraphs() -> list[dict]:
+    rows = []
+    for row in range(200, 210):
+        rows.append({
+            "row_index": row,
+            "SubjectEntity": f"Prize {row}",
+            "Relation": "awardWonBy",
+            "failure_state": "SET_GROWING",
+            "legal_action_families": ["SET_EXPANSION", "UNARY_VERIFY"],
+            "hypotheses": [{
+                "status": "CHALLENGED",
+                "hypothesis_id": f"ha{row}",
+                "independent_support_count": 1,
+                "raw_support_count": 1,
+            }],
+        })
+    for row in (247, 262, 266, 271, 276, 305):
+        rows.append({
+            "row_index": row,
+            "SubjectEntity": f"Company {row}",
+            "Relation": "companyTradesAtStockExchange",
+            "failure_state": "HIGH_FP_RISK",
+            "legal_action_families": [
+                "LISTING_ELIMINATION",
+                "SEMANTIC_VERIFY",
+            ],
+            "hypotheses": [{
+                "status": "CHALLENGED",
+                "hypothesis_id": f"hs{row}",
+                "independent_support_count": 1,
+                "raw_support_count": 1,
+            }],
+        })
+    return rows
+
+
+def _write_stock_award_hgraphs(run) -> None:
+    (run / "v3_pre_m8_hypothesis_graphs.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in _stock_award_hgraphs()),
+        encoding="utf-8",
+    )
+
+
+def test_continuation_planner_uses_prior_supplement_deficits(tmp_path) -> None:
+    base = tmp_path / "base"
+    base_coverage = _coverage_with_stock_award_deficits()
+    _minimal_run_dir(base, coverage=base_coverage)
+    _write_stock_award_hgraphs(base)
+
+    prior_coverage = CoverageLedger.from_json(base_coverage.to_json())
+    for _ in range(11):
+        prior_coverage.note_selectable("SET_EXPANSION", relation="awardWonBy")
+        prior_coverage.note_executed(
+            "SET_EXPANSION", succeeded=True, relation="awardWonBy")
+    for _ in range(4):
+        prior_coverage.note_selectable(
+            "SEMANTIC_VERIFY",
+            relation="companyTradesAtStockExchange",
+        )
+        prior_coverage.note_executed(
+            "SEMANTIC_VERIFY",
+            succeeded=True,
+            relation="companyTradesAtStockExchange",
+        )
+    for _ in range(3):
+        prior_coverage.note_selectable("UNARY_VERIFY", relation="awardWonBy")
+        prior_coverage.note_executed(
+            "UNARY_VERIFY", succeeded=True, relation="awardWonBy")
+
+    s0 = ControlStateFeatures(residual=0.9, entropy=0.8, calls_used=12)
+    s1 = ControlStateFeatures(residual=0.7, entropy=0.5, calls_used=13)
+    telemetry = [
+        *(
+            _telemetry_record(
+                family="SET_EXPANSION", relation="awardWonBy",
+                round_index=index + 1, pre=s0, post=s1,
+                row_index=row, subject=f"Prize {row}")
+            for index, row in enumerate(
+                (200, 200, 201, 201, 202, 202, 203, 204, 204, 205, 205)
+            )
+        ),
+        _telemetry_record(
+            family="UNARY_VERIFY", relation="awardWonBy", round_index=1,
+            pre=s0, post=s1, row_index=203, subject="Prize 203"),
+        _telemetry_record(
+            family="UNARY_VERIFY", relation="awardWonBy", round_index=1,
+            pre=s0, post=s1, row_index=209, subject="Prize 209"),
+        _telemetry_record(
+            family="UNARY_VERIFY", relation="awardWonBy", round_index=2,
+            pre=s0, post=s1, row_index=209, subject="Prize 209"),
+        *(
+            _telemetry_record(
+                family="SEMANTIC_VERIFY",
+                relation="companyTradesAtStockExchange",
+                round_index=index + 1,
+                pre=s0,
+                post=s1,
+                row_index=row,
+                subject=f"Company {row}",
+            )
+            for index, row in enumerate((247, 247, 271, 271))
+        ),
+    ]
+    effects = [
+        {
+            "action_effect_id": f"supplement:{index}",
+            "action": {
+                "row_index": record.row_index,
+                "action_id": record.action_id,
+            },
+        }
+        for index, record in enumerate(telemetry)
+    ]
+    effects.append({
+        "action_effect_id": "supplement:uncommitted",
+        "action": {"row_index": 206, "action_id": "v3act-unary_verify"},
+    })
+    prior = tmp_path / "prior"
+    _minimal_run_dir(
+        prior,
+        coverage=prior_coverage,
+        telemetry=telemetry,
+        effects=effects,
+        manifest={
+            "unresolved_failed_rows": [206, 207, 208, 262, 266, 276, 305],
+            "failure_history": [
+                {
+                    "row_index": row,
+                    "relation": (
+                        "awardWonBy" if row < 247
+                        else "companyTradesAtStockExchange"
+                    ),
+                    "subject": f"row {row}",
+                    "error": "ValueError: duplicate evidence edge",
+                    "resolved": False,
+                }
+                for row in (206, 207, 208, 262, 266, 276, 305)
+            ],
+            "supplemental": {
+                "base_collection_identity": supplemental_base_identity(base),
+                "base_inclusive_coverage": True,
+            },
+        },
+    )
+
+    committed, ignored = committed_action_effects(prior)
+    assert len(committed) == len(telemetry)
+    assert len(ignored) == 1
+
+    coverage = load_chained_coverage(base, (prior,))
+    assert {
+        family: coverage.families[family].coverage_deficit
+        for family in coverage.unobserved_families
+    } == {
+        "LISTING_ELIMINATION": 6,
+        "SEMANTIC_VERIFY": 2,
+        "UNARY_VERIFY": 7,
+    }
+    plan = plan_supplemental_coverage_from_base(
+        base,
+        tuple(
+            Query(f"Prize {row}", "awardWonBy", row)
+            for row in range(200, 210)
+        ) + tuple(
+            Query(f"Company {row}", "companyTradesAtStockExchange", row)
+            for row in (247, 262, 266, 271, 276, 305)
+        ),
+        coverage=coverage,
+        prior_supplement_dirs=(prior,),
+    )
+
+    by_family = {family.action_family: family.row_indices for family in plan.families}
+    assert by_family == {
+        "LISTING_ELIMINATION": (262, 266, 276, 305, 247, 271),
+        "SEMANTIC_VERIFY": (262, 266),
+        "UNARY_VERIFY": (206, 207, 208, 200, 201, 202, 204),
+    }
+    assert plan.row_indices == (
+        200, 201, 202, 204, 206, 207, 208, 247, 262, 266, 271, 276, 305
+    )
+
+
+def test_real_partial_supplement_continuation_plan_matches_artifacts() -> None:
+    base = ROOT / "outputs/v3_train_collect_v2_coverage"
+    partial = (
+        ROOT / "outputs/v3_supplement_16ebbbf6_partial"
+        / "v3_supplement_16ebbbf6_20260810T070529Z"
+        / "supplement"
+        / "cover_kbc_v3_train_collection_train-supplement_20260810T071043Z"
+    )
+    if not base.exists() or not partial.exists():
+        pytest.skip("downloaded real V3 supplement artifacts are not present")
+
+    partial_run = resolve_collection_run_dir(partial)
+    coverage = load_chained_coverage(base, (partial_run,))
+    deficits = {
+        family: coverage.families[family].coverage_deficit
+        for family in coverage.unobserved_families
+    }
+    assert deficits == {
+        "LISTING_ELIMINATION": 6,
+        "SEMANTIC_VERIFY": 2,
+        "UNARY_VERIFY": 7,
+    }
+    assert coverage.families["SET_EXPANSION"].coverage_deficit == 0
+
+    committed, ignored = committed_action_effects(partial_run)
+    assert len(committed) == 18
+    assert len(ignored) == 7
+
+    plan = plan_supplemental_coverage_from_base(
+        base,
+        tuple(
+            Query(f"Prize {row}", "awardWonBy", row)
+            for row in range(200, 210)
+        ) + tuple(
+            Query(f"Company {row}", "companyTradesAtStockExchange", row)
+            for row in (247, 262, 266, 271, 276, 305)
+        ),
+        coverage=coverage,
+        prior_supplement_dirs=(partial_run,),
+    )
+    assert plan.row_indices == (
+        200, 201, 202, 204, 206, 207, 208, 247, 262, 266, 271, 276, 305
+    )
+    assert plan.families_for_row(200) == ("UNARY_VERIFY",)
+    assert plan.families_for_row(247) == ("LISTING_ELIMINATION",)
+    assert plan.families_for_row(262) == (
+        "LISTING_ELIMINATION", "SEMANTIC_VERIFY")
+    assert plan.families_for_row(276) == ("LISTING_ELIMINATION",)
+
+
 def _write_test_jsonl(path, rows) -> None:
     path.write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
@@ -440,17 +695,19 @@ def _telemetry_record(
     round_index: int,
     pre: ControlStateFeatures,
     post: ControlStateFeatures,
+    row_index: int = 10,
+    subject: str = "Prize",
 ) -> ActionTelemetryRecord:
     verifier = family.endswith("VERIFY") or family == "LISTING_ELIMINATION"
     return ActionTelemetryRecord(
         schema_version=TELEMETRY_SCHEMA_VERSION,
         run_id="supplement",
-        row_index=10,
-        subject="Prize",
+        row_index=row_index,
+        subject=subject,
         relation=relation,
         program_type="LARGE_OPEN_SET",
         round_index=round_index,
-        operation_id=f"10:{round_index}:{family}",
+        operation_id=f"{row_index}:{round_index}:{family}",
         action_family=family,
         target_class=family,
         action_id=f"v3act-{family.lower()}",
@@ -498,21 +755,27 @@ def test_supplemental_merge_end_to_end_is_deterministic(tmp_path) -> None:
         supplement,
         coverage=supplement_coverage,
         telemetry=(
-            _telemetry_record(
+            set_record := _telemetry_record(
                 family="SET_EXPANSION", relation="awardWonBy",
                 round_index=1, pre=s0, post=s1),
-            _telemetry_record(
+            unary_record := _telemetry_record(
                 family="UNARY_VERIFY", relation="awardWonBy",
                 round_index=2, pre=s1, post=s2),
         ),
         effects=(
             {
                 "action_effect_id": "supplement:1",
-                "action": {"row_index": 10, "action_id": "v3act-set"},
+                "action": {
+                    "row_index": set_record.row_index,
+                    "action_id": set_record.action_id,
+                },
             },
             {
                 "action_effect_id": "supplement:2",
-                "action": {"row_index": 10, "action_id": "v3act-unary"},
+                "action": {
+                    "row_index": unary_record.row_index,
+                    "action_id": unary_record.action_id,
+                },
             },
         ),
         manifest={
@@ -542,6 +805,92 @@ def test_supplemental_merge_end_to_end_is_deterministic(tmp_path) -> None:
     ).read_text(encoding="utf-8") == (
         second / "SHA256SUMS.txt"
     ).read_text(encoding="utf-8")
+
+
+def test_chained_supplemental_merge_filters_uncommitted_effect_tails(tmp_path) -> None:
+    base_coverage = TrainCollectionPolicy(family_target=2).coverage
+    for _ in range(2):
+        base_coverage.note_legal("UNARY_VERIFY", relation="awardWonBy")
+    base = tmp_path / "base"
+    _minimal_run_dir(base, coverage=base_coverage)
+    base_id = supplemental_base_identity(base)
+
+    s0 = ControlStateFeatures(residual=0.9, entropy=0.8, calls_used=12)
+    s1 = ControlStateFeatures(residual=0.7, entropy=0.5, calls_used=13)
+    first_coverage = CoverageLedger.from_json(base_coverage.to_json())
+    first_coverage.note_selectable("UNARY_VERIFY", relation="awardWonBy")
+    first_coverage.note_executed(
+        "UNARY_VERIFY", succeeded=True, relation="awardWonBy")
+    first_record = _telemetry_record(
+        family="UNARY_VERIFY", relation="awardWonBy",
+        round_index=1, pre=s0, post=s1, row_index=20, subject="Prize 20")
+    first = tmp_path / "supplement-1"
+    _minimal_run_dir(
+        first,
+        coverage=first_coverage,
+        telemetry=(first_record,),
+        effects=({
+            "action_effect_id": "supplement:first",
+            "action": {
+                "row_index": first_record.row_index,
+                "action_id": first_record.action_id,
+            },
+        },),
+        manifest={
+            "supplemental": {
+                "base_collection_identity": base_id,
+                "base_inclusive_coverage": True,
+            }
+        },
+    )
+
+    second_coverage = CoverageLedger.from_json(first_coverage.to_json())
+    second_coverage.note_selectable("UNARY_VERIFY", relation="awardWonBy")
+    second_coverage.note_executed(
+        "UNARY_VERIFY", succeeded=True, relation="awardWonBy")
+    second_record = _telemetry_record(
+        family="UNARY_VERIFY", relation="awardWonBy",
+        round_index=1, pre=s0, post=s1, row_index=21, subject="Prize 21")
+    second = tmp_path / "supplement-2"
+    _minimal_run_dir(
+        second,
+        coverage=second_coverage,
+        telemetry=(second_record,),
+        effects=(
+            {
+                "action_effect_id": "supplement:second",
+                "action": {
+                    "row_index": second_record.row_index,
+                    "action_id": second_record.action_id,
+                },
+            },
+            {
+                "action_effect_id": "supplement:uncommitted",
+                "action": {"row_index": 22, "action_id": second_record.action_id},
+            },
+        ),
+        manifest={
+            "supplemental": {
+                "base_collection_identity": base_id,
+                "base_inclusive_coverage": True,
+            }
+        },
+    )
+
+    out = tmp_path / "merged-chain"
+    manifest = merge_collections(
+        base_dir=base,
+        supplement_dirs=(first, second),
+        output_dir=out,
+    )
+    assert manifest["coverage"]["integrity_ok"] is True
+    assert manifest["coverage"]["families"][0]["successful"] == 2
+    assert manifest["ignored_uncommitted_action_effects"][str(second)] == 1
+    assert len([
+        line for line in (out / "action_effects.jsonl").read_text(
+            encoding="utf-8").splitlines()
+        if line.strip()
+    ]) == 2
 
 
 # --------------------------------------------------------------------------

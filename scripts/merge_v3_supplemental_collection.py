@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline merge for BASE + SUPPLEMENT V3 TRAIN calibration corpora."""
+"""Offline merge for BASE + one or more SUPPLEMENT V3 TRAIN corpora."""
 
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ from cover_kbc.controller_calibration.supplemental_coverage import (
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, type=Path)
-    parser.add_argument("--supplement", required=True, type=Path)
+    parser.add_argument("--supplement", required=True, action="append", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
     manifest = merge_collections(
         base_dir=args.base,
-        supplement_dir=args.supplement,
+        supplement_dirs=tuple(args.supplement),
         output_dir=args.output_dir,
     )
     print(json.dumps({
