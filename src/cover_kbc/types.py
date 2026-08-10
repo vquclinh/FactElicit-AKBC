@@ -273,6 +273,13 @@ class GenerationRecord:
     source_record_id: str = ""
     #: The candidate a candidate-conditioned view was asked about.
     source_candidate_key: str = ""
+    #: Hash of the *system* prompt actually sent alongside ``prompt``. Recorded
+    #: separately because V3.1's relation-conditioned Class-B instructions are
+    #: appended there (audit 0077): without this field a run could enable an
+    #: instruction and leave no trace that the model saw anything different,
+    #: since ``prompt_hash`` covers only the user turn. Empty on records made
+    #: before the field existed.
+    system_prompt_hash: str = ""
     parsed_values: list[str] = field(default_factory=list)
     prompt_tokens: int | None = None
     generated_tokens: int | None = None

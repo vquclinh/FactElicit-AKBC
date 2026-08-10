@@ -23,7 +23,7 @@ the acquisition layer speaking, and it never appears - see
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from cover_kbc.contracts.registry import CONTRACTS
@@ -38,6 +38,10 @@ from cover_kbc.verification.specialist_types import (
 #: Bumped when a question frame or boundary changes, so a persisted result can
 #: never be read under the wrong contract.
 SPECIALIST_CONTRACT_VERSION = "m17-contract-v1"
+
+#: Bumped when a V3.1 Class-B boundary replaces a registered one, so a
+#: persisted specialist result records which boundary produced it.
+SPECIALIST_CONTRACT_VERSION_V3_1 = "m17-contract-v1+v3.1-boundary"
 
 
 @dataclass(frozen=True)
@@ -221,6 +225,33 @@ def specialist_contract(relation: str) -> SpecialistVerifierContract:
             f"Module 17 declares no specialist verification contract for "
             f"{relation!r}; Table 5 covers {sorted(_BY_RELATION)}"
         ) from exc
+
+
+def specialist_contract_with_boundary(
+    relation: str, boundary: str = ""
+) -> SpecialistVerifierContract:
+    """The relation's contract, optionally with a replacement class boundary.
+
+    V3.1 Class-B (audit 0077) sharpens the hard-negative boundary for a
+    relation. ``boundary`` is the only field it may replace, and the reason is
+    the module docstring's own rule: ``question`` and ``boundary`` are the only
+    prose M17 owns, and the boundary is by construction a statement about
+    *classes of wrong answer*, never about the candidate in front of the
+    verifier. Replacing anything else would carry acquisition state into a
+    blind prompt.
+
+    An empty ``boundary`` returns the registered contract unchanged, so the
+    default path is identity.
+    """
+    contract = specialist_contract(relation)
+    if not boundary or boundary == contract.boundary:
+        return contract
+    # The version moves with the text. A persisted specialist result that does
+    # not say which boundary produced it is unreadable after the fact.
+    return replace(
+        contract, boundary=boundary,
+        contract_version=SPECIALIST_CONTRACT_VERSION_V3_1,
+    )
 
 
 def specialist_family(relation: str) -> SpecialistVerifierFamily:

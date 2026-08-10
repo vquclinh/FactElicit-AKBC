@@ -19,7 +19,7 @@ remains the only finalizer.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
 from cover_kbc.contracts.base import RelationContract
@@ -51,6 +51,7 @@ from cover_kbc.types import (
     ViewFamily,
 )
 from cover_kbc.v3_core.hypothesis import Hypothesis, QueryHypothesisGraph
+from cover_kbc.v3_1.live_prompts import NO_INSTRUCTIONS, RelationInstructions
 from cover_kbc.v3_core.prompt_families import PromptFamily
 from cover_kbc.v3_core.relation_programs import (
     ActionHistory,
@@ -640,7 +641,13 @@ def execute_v3_action(
 
     if action.model_role == ModelRole.VERIFIER.value:
         return _execute_verification_action(
-            action, graph, contract, verifier_runtime=verifier_runtime)
+            action, graph, contract, verifier_runtime=verifier_runtime,
+            # The engine already carries this run's instructions; reading them
+            # from it keeps one source of truth instead of a second parameter
+            # that could be threaded inconsistently.
+            relation_instructions=getattr(
+                enumerator_engine, "relation_instructions", NO_INSTRUCTIONS),
+        )
     return _execute_generation_action(
         action, graph, contract, enumerator_engine=enumerator_engine,
         tracer=tracer, run_id=run_id)
@@ -756,8 +763,9 @@ def _execute_verification_action(
     contract: RelationContract,
     *,
     verifier_runtime: LMRuntime,
+    relation_instructions: RelationInstructions = NO_INSTRUCTIONS,
 ) -> V3ActionExecution:
-    request = _verification_request(action, contract)
+    request = _verification_request(action, contract, relation_instructions)
     prompt = render_v3_verification_prompt(request)
     try:
         result = verifier_runtime.score_labels(LabelScoreRequest(
@@ -843,7 +851,9 @@ def _label_tokens(labels: Sequence[str]) -> dict[str, str]:
 
 
 def _verification_request(
-    action: V3ActionCandidate, contract: RelationContract,
+    action: V3ActionCandidate,
+    contract: RelationContract,
+    relation_instructions: RelationInstructions = NO_INSTRUCTIONS,
 ) -> V3VerificationRequest:
     mode = V3VerificationMode(str(
         action.metadata.get("verification_mode")
@@ -853,13 +863,21 @@ def _verification_request(
             else V3VerificationMode.UNARY.value
         )
     ))
+    # A relation-level class boundary, empty unless a V3.1 Class-B feature
+    # supplies one for this relation. It is looked up here, at the one place
+    # every V3 verification request is built, so SEMANTIC, UNARY, CONTRAST and
+    # the stock rejection-first frame all carry the same boundary or none.
+    boundary = relation_instructions.verifier_boundary(action.relation)
     if action.family is V3ActionFamily.LISTING_ELIMINATION:
-        return stock_rejection_first_request(
-            relation=action.relation,
-            subject=action.subject,
-            target_id=action.target_id,
-            target_text=action.target,
-            relation_definition=contract.verifier_definition(),
+        return replace(
+            stock_rejection_first_request(
+                relation=action.relation,
+                subject=action.subject,
+                target_id=action.target_id,
+                target_text=action.target,
+                relation_definition=contract.verifier_definition(),
+            ),
+            relation_boundary=boundary,
         )
     return V3VerificationRequest(
         relation=action.relation,
@@ -871,6 +889,7 @@ def _verification_request(
         comparison_id=action.comparison_id,
         comparison_text=action.comparison_text,
         semantic_qualifier=str(action.metadata.get("semantic_qualifier") or ""),
+        relation_boundary=boundary,
     )
 
 

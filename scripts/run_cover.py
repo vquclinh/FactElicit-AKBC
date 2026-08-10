@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, Mapping
 
 from _bootstrap import ensure_src_on_path
 
@@ -23,6 +24,7 @@ ensure_src_on_path()
 
 import yaml
 
+from cover_kbc.contracts.registry import CONTRACTS
 from cover_kbc.contracts.router import check_router_consistency
 from cover_kbc.data.loader import BLIND_SPLITS, load_dataset
 from cover_kbc.data.writer import write_predictions, write_trace
@@ -253,11 +255,55 @@ def _abort_on_accounting_invariant(
     raise SystemExit(2) from error
 
 
+def _resolve_relation_filter(
+    cli_relations: "list[str] | None", experiment: Mapping[str, Any], split: str,
+) -> frozenset[str]:
+    """Which relations this run is restricted to, or an empty set for all.
+
+    CLI wins over config so a diagnostic profile can still be pointed at one
+    relation ad hoc. Unknown relation names fail closed rather than silently
+    selecting nothing, because "0 rows" and "you typo'd the relation" look
+    identical in a run log otherwise.
+    """
+    declared = cli_relations if cli_relations else (
+        experiment.get("relation_filter") or []
+    )
+    if isinstance(declared, str):
+        declared = [declared]
+    names = frozenset(str(name) for name in declared)
+    if not names:
+        return frozenset()
+    unknown = sorted(names - set(CONTRACTS))
+    if unknown:
+        raise SystemExit(
+            f"unknown relation(s) in relation filter: {unknown}; "
+            f"known relations are {sorted(CONTRACTS)}"
+        )
+    if split in BLIND_SPLITS:
+        raise SystemExit(
+            f"relation filter refused on blind split {split!r}: a partial "
+            "submission is not a submission, and the filter exists for TRAIN "
+            "diagnostics only"
+        )
+    return names
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path, help="experiment YAML")
     parser.add_argument("--split", help="override the split named in the config")
     parser.add_argument("--limit", type=int, default=0, help="run only the first N queries")
+    parser.add_argument(
+        "--relation",
+        action="append",
+        default=None,
+        help=(
+            "run only rows of this relation; repeatable. Overrides "
+            "experiment.relation_filter in the config. Used by the audit-0077 "
+            "targeted Class-B diagnostics so one relation can be measured "
+            "without paying for a full split."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, help="override outputs/<run_id>")
     parser.add_argument("--no-eval", action="store_true", help="skip scoring")
     args = parser.parse_args()
@@ -290,6 +336,21 @@ def main() -> int:
     split = args.split or experiment.get("split", "val")
     dataset = load_dataset(split)
     queries = dataset.queries()
+
+    # Relation filter (audit 0077). Deterministic and order-preserving: it is a
+    # membership test on the query's own relation name and reads nothing else -
+    # in particular no gold value, so a filtered run cannot be a disguised
+    # lookup. Applied before --limit so "--relation X --limit 5" means the
+    # first five rows *of X*.
+    relation_filter = _resolve_relation_filter(args.relation, experiment, split)
+    if relation_filter:
+        queries = [q for q in queries if q.relation in relation_filter]
+        if not queries:
+            raise SystemExit(
+                f"relation filter {sorted(relation_filter)} matched no rows in "
+                f"split {split!r}"
+            )
+        print(f"relation filter {sorted(relation_filter)}: {len(queries)} rows")
     if args.limit:
         queries = queries[: args.limit]
 

@@ -45,11 +45,17 @@ from cover_kbc.verification.blind import (
     normalized_disagreement,
     read_labels,
 )
+from cover_kbc.v3_1.live_prompts import (
+    M17_REJECT_LABEL,
+    NO_INSTRUCTIONS,
+    RelationInstructions,
+)
 from cover_kbc.verification.specialist_contracts import (
     SPECIALIST_CONTRACT_VERSION,
     SpecialistVerifierContract,
     check_specialist_registry_consistency,
     specialist_contract,
+    specialist_contract_with_boundary,
 )
 from cover_kbc.verification.specialist_prompts import (
     CANDIDATE_TEMPLATE_IDS,
@@ -264,8 +270,13 @@ class SpecialistVerifier:
         self,
         config: SpecialistVerifierConfig | None = None,
         calibrator: ContextualCalibrator | None = None,
+        relation_instructions: RelationInstructions | None = None,
     ) -> None:
         self.config = config or SpecialistVerifierConfig(enabled=True)
+        #: V3.1 Class-B (audit 0077). May replace a relation's hard-negative
+        #: class boundary and nothing else - see
+        #: ``specialist_contract_with_boundary``. Inert by default.
+        self.relation_instructions = relation_instructions or NO_INSTRUCTIONS
         if self.config.mode not in SpecialistVerifierConfig.SUPPORTED_MODES:
             raise SpecialistVerifierError(
                 f"unsupported specialist verifier mode {self.config.mode!r}"
@@ -279,6 +290,21 @@ class SpecialistVerifier:
     def verification_version(self) -> str:
         return self.config.verification_version
 
+    def contract_for(self, relation: str) -> SpecialistVerifierContract:
+        """The specialist contract this run verifies ``relation`` under.
+
+        Single accessor on purpose: every call site inside this class goes
+        through it, so a Class-B boundary cannot reach the calibrator's control
+        template while missing the reading template, which would calibrate a
+        prompt against a different prompt.
+        """
+        return specialist_contract_with_boundary(
+            relation,
+            self.relation_instructions.verifier_boundary(
+                relation, reject_label=M17_REJECT_LABEL
+            ),
+        )
+
     # -- requests ------------------------------------------------------------
 
     def build_request(
@@ -289,7 +315,7 @@ class SpecialistVerifier:
         Carries identity and presentation. It carries no acquisition rationale,
         because there is no field for one.
         """
-        contract = specialist_contract(target.relation)
+        contract = self.contract_for(target.relation)
         if target.family is not None and target.family is not contract.family:
             raise SpecialistVerifierError(
                 f"target claims family {target.family.value} but {target.relation} "
@@ -344,7 +370,7 @@ class SpecialistVerifier:
         if not self.config.use_calibration:
             return 0
         target = request.target
-        specialist = specialist_contract(target.relation)
+        specialist = self.contract_for(target.relation)
         proposition = target.kind is VerificationTargetKind.QUERY_PROPOSITION
         templates = [
             specialist_template(specialist, template_id, order,
@@ -369,7 +395,7 @@ class SpecialistVerifier:
                 f"contract is for {contract.relation!r} but the target is "
                 f"{target.relation!r}"
             )
-        specialist = specialist_contract(target.relation)
+        specialist = self.contract_for(target.relation)
 
         if not target.eligible:
             # A deterministic type/format impossibility. Module 4 could not
@@ -433,7 +459,7 @@ class SpecialistVerifier:
         call - so a reader can see what was available as well as what was asked
         for. M17 never widens the request.
         """
-        specialist = specialist_contract(consensus.relation)
+        specialist = self.contract_for(consensus.relation)
         catalogue = verifiable_targets(consensus)
         results = [
             self.verify(self.build_request(target), contract, runtime)
@@ -646,6 +672,7 @@ def build_specialist_verifier(
     consensus_enabled: bool,
     verifier_available: bool,
     calibrator: ContextualCalibrator | None = None,
+    relation_instructions: RelationInstructions | None = None,
 ) -> "SpecialistVerifier | None":
     """Build M17 when configuration asks for it, refusing a broken wiring."""
     settings = SpecialistVerifierConfig.from_mapping(config)
@@ -661,7 +688,10 @@ def build_specialist_verifier(
             "specialist_verifier.enabled requires the verifier model role; "
             "Module 17 scores fixed labels and cannot run without it"
         )
-    return SpecialistVerifier(settings, calibrator=calibrator)
+    return SpecialistVerifier(
+        settings, calibrator=calibrator,
+        relation_instructions=relation_instructions,
+    )
 
 
 __all__ = [

@@ -31,7 +31,7 @@ import importlib.util
 import json
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -306,7 +306,10 @@ def micro_f1(scored: Scored) -> float:
 # Ablation
 # --------------------------------------------------------------------------
 
-#: Incremental ablation order, as required by audit 0076 section 17.
+#: Incremental ablation order, as required by audit 0076 section 17. The order
+#: is deliberate: every monotone feature lands before ``stock_support_dominance``,
+#: so the SAFE_CORE row of the audit-0077 matrix is a *stage of this table*
+#: rather than a separate measurement that could drift from it.
 ABLATION_STAGES: tuple[tuple[str, dict[str, bool]], ...] = (
     ("baseline", {}),
     ("+ final_candidate_retention", {"final_candidate_retention": True}),
@@ -314,6 +317,23 @@ ABLATION_STAGES: tuple[tuple[str, dict[str, bool]], ...] = (
     ("+ numeric_output_canonicalization", {"numeric_output_canonicalization": True}),
     ("+ stock_structural_validation", {"stock_structural_validation": True}),
     ("+ stock_support_dominance", {"stock_support_dominance": True}),
+)
+
+#: The audit-0077 submission matrix: the two independently runnable SAFE
+#: variants, named exactly as their configs are.
+SAFE_CORE = V31SafeConfig(
+    final_candidate_retention=True,
+    enumeration_label_repair=True,
+    numeric_output_canonicalization=True,
+    stock_structural_validation=True,
+    stock_support_dominance=False,
+)
+SAFE_FULL = replace(SAFE_CORE, stock_support_dominance=True)
+
+SUBMISSION_MATRIX: tuple[tuple[str, V31SafeConfig], ...] = (
+    ("V3_BASELINE", V31SafeConfig()),
+    ("SAFE_CORE", SAFE_CORE),
+    ("SAFE_FULL", SAFE_FULL),
 )
 
 
@@ -457,6 +477,80 @@ def main() -> int:
               ["stage", "enabled_features", "macro_f1", "delta_macro_f1", "micro_f1",
                "delta_micro_f1", "rows_improved", "rows_harmed", "rows_unchanged"],
               ablation_rows)
+
+    # ---- audit-0077 submission matrix ----
+    matrix_rows: list[dict[str, Any]] = []
+    matrix_relation_rows: list[dict[str, Any]] = []
+    matrix_predictions: dict[str, list[dict[str, Any]]] = {}
+    matrix_scored: dict[str, Scored] = {}
+    for variant, safe in SUBMISSION_MATRIX:
+        predictions = build_predictions(telemetry, safe)
+        scored = score(evaluator, predictions, gold)
+        matrix_predictions[variant] = predictions
+        matrix_scored[variant] = scored
+        border_rows = [
+            row["row_index"]
+            for row, before, after in zip(telemetry, baseline_predictions, predictions)
+            if row["Relation"] == BORDERS and before["ObjectEntities"] != after["ObjectEntities"]
+        ]
+        matrix_rows.append({
+            "variant": variant,
+            "enabled_features": ";".join(safe.enabled_features),
+            "macro_f1": round(macro_f1(scored), 6),
+            "delta_macro_f1": round(macro_f1(scored) - macro_f1(baseline), 6),
+            "micro_f1": round(micro_f1(scored), 6),
+            "delta_micro_f1": round(micro_f1(scored) - micro_f1(baseline), 6),
+            "rows_changed": sum(
+                1 for a, b in zip(baseline_predictions, predictions)
+                if a["ObjectEntities"] != b["ObjectEntities"]),
+            **compare(baseline, scored),
+            "border_rows_changed": len(border_rows),
+            "border_macro_f1": round(scored.macro[BORDERS]["macro-f1"], 6),
+        })
+        for relation in relations:
+            matrix_relation_rows.append({
+                "variant": variant,
+                "relation": relation,
+                "macro_p": round(scored.macro[relation]["macro-p"], 6),
+                "macro_r": round(scored.macro[relation]["macro-r"], 6),
+                "macro_f1": round(scored.macro[relation]["macro-f1"], 6),
+                "delta_macro_f1": round(
+                    scored.macro[relation]["macro-f1"]
+                    - baseline.macro[relation]["macro-f1"], 6),
+            })
+    write_csv(out_dir / "submission_matrix.csv",
+              ["variant", "enabled_features", "macro_f1", "delta_macro_f1", "micro_f1",
+               "delta_micro_f1", "rows_changed", "rows_improved", "rows_harmed",
+               "rows_unchanged", "border_rows_changed", "border_macro_f1"],
+              matrix_rows)
+    write_csv(out_dir / "submission_matrix_relations.csv",
+              ["variant", "relation", "macro_p", "macro_r", "macro_f1", "delta_macro_f1"],
+              matrix_relation_rows)
+
+    # Exactly what stock_support_dominance costs and buys, row by row.
+    dominance_rows = []
+    for row, core, full in zip(telemetry, matrix_predictions["SAFE_CORE"],
+                               matrix_predictions["SAFE_FULL"]):
+        if core["ObjectEntities"] == full["ObjectEntities"]:
+            continue
+        key = (row["SubjectEntity"], row["Relation"])
+        before = matrix_scored["SAFE_CORE"].per_row[key]["f1"]
+        after = matrix_scored["SAFE_FULL"].per_row[key]["f1"]
+        dominance_rows.append({
+            "row_index": row["row_index"],
+            "SubjectEntity": row["SubjectEntity"],
+            "Relation": row["Relation"],
+            "safe_core_prediction": json.dumps(core["ObjectEntities"], ensure_ascii=False),
+            "safe_full_prediction": json.dumps(full["ObjectEntities"], ensure_ascii=False),
+            "safe_core_f1": round(before, 6),
+            "safe_full_f1": round(after, 6),
+            "delta_f1": round(after - before, 6),
+            "effect": "improved" if after > before else "harmed" if after < before else "neutral",
+        })
+    write_csv(out_dir / "stock_dominance_delta.csv",
+              ["row_index", "SubjectEntity", "Relation", "safe_core_prediction",
+               "safe_full_prediction", "safe_core_f1", "safe_full_f1", "delta_f1", "effect"],
+              dominance_rows)
     write_csv(out_dir / "safe_relation_metrics.csv",
               ["stage", "relation", "baseline_macro_f1", "macro_f1", "delta_macro_f1",
                "macro_p", "macro_r"],
@@ -594,6 +688,30 @@ def main() -> int:
         },
         "safe_config_status": "SAFE_WITH_EXISTING_CALIBRATION",
         "aggressive_config_status": "CALIBRATION_REVIEW_REQUIRED",
+        "submission_matrix": {
+            variant: {
+                "config": config_name,
+                "enabled_features": list(safe.enabled_features),
+                "macro_f1": round(macro_f1(matrix_scored[variant]), 6),
+                "micro_f1": round(micro_f1(matrix_scored[variant]), 6),
+                "delta_macro_f1": round(
+                    macro_f1(matrix_scored[variant]) - macro_f1(baseline), 6),
+                **compare(baseline, matrix_scored[variant]),
+                "border_macro_f1": round(
+                    matrix_scored[variant].macro[BORDERS]["macro-f1"], 6),
+                "border_rows_changed": sum(
+                    1 for row, a, b in zip(
+                        telemetry, baseline_predictions, matrix_predictions[variant])
+                    if row["Relation"] == BORDERS
+                    and a["ObjectEntities"] != b["ObjectEntities"]),
+            }
+            for (variant, safe), config_name in zip(
+                SUBMISSION_MATRIX,
+                ("configs/experiments/cover_kbc_v3_test.yaml",
+                 "configs/experiments/cover_kbc_v3_1_safe_core_test.yaml",
+                 "configs/experiments/cover_kbc_v3_1_safe_full_test.yaml"),
+            )
+        },
     }
     (out_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -606,10 +724,15 @@ def main() -> int:
         "".join(f"{sha256_file(p)}  {p.name}\n" for p in checksums), encoding="utf-8"
     )
 
-    print(f"baseline macro-F1 {macro_f1(baseline):.5f} -> safe {macro_f1(final_scored):.5f} "
-          f"({macro_f1(final_scored) - macro_f1(baseline):+.5f})")
-    print(f"rows changed {len(per_row)}, improved {summary['rows_improved']}, "
-          f"harmed {summary['rows_harmed']}")
+    print("submission matrix:")
+    for variant, _ in SUBMISSION_MATRIX:
+        entry = summary["submission_matrix"][variant]
+        print(f"  {variant:12s} macro {entry['macro_f1']:.5f} "
+              f"({entry['delta_macro_f1']:+.5f})  micro {entry['micro_f1']:.5f}  "
+              f"improved {entry['rows_improved']:2d} harmed {entry['rows_harmed']:2d}  "
+              f"border rows changed {entry['border_rows_changed']}")
+    print(f"stock_support_dominance changes {len(dominance_rows)} rows "
+          f"(SAFE_CORE -> SAFE_FULL)")
     print(f"borders: {summary['border_non_regression']['verdict']}")
     if border_regression:
         print("BORDER REGRESSION - safe track is not releasable", file=sys.stderr)

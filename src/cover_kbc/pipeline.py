@@ -133,6 +133,7 @@ from cover_kbc.scoring import (
 )
 from cover_kbc.selection import DEFAULT_SELECTION, SelectionConfig, finalize
 from cover_kbc.v3_1.config import V31Config
+from cover_kbc.v3_1.live_prompts import RelationInstructions
 from cover_kbc.types import (
     Budget,
     EmptyReason,
@@ -424,7 +425,17 @@ class CoverPipeline:
     ) -> None:
         self.runtime = runtime
         self.config = config or PipelineConfig()
-        self.engine = ElicitationEngine(runtime, seed=self.config.seed)
+        # V3.1 Class-B standing instructions (audit 0077), resolved once from
+        # the selection block and shared by every prompt-producing component so
+        # the enumerator and the verifier cannot disagree about which
+        # instructions this run is using.
+        self.relation_instructions = RelationInstructions.from_config(
+            self.config.selection.v3_1
+        )
+        self.engine = ElicitationEngine(
+            runtime, seed=self.config.seed,
+            relation_instructions=self.relation_instructions,
+        )
         self.tracer = tracer
         # Module 9, shadow mode. ``None`` - the default - is the pre-M9 code
         # path exactly. When present it observes each query at the M1 seam and
@@ -663,7 +674,10 @@ class CoverPipeline:
         # Falling back to the enumerator keeps the interface usable with one
         # model, but then no *cross-model* evidence is claimed anywhere.
         self.verifier_runtime = verifier_runtime or runtime
-        self.verifier_engine = ElicitationEngine(self.verifier_runtime, seed=self.config.seed + 1)
+        self.verifier_engine = ElicitationEngine(
+            self.verifier_runtime, seed=self.config.seed + 1,
+            relation_instructions=self.relation_instructions,
+        )
         self.calibrator = ContextualCalibrator()
 
     @property

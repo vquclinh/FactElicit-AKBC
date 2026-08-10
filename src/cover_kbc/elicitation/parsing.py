@@ -29,6 +29,7 @@ from cover_kbc.normalization.strings import (
     is_refusal,
 )
 from cover_kbc.types import OutputType
+from cover_kbc.v3_1.acquisition_parser import parse_numbers_with_exponents
 
 #: Label prefixes a model tends to emit before the actual answer.
 _LABEL_PREFIX = re.compile(
@@ -190,18 +191,24 @@ def parse_entities(text: str, contract: RelationContract) -> list[str]:
 
 
 def parse_numeric_observations(
-    text: str, contract: RelationContract
+    text: str, contract: RelationContract, *, read_exponents: bool = False
 ) -> list[NumericObservation]:
     """Extract scalars for a numeric relation, keeping their source provenance.
 
     ``hasArea`` converts everything to km2.  ``hasCapacity`` is a person count,
     so any value carrying an area unit is a type error and is dropped.
+
+    ``read_exponents`` is V3.1 Class-B (audit 0077): it expands scientific
+    notation before parsing so ``7.5e4 m2`` keeps its unit. Default ``False``,
+    which is the exact production path.
     """
     if not isinstance(text, str) or not text.strip() or is_abstain(text):
         return []
 
     target = contract.selection.numeric_target_unit
-    values: list[NumericValue] = parse_numbers(text, default_unit=None)
+    values: list[NumericValue] = parse_numbers_with_exponents(
+        text, default_unit=None, enabled=read_exponents
+    )
 
     out: list[NumericObservation] = []
     for value in values:

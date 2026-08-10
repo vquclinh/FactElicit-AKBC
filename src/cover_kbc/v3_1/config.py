@@ -83,6 +83,10 @@ class V31AggressiveConfig:
     stock_listing_entity_prompt: bool = False
     #: Award set-continuation with an evidence-based false-positive cap.
     award_expansion_and_fp_cap: bool = False
+    #: Read scientific notation at *acquisition* time, so "7.5e4 m2" enters the
+    #: graph as 75000 m2 rather than as a unitless 7.5. Changes which candidate
+    #: values exist, hence Class B.
+    scientific_notation_acquisition: bool = False
 
     @property
     def any_enabled(self) -> bool:

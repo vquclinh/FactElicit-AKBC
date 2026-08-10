@@ -46,6 +46,12 @@ class V3VerificationRequest:
     semantic_qualifier: str = ""
     rejection_first: bool = False
     verifier_role: ModelRole = ModelRole.VERIFIER
+    #: A relation-level hard-negative *class* boundary (audit 0077). It names
+    #: the attribute classes a wrong answer would belong to; it never says
+    #: anything about the candidate being verified, so the blindness invariant
+    #: this class exists to protect is untouched. Empty unless a V3.1 Class-B
+    #: feature supplies one.
+    relation_boundary: str = ""
 
     @property
     def request_id(self) -> str:
@@ -54,6 +60,14 @@ class V3VerificationRequest:
             self.target_id, self.comparison_id, self.semantic_qualifier,
             "reject" if self.rejection_first else "normal",
         ))
+        # Appended only when a boundary is actually present. A request with no
+        # boundary must hash exactly as it did before the field existed, or
+        # every V3 verification edge id would change the moment the field was
+        # added - including on runs with no Class-B feature enabled, where the
+        # prompt is byte-identical. Two requests that differ only by boundary
+        # still differ here, which is the property the id has to carry.
+        if self.relation_boundary:
+            raw = f"{raw}|{self.relation_boundary}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
     @property
@@ -76,6 +90,7 @@ class V3VerificationRequest:
             "semantic_qualifier": self.semantic_qualifier,
             "relation_definition": self.relation_definition,
             "rejection_first": self.rejection_first,
+            "relation_boundary": self.relation_boundary,
             "label_schema": list(self.label_schema),
             "verifier_role": self.verifier_role.value,
         }
@@ -88,6 +103,10 @@ def render_v3_verification_prompt(request: V3VerificationRequest) -> str:
         f"\nSemantic qualifier: {request.semantic_qualifier}"
         if request.semantic_qualifier else ""
     )
+    # Placed immediately before the label block in every frame, which is where
+    # M17 puts its own boundary: the verifier reads the rule that separates the
+    # classes right before it is asked to choose between them.
+    boundary = f"{request.relation_boundary}\n" if request.relation_boundary else ""
     if request.mode is V3VerificationMode.CONTRAST:
         return (
             "Decide which hypothesis is better supported for the relation.\n"
@@ -96,6 +115,7 @@ def render_v3_verification_prompt(request: V3VerificationRequest) -> str:
             f"Definition: {request.relation_definition}\n"
             f"H1: {request.target_text}\n"
             f"H2: {request.comparison_text}{qualifier}\n"
+            f"{boundary}"
             "Labels: H1, H2, UNKNOWN."
         )
     if request.rejection_first:
@@ -107,6 +127,7 @@ def render_v3_verification_prompt(request: V3VerificationRequest) -> str:
             f"Relation: {request.relation}\n"
             f"Definition: {request.relation_definition}\n"
             f"Candidate: {request.target_text}{qualifier}\n"
+            f"{boundary}"
             "Labels: VALID, INVALID, UNKNOWN."
         )
     question = (
@@ -121,6 +142,7 @@ def render_v3_verification_prompt(request: V3VerificationRequest) -> str:
         f"Relation: {request.relation}\n"
         f"Definition: {request.relation_definition}\n"
         f"Candidate: {request.target_text}{qualifier}\n"
+        f"{boundary}"
         "Labels: VALID, INVALID, UNKNOWN."
     )
 

@@ -27,6 +27,7 @@ from cover_kbc.elicitation.parsing import (
 from cover_kbc.elicitation.views import ViewSpec
 from cover_kbc.models.base import GenerationRequest, LMRuntime
 from cover_kbc.types import GenerationRecord, IndependenceGroup, ModelRole, OutputType, Query
+from cover_kbc.v3_1.live_prompts import NO_INSTRUCTIONS, RelationInstructions
 
 
 def prompt_hash(prompt: str) -> str:
@@ -50,9 +51,33 @@ class ViewOutcome:
 class ElicitationEngine:
     """Runs contract-declared views against a model runtime."""
 
-    def __init__(self, runtime: LMRuntime, *, seed: int = 42) -> None:
+    def __init__(
+        self,
+        runtime: LMRuntime,
+        *,
+        seed: int = 42,
+        relation_instructions: RelationInstructions | None = None,
+    ) -> None:
         self.runtime = runtime
         self.seed = seed
+        #: V3.1 Class-B standing instructions (audit 0077). Every acquisition
+        #: path - the contract's mandatory views and the V3 actions alike -
+        #: renders through ``run_view``, so this is the one place a
+        #: relation-conditioned recall instruction has to be applied to reach
+        #: all of them. Defaults to the inert instance, so an engine built
+        #: without one produces byte-identical prompts to V3.
+        self.relation_instructions = relation_instructions or NO_INSTRUCTIONS
+
+    def system_prompt_for(self, view: ViewSpec) -> str:
+        """The system prompt actually sent for ``view``.
+
+        Public because a test must be able to assert what the model receives
+        without reaching into a request object, and because the audit's claim
+        that an instruction is live has to be checkable at this boundary.
+        """
+        return self.relation_instructions.system_prompt_for(
+            view.system_prompt, view.relation
+        )
 
     def _record_id(
         self,
@@ -112,10 +137,11 @@ class ElicitationEngine:
             # Sampled views get a run-derived seed so a repeat run reproduces.
             decode = replace(decode, seed=self.seed + run_id)
 
+        system_prompt = self.system_prompt_for(view)
         request = GenerationRequest(
             prompt=prompt,
             decode=decode,
-            system_prompt=view.system_prompt,
+            system_prompt=system_prompt,
             metadata={
                 "view_id": view.view_id,
                 "subject": query.subject,
@@ -143,7 +169,10 @@ class ElicitationEngine:
         if view.is_gate:
             gate = parse_gate(raw_output)
         elif contract.output_type is OutputType.NUMBER:
-            observations = parse_numeric_observations(raw_output, contract)
+            observations = parse_numeric_observations(
+                raw_output, contract,
+                read_exponents=self.relation_instructions.scientific_notation_acquisition,
+            )
             numbers = [o.value for o in observations]
         else:
             entities = parse_entities(raw_output, contract)
@@ -164,6 +193,7 @@ class ElicitationEngine:
             source_candidate_key=candidate,
             prompt=prompt,
             prompt_hash=prompt_hash(prompt),
+            system_prompt_hash=prompt_hash(system_prompt),
             raw_output=raw_output,
             decode_profile=decode,
             parsed_values=entities or [str(n) for n in numbers],
@@ -202,13 +232,14 @@ class ElicitationEngine:
         prompt = view.render_description(
             subject=query.subject, definition=contract.verifier_definition()
         )
+        system_prompt = self.system_prompt_for(view)
         error: str | None = None
         try:
             result = self.runtime.generate(
                 GenerationRequest(
                     prompt=prompt,
                     decode=view.decode,
-                    system_prompt=view.system_prompt,
+                    system_prompt=system_prompt,
                     metadata={
                         "view_id": view.view_id,
                         "subject": query.subject,
@@ -238,6 +269,7 @@ class ElicitationEngine:
             stage="description",
             prompt=prompt,
             prompt_hash=prompt_hash(prompt),
+            system_prompt_hash=prompt_hash(system_prompt),
             raw_output=context,
             decode_profile=view.decode,
             # Deliberately empty: prose is not a candidate.

@@ -170,6 +170,20 @@ INTERVENTIONS: tuple[InterventionRecord, ...] = (
         train_discovery="28 L1 rows and 54 over-generated rows",
     ),
     InterventionRecord(
+        feature="scientific_notation_acquisition",
+        track="aggressive",
+        stage="acquisition parsing (Module 2 -> Module 3 candidate values)",
+        compatibility=REVIEW,
+        production_predicate=(
+            "expand a scientific-notation numeral to plain decimal before the "
+            "shared parser reads it, so its unit suffix is still adjacent"
+        ),
+        train_discovery=(
+            "audit 0076: parse_numbers('7.5e4 m2') yields 7.5 with no unit "
+            "because the shared number regex stops before the exponent"
+        ),
+    ),
+    InterventionRecord(
         feature="award_expansion_and_fp_cap",
         track="aggressive",
         stage="V3 action semantics (SET_EXPANSION continuation) and M21 stopping",
