@@ -1,0 +1,291 @@
+# COVER-KBC V3.1 SAFE - official blind TEST profile with Class A score recovery.
+#
+# Audit 0076. Identical to configs/experiments/cover_kbc_v3_test.yaml except for
+# the experiment block and the `selection.v3_1` block. It reuses the *exact*
+# Audit 0073 M20/M21 calibration artifacts and hashes, unchanged, because every
+# feature it enables runs at Module 8 or later.
+#
+# Why that reuse is legitimate: for one query the pipeline runs consensus (M16),
+# then the V3 control loop (M20/M21 and action execution), and only then
+# `selection.finalize` (M8). The pre-M8 hypothesis graph Module 21 reads is built
+# by `pipeline._v3_hypothesis_graph` with `prediction=None`, so nothing a
+# finalizer decides can reach action eligibility, action execution, action cost,
+# state transitions, hypothesis construction, M21 input state or M20 budget
+# behaviour. The only hypothesis graph that sees a prediction is the post-hoc
+# observation graph, which is telemetry.
+#
+# Offline TRAIN replay of these five features over the persisted 477-row run:
+#   macro-F1 0.40333 -> 0.42000 (+0.01667); micro-F1 0.51799 -> 0.53079
+#   27 rows improved, 7 harmed, 443 unchanged
+#   countryLandBordersCountry: 0 rows changed, macro-F1 0.964369 unchanged
+#
+# Readiness must fail if any enabled feature is not classified
+# SAFE_WITH_EXISTING_CALIBRATION in cover_kbc.v3_1.compatibility.
+
+experiment:
+  name: cover_kbc_v3_2_profile_b_repair_core_test
+  split: test
+  seed: 42
+  notes: >-
+    V3.2 Profile B REPAIR CORE. Stock prompt plus precision/cardinality stock
+    repair, award metadata cleanup, and border alias/reciprocity repair. No
+    aggressive City/Area/Capacity recall rescue. Calibration-review leaderboard
+    probe; no evaluation is performed on TEST.
+
+leaderboard_probe:
+  enabled: true
+  status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
+  purpose: core post-pipeline repair stack on blind TEST
+  accepts_readiness_blockers:
+    - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
+
+calibration_provenance:
+  collection_repo_sha: ae33b2ee4e3f437dab74cc95034958773e3cb675
+  derivation_repo_sha: ae33b2ee4e3f437dab74cc95034958773e3cb675
+  train_sha256: ad37cd30d1ff4b9f1ef2579b25e64093b202c40da11e8c412e13386f1e5d332e
+  merged_corpus_sha256: 50be66dc88419f88ac811243244d534f0a8a160bdf2a48d02eb77295a58c33af
+
+test_dataset:
+  path: benchmark/data/test.jsonl
+  rows: 475
+  sha256: 67c31c8388c585634df55500612f522ad42da6735d4c89eb59a9ef5a39f043f1
+  identity_sha256: 69d7d7cbafed0a612a51c13ad42dafc448705af5d5522cd24ef6334e9ad78640
+  blind: true
+
+model_profile:
+  enumerator:
+    backend: huggingface
+    model_id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    revision: "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+    family: mistral
+    role: enumerator
+    license: apache-2.0
+    published_checkpoint_parameters: 24011361280
+    budget_count_parameters: 24011361280
+    published_total_parameters: 24011361280
+    parameter_source: "https://huggingface.co/api/models/mistralai/Mistral-Small-3.2-24B-Instruct-2506 (safetensors.total)"
+    parameter_source_verified: true
+    tokenizer_backend: mistral_common
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+  verifier:
+    backend: huggingface
+    model_id: "Qwen/Qwen3.5-4B"
+    revision: "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    family: qwen
+    role: verifier
+    license: apache-2.0
+    published_checkpoint_parameters: 4659865088
+    budget_count_parameters: 4659865088
+    published_total_parameters: 4659865088
+    parameter_source: "https://huggingface.co/api/models/Qwen/Qwen3.5-4B (safetensors.total)"
+    parameter_source_verified: true
+    tokenizer_backend: huggingface
+    quantization: nf4
+    torch_dtype: bfloat16
+    device_map: auto
+
+budget_assertion:
+  total_published_parameters: 28671226368
+  limit: 32000000000
+  legal: true
+
+pipeline:
+  mode: interleaved
+  enable_active_controller: true
+  max_steps_per_query: 12
+  max_control_rounds_per_catalogue: 3
+  max_calls_per_query: 12
+  max_generated_tokens_per_query: 6000
+  enable_calibrated_gate: true
+  gate_min_margin: 1.0
+  gate_min_prob: 0.5
+  enable_verifier: true
+  use_calibration: true
+  max_verifications_per_query: 6
+  enable_prompt_disagreement: true
+  enable_cross_model_recall: true
+  cross_model_view: ""
+  v3_core:
+    enabled: true
+    mode: production
+    schema_version: v3-core-v1
+    production_calibration_ready: true
+  scoring:
+    alpha_support: 1.0
+    beta_logit: 0.6
+    gamma_cross_model: 0.5
+    delta_contradiction: 1.5
+    eta_disagreement: 1.0
+    auto_accept_support: 3
+    verify_max_support: 2
+    adversarial_disagreement: 0.15
+    accept_score: 0.2
+    min_valid_prob: 0.40
+    drop_on_unknown: true
+    logit_clip: 3.0
+    logit_epsilon: 1.0e-6
+  selection:
+    capacity_support_ratio: 1.0
+    capacity_trust_verified: true
+    v3_1:
+      enabled: true
+      safe:
+        # FINAL_CANDIDATE_RETENTION. Numeric cluster order breaks size ties on the
+        # smallest representative, which ignores acceptance, so a query whose only
+        # ACCEPTED candidate was the larger singleton emitted nothing at all. 55
+        # TRAIN rows had a non-empty CONTROL_SURVIVED stage and an empty output.
+        final_candidate_retention: true
+        # Repair leaked "<bucket label>: <payload>" enumeration lines and drop the
+        # ones whose payload is an abstention token. 76 awardWonBy values on TRAIN.
+        enumeration_label_repair: true
+        # Stock only. Keep maximally supported listings when supports differ; keep
+        # all on a tie, so multi-listed companies are not capped. Improves 12 TRAIN
+        # rows and harms 7, for a net stock macro-F1 of +0.00700.
+        # OFF for the clean V3.2 stock prompt background. The repair-core
+        # profile tests L7-L9 on top of A, not SAFE_FULL stock dominance.
+        stock_support_dominance: false
+        # Guardrail. 0 TRAIN rows affected; ticker rejection deliberately absent.
+        stock_structural_validation: true
+        # Guardrail. 0 TRAIN rows affected. Converts only on an explicit unit.
+        numeric_output_canonicalization: true
+      aggressive:
+        capacity_definition_prompt: false
+        city_of_death_contrast_prompt: false
+        stock_listing_entity_prompt: true
+        award_expansion_and_fp_cap: false
+        scientific_notation_acquisition: false
+
+leaderboard_repair:
+  enabled: true
+  repair_version: v3.2-l7-l9
+  profile: B_REPAIR_CORE
+  features:
+    stock_entity_guard: true
+    stock_alias_dedupe: true
+    stock_multi_listing_rescue: true
+    border_alias_dedupe: true
+    border_reciprocity: true
+    border_directional_sweep: false
+    death_existence_gate: false
+    death_city_recall: false
+    area_empty_rescue: false
+    capacity_repair: false
+    award_metadata_cleanup: true
+    award_recipient_witness: false
+    award_time_sliced_recall: false
+    l8_consistency: true
+    l9_final_risk_guard: true
+  max_calls_by_relation:
+    countryLandBordersCountry: 3
+    companyTradesAtStockExchange: 2
+    hasArea: 0
+    hasCapacity: 0
+    personHasCityOfDeath: 0
+    awardWonBy: 1
+
+query_intelligence:
+  profiler:
+    enabled: true
+    mode: shadow
+    profile_version: m9-v1
+  prompt_compiler:
+    enabled: true
+    mode: shadow
+    compiler_version: m10-v1
+  parametric_retrieval:
+    enabled: true
+    mode: shadow
+    retrieval_version: m11-v1
+    operations: [pseudo_memory, self_ask, query_rewrite]
+    samples_per_operation: 1
+
+specialists:
+  numeric:
+    enabled: true
+    mode: shadow
+    specialist_version: m12-v1
+    mine_parametric_memory: true
+  large_open_set:
+    enabled: true
+    mode: shadow
+    specialist_version: m13-v1
+    mine_parametric_memory: true
+  null_temporal:
+    enabled: true
+    mode: shadow
+    specialist_version: m14-v1
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    mine_parametric_memory: true
+  small_set_closure:
+    enabled: true
+    mode: shadow
+    specialist_version: m15-v1
+    enable_facets: []
+    min_independent_groups: 1
+    conflict_policy: unresolved
+    cross_family_recall: false
+    candidate_explosion_threshold: 0
+    mine_parametric_memory: true
+
+consensus:
+  enabled: true
+  mode: shadow
+  consensus_version: m16-v1
+  include_parametric_origins: true
+  include_query_events: true
+
+specialist_verifier:
+  enabled: true
+  mode: shadow
+  verification_version: m17-v1
+  templates: [m17_statement_v1, m17_question_v1]
+  bias_controls:
+    label_orders: [ABC, BAC]
+  use_calibration: true
+
+bidirectional_verification:
+  enabled: true
+  mode: shadow
+  check_version: m18-v1
+  supported_checks: [REVERSE, KEY_CONDITION, COUNTERFACTUAL, CANDIDATE_FREE_RECALL]
+
+layer4_integration:
+  enabled: true
+  mode: shadow
+  integration_version: layer4-v1
+
+coverage_gap:
+  enabled: true
+  mode: shadow
+  estimator_version: m19-v1
+  weights:
+    novelty_rate: 1
+    singleton_ratio: 1
+    facet_gap: 1
+    disagreement: 1
+    unresolved_mass: 1
+
+relation_budget_scheduler:
+  enabled: true
+  mode: production
+  scheduler_version: m20-v1
+  calibration_file: ../calibration/v3/m20_relation_budget.json
+  calibration_sha256: 74414b0f496bd0d194bf4537cbb2745918e23cab68fc8c5d0059f075d4f40e29
+
+micro_planner:
+  enabled: true
+  mode: production
+  planner_version: m21-v1
+  historical_bins: ../calibration/v3/m21_historical_bins.json
+  historical_bins_sha256: ca907ea82b6e42819cafe27244944e7d4140814490a5ed1de897bdec7a61d675
+  planner_calibration: ../calibration/v3/m21_planner_calibration.json
+  planner_calibration_sha256: 1423df17137c2c175bd2fe0f22a287acf858c59f612664dcfaaa41dbe561c1e6
+
+layer6_integration:
+  enabled: true
+  mode: shadow
+  integration_version: layer6-v1

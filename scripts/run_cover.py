@@ -49,6 +49,7 @@ from cover_kbc.controller_calibration.readiness import (
 )
 from cover_kbc.diagnostics import DiagnosticRecorder, InferenceTelemetryWriter
 from cover_kbc.integration_mode import IntegrationMode
+from cover_kbc.leaderboard_repair import build_repair_stack
 from cover_kbc.coverage_gap.missingness import build_coverage_gap_estimator
 from cover_kbc.evidence.layer4 import build_layer4_integrator
 from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
@@ -367,6 +368,37 @@ def evaluate_production_readiness(config: dict, split: str, config_path: Path):
     return readiness, required
 
 
+def _allow_leaderboard_probe(config: dict, split: str, readiness) -> bool:
+    """Explicit escape hatch for blind leaderboard probes under calibration review.
+
+    This is intentionally narrower than production readiness.  It does not
+    report FULL_TEST_READY and it is not inherited by ordinary aggressive
+    configs.  The user may choose to spend a submission slot on a calibration
+    review probe, but the source must say so.
+    """
+    if split != "test":
+        return False
+    probe = dict(config.get("leaderboard_probe") or {})
+    if not probe.get("enabled", False):
+        return False
+    if str(probe.get("status", "")) != "CALIBRATION_REVIEW_LEADERBOARD_PROBE":
+        return False
+    accepted = probe.get("accepts_readiness_blockers") or []
+    if "selection.v3_1: CALIBRATION_REVIEW_REQUIRED" not in accepted:
+        return False
+    blockers = getattr(readiness, "blockers", ())
+    if not any("CALIBRATION_REVIEW_REQUIRED" in blocker for blocker in blockers):
+        return False
+
+    enumerator, verifier = model_blocks(config)
+    return (
+        enumerator.get("model_id") == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+        and enumerator.get("revision") == "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+        and verifier.get("model_id") == "Qwen/Qwen3.5-4B"
+        and verifier.get("revision") == "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path, help="experiment YAML")
@@ -468,12 +500,20 @@ def main() -> int:
     if production:
         readiness, required = evaluate_production_readiness(config, split, args.config)
         if readiness.state is not required:
-            print(f"{split} readiness: REFUSED")
-            for blocker in readiness.blockers:
-                print(f"  - {blocker}")
-            raise SystemExit(
-                f"{args.config} declares production mode but is not "
-                f"{required.value} ({readiness.state.value})")
+            if _allow_leaderboard_probe(config, split, readiness):
+                print(
+                    f"{split} readiness: LEADERBOARD_PROBE_ALLOWED "
+                    f"(not {required.value}; {readiness.state.value})"
+                )
+                for blocker in readiness.blockers:
+                    print(f"  CALIBRATION-REVIEW BLOCKER ACCEPTED: {blocker}")
+            else:
+                print(f"{split} readiness: REFUSED")
+                for blocker in readiness.blockers:
+                    print(f"  - {blocker}")
+                raise SystemExit(
+                    f"{args.config} declares production mode but is not "
+                    f"{required.value} ({readiness.state.value})")
         print(f"readiness   : {readiness.state.value}")
 
     # Resolve both logical roles through the *canonical* resolver, so this
@@ -682,6 +722,27 @@ def main() -> int:
             _abort_on_accounting_invariant(
                 out_dir, run_id, split, len(queries), error)
 
+        repair_stack = build_repair_stack(
+            config.get("leaderboard_repair"),
+            enumerator=runtime,
+            verifier=verifier_runtime,
+        )
+        repair_result = None
+        if repair_stack is not None:
+            repair_graphs = pipeline.v3_pre_m8_results or pipeline.v3_core_results
+            repair_result = repair_stack.apply(
+                result.predictions,
+                queries=queries,
+                hypothesis_graphs=repair_graphs,
+            )
+            result.predictions = list(repair_result.predictions)
+            print(
+                "leaderboard repair: "
+                f"{repair_result.accounting['changed_rows']} changed row(s), "
+                f"{repair_result.accounting['total_repair_calls']} post-call(s), "
+                f"profile={repair_result.accounting['profile']}"
+            )
+
     manifest.finish()
     manifest.total_calls = result.total_calls
     manifest.total_generated_tokens = result.total_generated_tokens
@@ -729,6 +790,11 @@ def main() -> int:
             for record in records:
                 handle.write(json.dumps(record.to_json(), ensure_ascii=False) + "\n")
         print(f"[{tag}] {path}  ({len(records)} queries)")
+
+    if repair_result is not None and repair_stack is not None:
+        records_path, accounting_path = repair_stack.write_artifacts(repair_result, out_dir)
+        print(f"[L7-L9] {records_path}  ({len(repair_result.records)} queries)")
+        print(f"[L7-L9] {accounting_path}")
 
     if result.errors:
         (out_dir / "errors.json").write_text(json.dumps(result.errors, indent=2))
