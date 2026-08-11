@@ -53,6 +53,21 @@ calibration_provenance:
   train_sha256: ad37cd30d1ff4b9f1ef2579b25e64093b202c40da11e8c412e13386f1e5d332e
   merged_corpus_sha256: 50be66dc88419f88ac811243244d534f0a8a160bdf2a48d02eb77295a58c33af
 
+train_dataset:
+  path: benchmark/data/train.jsonl
+  rows: 477
+  sha256: ad37cd30d1ff4b9f1ef2579b25e64093b202c40da11e8c412e13386f1e5d332e
+  identity_sha256: 04b56aa6f401f00ca8d672a8d6cade09cfa2492640aac16a9aab8bc42c1b8054
+  labelled: true
+
+# Required by evaluate_train_diagnostic_readiness: a diagnostic run that records
+# no telemetry burns a GPU hour and produces nothing to analyse. It also gives
+# this run the same inference_telemetry.jsonl the authoritative baseline has,
+# which is what the candidate-level comparison in audit 0080 reads.
+diagnostics:
+  enabled: true
+  telemetry_file: inference_telemetry.jsonl
+
 # test_dataset block deliberately absent: this profile must not be able to
 # read TEST at all.
 model_profile:

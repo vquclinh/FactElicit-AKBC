@@ -10,6 +10,11 @@ Class-B feature.
 Expected wall clock: the authoritative TRAIN run averaged ~24 s/row, so budget
 **40-60 minutes** on an A100 plus model download time.
 
+Cell order is deliberate: config, dataset and model *metadata* checks first,
+then the **real** `run_cover.py` pre-flight (CELL 9b), and only then weights.
+The first attempt at this experiment loaded 28.7B parameters and then aborted on
+a config guard; CELL 9b is that guard, run for free.
+
 ---
 
 ## CELL 1 - mount Drive
@@ -209,6 +214,51 @@ print('prompt wiring         : OK  (hashes match the audit-0080 contract)')
 
 ---
 
+## CELL 9b - REAL runner pre-flight, before any weights download
+
+This is the cell the first attempt did not have. It calls
+`run_cover.py`'s **own** gate resolution and readiness evaluation - not a copy
+of the rules - so a config guard fails here in seconds instead of after 28.7B
+parameters have downloaded.
+
+```python
+import importlib.util, sys
+sys.path.insert(0, 'scripts')
+spec = importlib.util.spec_from_file_location('run_cover_preflight', 'scripts/run_cover.py')
+rc = importlib.util.module_from_spec(spec); sys.modules[spec.name] = rc
+spec.loader.exec_module(rc)
+
+from pathlib import Path
+CONFIG = Path('configs/experiments/v3_1_diag_capacity.yaml')
+
+# 1. which readiness gate governs this run
+gate, required = rc.resolve_production_gate(cfg, 'train', CONFIG)
+print('gate     :', getattr(gate, '__name__', gate))
+print('requires :', required.value)
+assert gate is rc.TRAIN_DIAGNOSTIC_GATE[0], 'not routed to the TRAIN diagnostic gate'
+
+# 2. does it pass, with no model loaded
+readiness, required = rc.evaluate_production_readiness(cfg, 'train', CONFIG)
+print('readiness:', readiness.state.value)
+for blocker in readiness.blockers:
+    print('  BLOCKER:', blocker)
+assert readiness.state is required, 'STOP: fix the config before loading weights'
+
+# 3. the relation filter the runner will actually apply
+wanted = rc._resolve_relation_filter(None, cfg['experiment'], 'train')
+from cover_kbc.data.loader import load_dataset
+rows = [q for q in load_dataset('train').queries() if q.relation in wanted]
+print('filter   :', sorted(wanted), '->', len(rows), 'rows')
+assert sorted(wanted) == ['hasCapacity'] and len(rows) == 100
+
+print('\nPRE-FLIGHT PASSED - safe to load weights')
+```
+
+If this cell fails, **stop and fix the config**. Nothing below it is worth the
+download time.
+
+---
+
 ## CELL 10 - launch the capacity-only run
 
 ```python
@@ -402,6 +452,7 @@ Abort and report rather than continuing if any of these occur:
 | model id or revision differs | CELL 8 |
 | more than one Class-B feature enabled | CELL 9 |
 | rendered prompt identical OFF vs ON | CELL 9 |
+| readiness gate refuses, or filter != 100 rows | **CELL 9b** |
 | prompt hashes differ from the contract | CELL 9 |
 | row count != 100, or any non-capacity relation | CELL 12 |
 | `failed_queries` or `unresolved_invariant_errors` > 0 | CELL 12 |

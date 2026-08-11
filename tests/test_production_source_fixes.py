@@ -638,6 +638,23 @@ def _drive_main(tmp_path, monkeypatch, mode):
         config["pipeline"].pop("mode", None)
     else:
         config["pipeline"]["mode"] = mode
+
+    # The probe is written outside `configs/experiments/`, so the config's
+    # relative calibration paths (`../calibration/...`) would no longer resolve.
+    # Absolutise them against the real config's own directory: the readiness
+    # gate is evaluated before `build_runtime` (audit 0080), so a probe with
+    # dangling artifact paths would be refused for the wrong reason and this
+    # harness would stop testing what it names.
+    for block, keys in (
+        ("relation_budget_scheduler", ("calibration_file",)),
+        ("micro_planner", ("historical_bins", "planner_calibration")),
+    ):
+        section = config.get(block) or {}
+        for key in keys:
+            raw = section.get(key)
+            if raw:
+                section[key] = str((VAL_CONFIG.parent / raw).resolve())
+
     path = tmp_path / "probe.yaml"
     path.write_text(yaml.safe_dump(config))
 

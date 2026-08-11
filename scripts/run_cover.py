@@ -313,6 +313,60 @@ def _resolve_relation_filter(
     return names
 
 
+def resolve_production_gate(config: dict, split: str, config_path: Path):
+    """Which readiness gate governs a production-mode run of ``split``.
+
+    Extracted so the pre-flight check, the tests and the runbook all interrogate
+    **this** function rather than a copy of its rules. Audit 0080's first Colab
+    attempt failed here after 28.7B parameters had already loaded, because
+    nothing cheaper exercised it.
+
+    Returns ``(gate, required_state)``, or ``(None, None)`` when the config does
+    not declare production mode at all.
+
+    Raises:
+        SystemExit: when production mode is declared for a split that has no
+            gate. TRAIN reaches a gate only through the opt-in V3A diagnostic
+            path, which requires ``diagnostics.enabled``; a plain TRAIN
+            production config is still refused, and TEST can never arrive here
+            through the diagnostic branch because that branch tests
+            ``split == "train"`` first.
+    """
+    if not _wants_production(config):
+        return None, None
+    if split == "train" and _diagnostics_enabled(config):
+        gate, required = TRAIN_DIAGNOSTIC_GATE
+    else:
+        gate, required = PRODUCTION_GATES.get(split, (None, None))
+    if gate is None:
+        raise SystemExit(
+            f"{config_path} declares production mode for split {split!r}; "
+            f"a production leaderboard run is defined only for "
+            f"{sorted(PRODUCTION_GATES)}. A TRAIN diagnostic must additionally "
+            f"declare diagnostics.enabled and a telemetry_file, which is what "
+            f"selects the {TRAIN_DIAGNOSTIC_GATE[1].value} gate.")
+    return gate, required
+
+
+def evaluate_production_readiness(config: dict, split: str, config_path: Path):
+    """Resolve the gate and run it. ``None`` when the config is not production.
+
+    Deliberately free of any model dependency, so it can run before weights are
+    downloaded. ``scripts/run_cover.py`` calls it there, and the Colab runbook
+    calls the same function as its pre-flight cell.
+    """
+    gate, required = resolve_production_gate(config, split, config_path)
+    if gate is None:
+        return None
+    provenance = dict(config.get("calibration_provenance") or {})
+    readiness = gate(
+        config, base_dir=config_path.parent, split=split,
+        expected_collection_repo_sha=provenance.get("collection_repo_sha"),
+        expected_derivation_repo_sha=provenance.get("derivation_repo_sha"),
+    )
+    return readiness, required
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path, help="experiment YAML")
@@ -403,6 +457,25 @@ def main() -> int:
     if args.limit:
         queries = queries[: args.limit]
 
+    # ---- production activation, BEFORE any weights load ------------------
+    # A config whose Layer-6 modules declare production mode gets the real
+    # calibrated path, and gets it only if the readiness gate says so. Evaluated
+    # here rather than after `build_runtime` because audit 0080's first Colab
+    # attempt spent minutes downloading 28.7B parameters and only then
+    # discovered that a TRAIN diagnostic had no gate. A config guard that fires
+    # after the expensive step is a guard that costs what it was meant to save.
+    production = _wants_production(config)
+    if production:
+        readiness, required = evaluate_production_readiness(config, split, args.config)
+        if readiness.state is not required:
+            print(f"{split} readiness: REFUSED")
+            for blocker in readiness.blockers:
+                print(f"  - {blocker}")
+            raise SystemExit(
+                f"{args.config} declares production mode but is not "
+                f"{required.value} ({readiness.state.value})")
+        print(f"readiness   : {readiness.state.value}")
+
     # Resolve both logical roles through the *canonical* resolver, so this
     # entry point cannot disagree with `run_staged.py` about which models a
     # config declares - and cannot silently fall back to a stub when handed the
@@ -422,47 +495,14 @@ def main() -> int:
             "choose a compliant profile, before running."
         )
 
-    # ---- production activation -------------------------------------------
-    # A config whose Layer-6 modules declare production mode gets the real
-    # calibrated path, and gets it only if the readiness gate says so. The gate
-    # loads the three artifacts through their canonical owners, so a missing,
-    # synthetic, mis-hashed or provenance-mismatched calibration stops the run
-    # here rather than at row 1 of 478.
-    production = _wants_production(config)
     calibration = None
     if production:
         provenance = dict(config.get("calibration_provenance") or {})
-        # One production stack. Leaderboard splits use the locked production
-        # gate table; V3A TRAIN diagnostics use a separate opt-in gate, because
-        # they measure the calibrated stack over labels and are not a submission
-        # path.
-        if split == "train" and _diagnostics_enabled(config):
-            gate, required = TRAIN_DIAGNOSTIC_GATE
-        else:
-            gate, required = PRODUCTION_GATES.get(split, (None, None))
-        if gate is None:
-            raise SystemExit(
-                f"{args.config} declares production mode for split {split!r}; "
-                f"a production leaderboard run is defined only for "
-                f"{sorted(PRODUCTION_GATES)}")
-        readiness = gate(
-            config, base_dir=args.config.parent, split=split,
-            expected_collection_repo_sha=provenance.get("collection_repo_sha"),
-            expected_derivation_repo_sha=provenance.get("derivation_repo_sha"),
-        )
-        if readiness.state is not required:
-            print(f"{split} readiness: REFUSED")
-            for blocker in readiness.blockers:
-                print(f"  - {blocker}")
-            raise SystemExit(
-                f"{args.config} declares production mode but is not "
-                f"{required.value} ({readiness.state.value})")
         calibration = load_production_calibration(
             config, base_dir=args.config.parent,
             expected_collection_repo_sha=provenance.get("collection_repo_sha"),
             expected_derivation_repo_sha=provenance.get("derivation_repo_sha"),
         )
-        print(f"readiness   : {readiness.state.value}")
         print(f"calibration : {len(calibration.budgets)} relation budget(s), "
               f"{len(calibration.history.bins)} bin(s), "
               f"tau={calibration.planner.tau_continue}")

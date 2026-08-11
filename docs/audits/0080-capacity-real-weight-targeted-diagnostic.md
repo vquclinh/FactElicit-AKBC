@@ -37,12 +37,166 @@ A GPU experiment must not be launched from an ambiguous tree, so this milestone
 requires **one clean checkpoint commit** before the run. The runbook checks out
 that exact SHA in detached HEAD and asserts the tree is clean.
 
-Pre-run commit SHA: `<recorded at commit time — see §29 of the final report>`
+First attempted pre-run commit: `3de4db0385c5dec1049ff5082047eca0545972a9`
+(aborted before inference — see 2b)
+
+Hotfix pre-run commit: `<to be recorded when the user commits the hotfix>`
 
 `HEAD` before the checkpoint: `b9eef10b6b9ba1333f7278e4fcc0b9b672f66357`
 Frozen historical TEST source, untouched: `16f60fb1fa7c390ed0f0d0d741f9aa6f996d4da5`
 
 **After the checkpoint commit, source must not change until the run completes.**
+
+---
+
+## 2b. First Colab Attempt — PRE-RUN INFRASTRUCTURE FAILURE, NO EXPERIMENT RESULT
+
+Recorded rather than hidden. **The capacity prompt remains completely
+unmeasured.**
+
+Attempted source SHA: `3de4db0385c5dec1049ff5082047eca0545972a9`
+
+What happened:
+
+| Stage | Outcome |
+|---|---|
+| model weights (28.7B) | loaded successfully |
+| relation filter | correct — printed `relation filter ['hasCapacity']: 100 rows` |
+| query inference | **never started** |
+| return code | `1` |
+| `predictions.jsonl` | not created |
+| `run_accounting.json` | not created |
+| `manifest.json` | not created |
+
+Abort message:
+
+```
+configs/experiments/v3_1_diag_capacity.yaml declares production mode for split
+'train'; a production leaderboard run is defined only for ['test', 'val']
+```
+
+**Classification: PRE-RUN INFRASTRUCTURE FAILURE / NO EXPERIMENT RESULT.**
+Zero diagnostic rows were evaluated, so nothing about `capacity_definition_prompt`
+can be inferred — positively or negatively — from this attempt.
+
+### Root cause
+
+`scripts/run_cover.py`, production-activation block:
+
+```python
+if split == "train" and _diagnostics_enabled(config):
+    gate, required = TRAIN_DIAGNOSTIC_GATE
+else:
+    gate, required = PRODUCTION_GATES.get(split, (None, None))   # -> None for train
+if gate is None:
+    raise SystemExit(...)
+```
+
+`_diagnostics_enabled` reads the **top-level `diagnostics.enabled`** block — the
+V3A telemetry recorder switch. The audit-0077 diagnostic configs declare
+`experiment.diagnostic: true`, which is a *different field* and which nothing in
+the runner reads. So the TRAIN branch was never taken, `PRODUCTION_GATES` has no
+`train` entry, and the run was refused.
+
+A gate for this exact use case already existed —
+`evaluate_train_diagnostic_readiness` / `TRAIN_DIAGNOSTIC_READY`, built for the
+V3A labelled-TRAIN run — and the diagnostic configs simply never opted into it.
+
+### Why the audit-0080 pre-run checks missed it
+
+Every pre-run check, including this audit's own §4 and the runbook's CELL 9,
+interrogated the **config**: feature sets, relation filter, TEST inaccessibility,
+readiness-is-not-TEST-ready, prompt hashes. All of those were and remain correct.
+
+None of them exercised the **runner's dispatch**. The bug was not in the config's
+content but in whether `run_cover.py` would route that content to a gate at all,
+and no test called that routing. Audit 0077 shipped five diagnostics that passed
+every static assertion and could not execute.
+
+### Second defect, same incident
+
+The guard fired *after* `build_runtime`, so the refusal cost a full 28.7B
+parameter download. A guard that is free to evaluate but runs after the
+expensive step costs exactly what it exists to save.
+
+## 2c. The Hotfix
+
+**Config change (the actual fix), 5 files.** Each targeted diagnostic now opts
+into the pre-existing TRAIN diagnostic gate by declaring what that gate has
+always required:
+
+```yaml
+train_dataset:
+  path: benchmark/data/train.jsonl
+  rows: 477
+  sha256: ad37cd30d1ff4b9f1ef2579b25e64093b202c40da11e8c412e13386f1e5d332e
+  identity_sha256: 04b56aa6f401f00ca8d672a8d6cade09cfa2492640aac16a9aab8bc42c1b8054
+  labelled: true
+
+diagnostics:
+  enabled: true
+  telemetry_file: inference_telemetry.jsonl
+```
+
+**No guard was weakened**, because no guard was changed. This is the mechanism
+§3 asked to be preferred: a safer pre-existing path already intended for this
+use case. A side benefit is that the run now emits `inference_telemetry.jsonl`,
+the same candidate-level artifact the authoritative baseline has and the one
+`analyze_capacity_diagnostic.py` reads.
+
+| Config | TRAIN gate | TEST readiness |
+|---|---|---|
+| `v3_1_diag_capacity.yaml` | `TRAIN_DIAGNOSTIC_READY` | `NOT_READY` |
+| `v3_1_diag_city.yaml` | `TRAIN_DIAGNOSTIC_READY` | `NOT_READY` |
+| `v3_1_diag_stock.yaml` | `TRAIN_DIAGNOSTIC_READY` | `NOT_READY` |
+| `v3_1_diag_award.yaml` | `TRAIN_DIAGNOSTIC_READY` | `NOT_READY` |
+| `v3_1_diag_area_parser.yaml` | `TRAIN_DIAGNOSTIC_READY` | `NOT_READY` |
+
+**Runner change (cost, not policy).** The gate resolution and readiness
+evaluation were extracted into `resolve_production_gate()` and
+`evaluate_production_readiness()` and moved **before** `build_runtime`. The
+decision rules are byte-identical; only their position and reusability changed.
+Extraction is what lets the tests and the runbook interrogate the real function
+instead of a copy of its rules.
+
+### Safety properties preserved
+
+* a plain TRAIN production config **without** `diagnostics.enabled` is still
+  refused — the branch requires it;
+* `diagnostics.enabled` cannot open a TEST run, because the branch tests
+  `split == "train"` first;
+* an unknown split is still refused;
+* `val` and `test` still take their own gates unchanged;
+* the frozen `cover_kbc_v3_test.yaml` and both SAFE submission configs still
+  evaluate `FULL_TEST_READY`;
+* the relation filter still refuses blind splits outright.
+
+Each of these is a test, not a claim.
+
+### One collateral fix
+
+Three pre-existing tests in `tests/test_production_source_fixes.py` broke on the
+reorder. The cause was in their harness, not in the change: `_drive_main` copies
+the VAL config into `tmp_path`, which breaks its relative
+`../calibration/...` paths. Previously that went unnoticed because the readiness
+gate ran after `build_runtime` and the stub raised first. The harness now
+absolutises those paths against the real config directory; the three tests are
+otherwise untouched and assert exactly what they asserted before.
+
+## 2d. The Experiment Is Unchanged
+
+Verified by test after the hotfix:
+
+| | Value |
+|---|---|
+| system prompt OFF | `2fb9188dbeda44f3` |
+| system prompt ON | `bcffa96f37770392` |
+| capacity instruction sha256 | `27ea6e49bb5547f360effcf133c037fc6f2cd396fddd3f83e2eec12aa8c4ac36` |
+| causal intervention | `capacity_definition_prompt`, and only that |
+| models / revisions | unchanged |
+| M20 / M21 / calibration | unchanged, all 7 hashes byte-identical |
+| audit-0078 orchestration repair | unchanged and active |
+| relation filter | `[hasCapacity]` → 100 rows |
 
 ## 3. Audit-0078 Orchestration Fix Is Active
 
@@ -332,16 +486,24 @@ rises.
 ## 24. Pre-GPU Test Gate
 
 ```bash
-python -m pytest tests/ -q -p no:randomly   # 3927 passed, 4 skipped
-python -m pytest tests/ -q                  # 3927 passed, 4 skipped
+python -m pytest tests/ -q -p no:randomly   # 3978 passed, 4 skipped
+python -m pytest tests/ -q                  # 3978 passed, 4 skipped
 python -m pyflakes src/ tests/ scripts/     # clean
 git diff --check                            # clean
 ```
 
-Targeted: orchestration repair 42 passed; live prompt wiring, capacity-only
-relation filter, diagnostic-cannot-read-TEST, Class-B readiness `NOT_READY`,
-calibration hashes, no-gold-in-production and no-network paths — 155 passed
-across the three V3.1/V3.2 suites.
+New: `tests/test_targeted_diagnostic_executability.py` (**51**) — the regression
+class that was missing. It calls the runner's own
+`resolve_production_gate` / `evaluate_production_readiness` rather than
+restating their rules, covers all five diagnostics positively, and covers the
+negative cases: plain TRAIN production refused, missing `telemetry_file`
+refused, `diagnostics.enabled` unable to open TEST or an unknown split,
+val/test gates unchanged, frozen and SAFE configs unaffected, prompt hashes and
+model contract unchanged, and readiness provably evaluated before
+`build_runtime`.
+
+Targeted suites: orchestration repair, live prompt wiring, weakness-mining
+firewall and recovery tooling — **197 passed**.
 
 ## Phase A Verdict
 
