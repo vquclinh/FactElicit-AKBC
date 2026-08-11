@@ -149,12 +149,20 @@ pipeline:
     v3_1:
       enabled: true
       safe:
+        # The SAFE_CORE background, and exactly that. Audit 0076's replay shows
+        # SAFE_CORE changes 0 stock rows and leaves stock macro-F1 at the V3
+        # baseline 0.52890, so it adds no confound to the causal comparison.
         final_candidate_retention: true
         enumeration_label_repair: true
-        stock_structural_validation: true
         numeric_output_canonicalization: true
-        # ON for SAFE_FULL: +0.00147 macro-F1, 12 rows helped, 7 harmed.
-        stock_support_dominance: true
+        stock_structural_validation: true
+        # OFF. Unlike the capacity diagnostic, where the stock features were
+        # unreachable, this one IS live for stock: SAFE_FULL's support-dominance
+        # rule changes 22 stock rows and moves relation macro-F1 to 0.53590.
+        # The audit-0077 stock promotion gate is written against the ~0.529
+        # SAFE_CORE baseline, so leaving it on would compare unlike systems and
+        # credit or blame the prompt for a finalization rule's effect.
+        stock_support_dominance: false
       aggressive:
         # Exactly one. Enabling a second would make the measurement unattributable.
         stock_listing_entity_prompt: true
