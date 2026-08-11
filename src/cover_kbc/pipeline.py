@@ -1411,6 +1411,35 @@ class CoverPipeline:
 
     # ------------------------------------------------------------- phase B --
 
+    def _phase_b_roles(self) -> frozenset[ModelRole]:
+        """Which model roles Phase B's controller may execute against.
+
+        Residency, not policy. In **staged** mode Phase B holds the verifier
+        alone, so an action owned by the enumerator genuinely cannot run here
+        and is persisted for the orchestrator to dispatch after a role swap -
+        ``resume`` picks it up. In **interleaved** mode both runtimes are
+        resident (``self.runtime`` and ``self.verifier_runtime``), so there is
+        no role to swap to and nothing to defer.
+
+        Audit 0078. Applying the staged restriction to interleaved runs created
+        a pending action with no consumer: ``resume`` is called only by
+        ``scripts/run_staged.py``, never by ``run``/``run_query``. The action
+        therefore survived to ``decide_graph``, which correctly refused to
+        finalize over executable work - 39 of the 475 frozen TEST rows died
+        that way, every one ``companyTradesAtStockExchange``, the only relation
+        whose contract budget (5 calls) leaves an affordable call after Phase A
+        spends 4.
+
+        Widening this set cannot change a row that did not fail. ``choose_action``
+        is deliberately *not* role-filtered, so the action selected is identical
+        either way; the only behaviour this governs is whether a selected
+        enumerator-role action is executed or pended, and every row that pended
+        one raised. Rows that never pended are untouched by construction.
+        """
+        if self.config.mode is ExecutionMode.STAGED:
+            return frozenset({ModelRole.VERIFIER, ModelRole.NONE})
+        return frozenset({ModelRole.ENUMERATOR, ModelRole.VERIFIER, ModelRole.NONE})
+
     def verify_graph(self, graph: EvidenceGraph) -> EvidenceGraph:
         """Phase B: cross-model recall + blind verification. Verifier model only.
 
@@ -1439,8 +1468,7 @@ class CoverPipeline:
                 graph.budget_snapshot = snapshot
         if self.config.enable_active_controller:
             calls = self._controlled_phase(
-                graph, graph.contract,
-                frozenset({ModelRole.VERIFIER, ModelRole.NONE}), phase="verify",
+                graph, graph.contract, self._phase_b_roles(), phase="verify",
             )
         else:
             # The fixed path spends verifier calls too, and they belong to the

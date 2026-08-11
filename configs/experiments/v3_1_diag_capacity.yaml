@@ -136,12 +136,19 @@ pipeline:
     v3_1:
       enabled: true
       safe:
+        # The finalization stack a future production run would carry. For a
+        # capacity-only diagnostic every one of these is a measured no-op:
+        # audit 0076 recorded 0 hasCapacity rows changed by retention and 0 by
+        # numeric canonicalisation, and label repair is an entity-relation path.
         final_candidate_retention: true
         enumeration_label_repair: true
-        stock_structural_validation: true
         numeric_output_canonicalization: true
-        # ON for SAFE_FULL: +0.00147 macro-F1, 12 rows helped, 7 harmed.
-        stock_support_dominance: true
+        # OFF. Both stock features are relation-gated to
+        # companyTradesAtStockExchange and therefore unreachable here, but audit
+        # 0080 section 4 requires one causal intervention and nothing else, so
+        # they are switched off rather than merely argued to be inert.
+        stock_structural_validation: false
+        stock_support_dominance: false
       aggressive:
         # Exactly one. Enabling a second would make the measurement unattributable.
         capacity_definition_prompt: true

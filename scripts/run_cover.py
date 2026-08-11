@@ -64,6 +64,7 @@ from cover_kbc.query_intelligence import (
     build_profiler,
     build_prompt_compiler,
 )
+from cover_kbc.run_accounting import run_accounting, submission_verdict
 from cover_kbc.runtime.manifest import RunManifest, new_run_id
 from cover_kbc.specialists import (
     build_large_set_specialist,
@@ -255,6 +256,30 @@ def _abort_on_accounting_invariant(
     raise SystemExit(2) from error
 
 
+def _recovery_identities(path: Path) -> set[tuple[str, str]]:
+    """The identity set a recovery manifest names. Fails closed.
+
+    Only identities are read. A manifest that carries predicted values is
+    rejected outright: recovery must re-derive answers from inference, and a
+    manifest is not allowed to become a channel for supplying them.
+    """
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    identities = manifest.get("identities")
+    if not isinstance(identities, list) or not identities:
+        raise SystemExit(f"{path}: no identities to recover")
+    wanted: set[tuple[str, str]] = set()
+    for entry in identities:
+        if "ObjectEntities" in entry:
+            raise SystemExit(
+                f"{path}: a recovery manifest must not carry predictions; "
+                "recovered answers come from inference alone")
+        key = (str(entry["SubjectEntity"]), str(entry["Relation"]))
+        if key in wanted:
+            raise SystemExit(f"{path}: duplicate identity {key}")
+        wanted.add(key)
+    return wanted
+
+
 def _resolve_relation_filter(
     cli_relations: "list[str] | None", experiment: Mapping[str, Any], split: str,
 ) -> frozenset[str]:
@@ -293,6 +318,16 @@ def main() -> int:
     parser.add_argument("--config", required=True, type=Path, help="experiment YAML")
     parser.add_argument("--split", help="override the split named in the config")
     parser.add_argument("--limit", type=int, default=0, help="run only the first N queries")
+    parser.add_argument(
+        "--recovery-manifest",
+        type=Path,
+        default=None,
+        help=(
+            "re-run exactly the identities listed in a recovery manifest "
+            "(scripts/build_test_recovery_manifest.py). Every listed query runs "
+            "from the start; no partial state is resumed."
+        ),
+    )
     parser.add_argument(
         "--relation",
         action="append",
@@ -342,6 +377,20 @@ def main() -> int:
     # in particular no gold value, so a filtered run cannot be a disguised
     # lookup. Applied before --limit so "--relation X --limit 5" means the
     # first five rows *of X*.
+    if args.recovery_manifest:
+        wanted = _recovery_identities(args.recovery_manifest)
+        queries = [q for q in queries if (q.subject, q.relation) in wanted]
+        missing = wanted - {(q.subject, q.relation) for q in queries}
+        if missing:
+            raise SystemExit(
+                f"recovery manifest names {len(missing)} identity(ies) absent from "
+                f"split {split!r}: {sorted(missing)[:5]}")
+        if len(queries) != len(wanted):
+            raise SystemExit(
+                f"recovery manifest matched {len(queries)} rows for {len(wanted)} "
+                "identities; the split contains duplicates")
+        print(f"recovery manifest: re-running {len(queries)} identity(ies) from the start")
+
     relation_filter = _resolve_relation_filter(args.relation, experiment, split)
     if relation_filter:
         queries = [q for q in queries if q.relation in relation_filter]
@@ -645,6 +694,17 @@ def main() -> int:
         (out_dir / "errors.json").write_text(json.dumps(result.errors, indent=2))
         print(f"errors      : {len(result.errors)} (see errors.json)")
 
+    # Written as its own artifact rather than folded into the manifest, whose
+    # `notes` field is free text: a submission gate must read a typed record.
+    accounting = run_accounting(queries, result)
+    (out_dir / "run_accounting.json").write_text(
+        json.dumps(accounting, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        f"accounting  : {accounting['successful_queries']}/{accounting['total_queries']} "
+        f"succeeded, {accounting['failed_queries']} failed "
+        f"({accounting['unresolved_invariant_errors']} unresolved invariant)"
+    )
+
     # `test` never scores, and the reason is named rather than left to follow
     # from the split happening to be blind: the official test answers are not
     # in this repository, so a metrics number for them could only come from
@@ -668,6 +728,21 @@ def main() -> int:
 
     manifest.write(out_dir / "manifest.json")
     print(f"\nmanifest    : {out_dir / 'manifest.json'}")
+
+    # Submission readiness is decided here, from the accounting, and it is the
+    # process exit code. Audit 0078: the frozen TEST run wrote 475 rows with 39
+    # orchestration-failure fallback empties and still returned 0, so nothing
+    # downstream could tell a finished submission from a broken one.
+    verdict = submission_verdict(split, accounting)
+    print(f"submission  : {verdict['state']}")
+    for blocker in verdict["blockers"]:
+        print(f"  BLOCKER: {blocker}", file=sys.stderr)
+    if not verdict["ready"]:
+        # Non-blind splits keep their previous exit behaviour: a diagnostic or
+        # collection workflow is allowed to contain per-row failures and study
+        # them. Only a blind submission run is refused.
+        if split in BLIND_SPLITS:
+            return 3
     return 0
 
 
