@@ -1,9 +1,11 @@
 # Audit 0080 - hasCapacity Real-Weight Targeted Diagnostic And Promotion Decision
 
-**Status: PHASE A — GPU_RUN_REQUIRED**
+**Status: PHASE B — COMPLETE**
+**PROMOTION: REJECTED**
 
-Phase B is written after the real artifact returns. Nothing in this document
-claims a result.
+`capacity_definition_prompt` was measured on 100 real-weight TRAIN rows and is
+**rejected**. It does not improve recall of the correct capacity attribute; it
+suppresses candidates.
 
 ---
 
@@ -40,7 +42,8 @@ that exact SHA in detached HEAD and asserts the tree is clean.
 First attempted pre-run commit: `3de4db0385c5dec1049ff5082047eca0545972a9`
 (aborted before inference — see 2b)
 
-Hotfix pre-run commit: `<to be recorded when the user commits the hotfix>`
+Hotfix pre-run commit / **real diagnostic source SHA**:
+`a7dfb5d68a55b83fab267a0b5e490972df10a275`
 
 `HEAD` before the checkpoint: `b9eef10b6b9ba1333f7278e4fcc0b9b672f66357`
 Frozen historical TEST source, untouched: `16f60fb1fa7c390ed0f0d0d741f9aa6f996d4da5`
@@ -507,31 +510,254 @@ firewall and recovery tooling — **197 passed**.
 
 ## Phase A Verdict
 
-**GPU_RUN_REQUIRED.**
+**GPU_RUN_REQUIRED** — satisfied at `a7dfb5d`; see Phase B.
 
-Everything that can be verified without weights has been: the source is
-freezable, the orchestration repair is active, the config isolates exactly one
-intervention, the model contract matches the calibrated lineage, the rendered
-prompt provably differs between OFF and ON, the baseline is reproduced to the
+Everything that could be verified without weights was: the source was
+freezable, the orchestration repair active, the config isolated to exactly one
+intervention, the model contract matched the calibrated lineage, the rendered
+prompt provably differed between OFF and ON, the baseline reproduced to the
 digit, and the promotion gate was fixed before any data existed.
 
-No result is claimed. The prompt has still never met a model.
+That the gate was pre-registered is what makes Phase B's rejection meaningful
+rather than a threshold chosen after seeing the numbers.
 
 ---
 
 # PHASE B — POST-RUN
 
-*Not yet written. Populate after the GPU artifact returns and*
-*`scripts/analyze_capacity_diagnostic.py` passes its provenance check.*
+## B1. Chronology
 
-Required content: new metrics; candidate-recall delta; failure transition
-matrix; attribute-variant findings; individual regressions;
-verification-budget opportunity; numeric-resolver opportunity; promotion
-decision.
+The record is kept intact; none of these steps is removed.
 
-Final verdict, exactly one of:
+| # | Event | Outcome |
+|---|---|---|
+| 1 | attempt 1 @ `3de4db0` | **PRE-RUN INFRASTRUCTURE FAILURE — NO EXPERIMENT RESULT** (§2b) |
+| 2 | hotfix commit | targeted TRAIN diagnostics made executable (§2c) |
+| 3 | attempt 2 @ `a7dfb5d` | **VALID 100/100 REAL-WEIGHT DIAGNOSTIC** |
+| 4 | analysis | **CPU ANALYZER FIELD BUG** — raw inference still valid (§B6) |
+| 5 | permanent analyzer fix | `git_revision`, with regression tests |
+| 6 | decision | `capacity_definition_prompt` = **REJECTED** |
 
-* `PASS — CAPACITY PROMPT PROMOTED`
-* `PASS — CAPACITY PROMPT REJECTED`
-* `PASS — CAPACITY PROMPT NEEDS MORE EVIDENCE`
-* `HOLD — CAPACITY DIAGNOSTIC INVALID`
+## B2. Run Validity
+
+Source SHA: `a7dfb5d68a55b83fab267a0b5e490972df10a275`
+Runner reported `TRAIN_DIAGNOSTIC_READY`, return code `0`.
+
+| Accounting field | Value |
+|---|---:|
+| total_queries | 100 |
+| prediction_rows | 100 |
+| successful_queries | 100 |
+| failed_queries | **0** |
+| unresolved_invariant_errors | **0** |
+| pipeline_error_rows | **0** |
+| query errors | **0** |
+
+Relation distribution: `hasCapacity = 100`. **PROCESS-LEVEL GATE: PASS.**
+
+This is a real result about the prompt, not an infrastructure artifact. No GPU
+rerun was needed at any point in phase B.
+
+## B3. Metrics — Baseline vs Diagnostic
+
+Baseline is the authoritative persisted TRAIN run; it was not re-run.
+
+| Metric | Baseline | Diagnostic | Δ |
+|---|---:|---:|---:|
+| macro-P | 0.210 | **0.510** | **+0.300** |
+| macro-R | 0.080 | **0.030** | **-0.050** |
+| **macro-F1** | **0.080** | **0.030** | **-0.050** |
+| total GT | 100 | 100 | 0 |
+| total predictions | 87 | 52 | **-35** |
+| true positives | 8 | 3 | **-5** |
+| correct rows | 8 | 3 | -5 |
+| empty rows | 13 | **48** | **+35** |
+
+### Candidate recall — the pre-registered primary question
+
+| | Baseline | Diagnostic | Δ |
+|---|---:|---:|---:|
+| total candidates | 175 | 124 | **-51** |
+| mean candidates / row | 1.75 | 1.24 | -0.51 |
+| **gold-like candidate rows** | **8** | **9** | **+1** |
+
+Ratio bucket `WITHIN_5_PERCENT`: **8 → 3**.
+
+Baseline-correct regressions: **6** of the 8 originally correct rows.
+
+Downstream opportunity counts on the diagnostic run:
+`verification_budget_rows = 9`, `numeric_resolver_rows = 6`.
+
+## B4. Promotion Verdict — REJECTED
+
+The pre-registered gate (audit 0077 `promotion.py`, written before any data
+existed) offered two routes:
+
+> **PROMOTE** if relation macro-F1 rises materially above 0.080, **or** if
+> gold-like candidate rows rise substantially while macro-precision does not
+> collapse.
+> **REJECT the pass** if `mean_candidates_per_row` rises without
+> `gold_like_candidate_rows` rising with it.
+
+Neither route opens:
+
+* **Route A fails outright.** macro-F1 fell `0.080 → 0.030`, recall fell
+  `0.080 → 0.030`, true positives fell `8 → 3`.
+* **Route B fails on "substantially".** Gold-like candidate rows moved `8 → 9`.
+  One row is not a substantial recall gain, and it is bought at the cost of five
+  true positives and 35 emitted answers.
+
+**The precision rise from 0.210 to 0.510 is not evidence of better recall.** It
+is arithmetic: empty rows went from 13 to 48, and an empty prediction scores
+precision 1.0. The model answered 35 fewer questions and was right 5 fewer
+times. A system that abstains more looks more precise while knowing less.
+
+Note that the rejection is *not* the mirror image of the anticipated failure
+mode. The gate's REJECT clause was written for "more candidates, no more
+gold-like rows". What actually happened is the opposite direction —
+**fewer** candidates — and it still fails, because the deciding quantity in both
+cases is gold-like recall, which did not move.
+
+**FINAL PROMOTION VERDICT: `REJECTED`.**
+
+Consequently: not enabled in any SAFE or production config; no full TRAIN
+recollection with it; no M20 or M21 re-derivation on its account.
+
+## B5. Architectural Interpretation
+
+**Stated as an inference from one relation's behaviour, not a proven universal
+mechanism.**
+
+The observation is that loading detailed capacity-definition semantics into the
+*acquisition* prompt made the enumerator **suppress** rather than enumerate:
+candidates fell 175 → 124 and empty rows rose 13 → 48, while the number of rows
+containing a gold-like value barely moved. The plausible reading is that asking
+one model call to simultaneously (a) recall the fact, (b) decide which capacity
+variant the relation means, and (c) reject every competing variant, causes the
+third instruction to dominate. Told precisely what *not* to say, the enumerator
+says less — including things it would otherwise have said correctly, which is
+what the six baseline-correct regressions are.
+
+This favours separating the jobs:
+
+```
+BROAD PARAMETRIC ACQUISITION      <- ask for candidates, not for judgement
+        |
+   candidate pool
+        |
+DISCRIMINATIVE VERIFICATION       <- decide between variants here
+        |
+NUMERIC ATTRIBUTE RESOLUTION      <- canonicalise and choose
+        |
+  relation finalization
+```
+
+over asking the enumerator to do all three at once.
+
+This is consistent with, but does not by itself prove, the audit-0079 finding
+that the system verifies 35 of 2,937 candidates (1.2%) and spends its whole
+call budget on acquisition. The **Discriminative Verification Budget** and
+**Numeric Attribute Resolver** remain justified by that broader TRAIN evidence,
+not by this single experiment. Neither is built in this milestone; audit 0080
+closes the capacity experiment and nothing more.
+
+One caveat worth recording: the diagnostic ran under the Audit-0073 calibration,
+which was derived against the *old* evidence distribution. Some of the
+suppression may be M21 reacting to an evidence shape it was not calibrated for.
+That does not rescue the feature — the candidate pool shrank before any
+controller decision — but it means the magnitude should not be over-read.
+
+## B6. Analyzer Provenance Bug — CPU Only, Raw Artifacts Untouched
+
+`scripts/analyze_capacity_diagnostic.py` compared the expected commit SHA
+against `manifest["cover_kbc_version"]`. That field is the **package version**
+(`0.1.0`) and is identical on every commit this project has made; the source
+commit lives in `manifest["git_revision"]`. The comparison could therefore never
+pass, and the analyzer refused a valid run.
+
+* The bug is **CPU-side analysis only**. The GPU run was already complete and
+  correct.
+* A temporary one-line copy of the analyzer was used in Colab to obtain the
+  result. **It is not added to this repository** — a test asserts no
+  `*hotfix*` file exists under `scripts/`.
+* **No raw inference artifact was modified**: predictions, telemetry, manifest,
+  calls and the run log are exactly as the GPU produced them.
+
+Permanent fix applied to the canonical analyzer:
+
+```python
+observed_sha = str(manifest.get("git_revision") or "")     # source provenance
+package_version = str(manifest.get("cover_kbc_version") or "")   # recorded, never compared
+```
+
+A missing `git_revision` is now itself a refusal, rather than silently skipping
+the check.
+
+## B7. Preserved Negative Evidence
+
+This is scientifically useful negative evidence and is retained in full:
+real run source SHA, run manifest, predictions, telemetry, analysis outputs and
+provenance, the analyzer-hotfix attestation above, baseline identity, the metric
+and candidate-recall tables, ratio buckets, the six baseline-correct
+regressions, and the verification/resolver opportunity rows.
+
+Raw inference artifacts are neither overwritten nor renamed. The failed
+attempt 1 remains in §2b.
+
+## B8. Unchanged By This Milestone
+
+| | |
+|---|---|
+| M20 / M21 | not re-derived, not edited |
+| all 7 calibration artifacts | byte-identical |
+| SAFE_CORE / SAFE_FULL | unchanged; `capacity_definition_prompt` not enabled anywhere |
+| models and revisions | unchanged |
+| audit-0078 orchestration repair | unchanged and active |
+| capacity prompt body and hashes | unchanged (`2fb9188dbeda44f3` → `bcffa96f37770392`) |
+| raw GPU artifacts | not mutated |
+
+The capacity prompt remains wired and available behind its Class-B flag, now
+carrying a measured negative result rather than an untested hypothesis.
+
+## B9. Next Diagnostic — Recommendation
+
+Audit 0079's ordering put city ahead of stock. **This result inverts that.**
+
+| | personHasCityOfDeath | companyTradesAtStockExchange |
+|---|---:|---:|
+| macro-F1 | 0.390 | 0.529 |
+| macro-P / macro-R | 0.840 / 0.480 | 0.627 / 0.743 |
+| error rows | 61 | 70 |
+| NO_RECALL rows | **51** | 24 |
+| FP / FN | 16 / 52 | **95** / 33 |
+| candidates across 100 rows | **29** (0.29/row) | 908 (9.08/row) |
+| Class-B owner | **verifier** boundary | **enumerator** prompt |
+| wired | yes | yes |
+| cost | 100 rows | 100 rows |
+
+**Recommend stock next.**
+
+The capacity experiment showed that a Class-B instruction of this kind acts as a
+*suppressor*. That is the wrong medicine for city and plausibly the right one
+for stock:
+
+* **City** is recall-starved — 29 candidates across 100 rows, 51 NO_RECALL, and
+  already at precision 0.840. Its instruction is verifier-side, and a verifier
+  cannot create recall; it can only reject. The most likely outcome is precision
+  0.840 → higher and recall 0.480 → lower, which is the capacity result again in
+  a different relation. Low expected information.
+* **Stock** is candidate-rich and precision-bound: 908 candidates, 95 FP against
+  33 FN. Suppression is exactly what it needs, and its instruction is
+  enumerator-side, the same lever capacity just demonstrated is potent. Whether
+  that potency helps where precision is the binding constraint is genuinely
+  unknown — which is what makes it worth a run.
+
+The stock gate already guards the obvious failure: *reject if the FP reduction
+comes from `mean_predictions` collapsing toward 1*, because multi-listed
+companies are real.
+
+City should be deferred until there is a recall-side intervention to test, or
+until the Discriminative Verification Budget gives its 29 candidates something
+to be discriminated by.
+
+**No GPU experiment is started automatically.**

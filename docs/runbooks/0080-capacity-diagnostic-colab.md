@@ -15,6 +15,12 @@ then the **real** `run_cover.py` pre-flight (CELL 9b), and only then weights.
 The first attempt at this experiment loaded 28.7B parameters and then aborted on
 a config guard; CELL 9b is that guard, run for free.
 
+Two defects were found by running this for real, and both are now guarded rather
+than forgotten: the config guard above (attempt 1, no experiment result), and a
+CPU-side analysis bug that compared the package version `cover_kbc_version`
+against a Git SHA and so refused a valid run. CELL 12 now asserts
+`manifest.git_revision`.
+
 ---
 
 ## CELL 1 - mount Drive
@@ -311,6 +317,16 @@ print('query errors    :', len(errors))
 for e in errors[:5]:
     print('   ', e['SubjectEntity'], '|', e['error'][:110])
 
+manifest = json.load(open(f'{OUT}/manifest.json'))
+# Source provenance is `git_revision`. `cover_kbc_version` is the package
+# version string ('0.1.0') and is the same on every commit - comparing it to a
+# SHA is a check that can never pass, which is how the first analysis of this
+# experiment refused a perfectly valid run.
+print('git_revision     :', manifest.get('git_revision'))
+print('cover_kbc_version:', manifest.get('cover_kbc_version'), '(package version, NOT provenance)')
+assert manifest.get('git_revision') == SOURCE_SHA, (
+    f"manifest git_revision {manifest.get('git_revision')} != {SOURCE_SHA}")
+
 acct = json.load(open(f'{OUT}/run_accounting.json'))
 print('accounting      :', json.dumps({k: acct[k] for k in (
     'total_queries','prediction_rows','successful_queries','failed_queries',
@@ -406,6 +422,8 @@ prov = {
     'audit': '0080',
     'relation': 'hasCapacity',
     'source_sha': SOURCE_SHA,
+    'manifest_git_revision': json.load(open(f'{OUT}/manifest.json')).get('git_revision'),
+    'manifest_cover_kbc_version': json.load(open(f'{OUT}/manifest.json')).get('cover_kbc_version'),
     'run_utc': RUN_UTC,
     'config': 'configs/experiments/v3_1_diag_capacity.yaml',
     'config_sha256': sha256('configs/experiments/v3_1_diag_capacity.yaml'),
@@ -456,6 +474,7 @@ Abort and report rather than continuing if any of these occur:
 | prompt hashes differ from the contract | CELL 9 |
 | row count != 100, or any non-capacity relation | CELL 12 |
 | `failed_queries` or `unresolved_invariant_errors` > 0 | CELL 12 |
+| `manifest.git_revision` != `SOURCE_SHA` | CELL 12 |
 
 A run that trips a stop condition is not a negative result about the prompt - it
 is an invalid experiment, and analysing it would attribute an orchestration or

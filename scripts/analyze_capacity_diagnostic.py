@@ -269,9 +269,23 @@ def check_provenance(run_dir: Path, expected_sha: str | None,
     else:
         problems.append("run_accounting.json missing (audit 0078 gate not recorded)")
 
-    observed_sha = str(manifest.get("cover_kbc_version") or "")
-    if expected_sha and observed_sha and not observed_sha.startswith(expected_sha[:12]):
-        problems.append(f"source sha {observed_sha!r} != expected {expected_sha!r}")
+    # Source provenance is `git_revision`, never `cover_kbc_version`.
+    # `RunManifest` carries both and they answer different questions: the former
+    # is the commit the run executed, the latter is the package version string
+    # (`0.1.0`) and is identical across every commit this project has ever made.
+    # Comparing the package version to a SHA is a check that can never pass and
+    # therefore silently refuses every valid run - which is exactly what it did
+    # to the first analysis of the audit-0080 capacity artifact.
+    observed_sha = str(manifest.get("git_revision") or "")
+    package_version = str(manifest.get("cover_kbc_version") or "")
+    if expected_sha:
+        if not observed_sha:
+            problems.append(
+                "manifest records no git_revision; source provenance cannot be "
+                "established")
+        elif not observed_sha.startswith(expected_sha[:12]):
+            problems.append(
+                f"source git_revision {observed_sha!r} != expected {expected_sha!r}")
 
     record = {
         "run_dir": str(run_dir),
@@ -279,7 +293,8 @@ def check_provenance(run_dir: Path, expected_sha: str | None,
         "relations": dict(relations),
         "query_errors": len(errors),
         "run_accounting": accounting,
-        "manifest_source": observed_sha,
+        "manifest_git_revision": observed_sha,
+        "manifest_package_version": package_version,
         "expected_source_sha": expected_sha,
         "problems": problems,
         "valid": not problems,
