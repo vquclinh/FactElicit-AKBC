@@ -8,6 +8,7 @@ from cover_kbc.normalization.numeric import parse_numbers
 from cover_kbc.normalization.strings import strict_key
 from cover_kbc.types import Prediction
 
+from cover_kbc.leaderboard_repair.config import RepairFeatures
 from cover_kbc.leaderboard_repair.types import RowRepairRecord
 from cover_kbc.leaderboard_repair.util import (
     AREA,
@@ -22,7 +23,12 @@ from cover_kbc.leaderboard_repair.util import (
 )
 
 
-def apply_l9_guard(prediction: Prediction, record: RowRepairRecord) -> Prediction:
+def apply_l9_guard(
+    prediction: Prediction,
+    record: RowRepairRecord,
+    *,
+    features: RepairFeatures | None = None,
+) -> Prediction:
     relation = prediction.relation
     values = list(prediction.object_entities)
     before = list(values)
@@ -32,6 +38,8 @@ def apply_l9_guard(prediction: Prediction, record: RowRepairRecord) -> Predictio
             if strict_key(value) and strict_key(value) != strict_key(prediction.subject)
         ]
     elif relation == STOCK:
+        if features is not None and not features.l9_stock_guard:
+            return prediction
         values = [
             value for value in dedupe_aliases(values)
             if stock_wrong_type_reason(value, prediction.subject) is None

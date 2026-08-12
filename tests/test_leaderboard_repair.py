@@ -382,11 +382,111 @@ def test_profile_configs_parse_and_have_expected_features():
     assert c["leaderboard_repair"]["features"]["award_recipient_witness"] is True
 
 
+def test_hotfix_profiles_resolve_profile_a_stock_background_and_repair_flags():
+    a_plus = yaml.safe_load(
+        (CONFIG_DIR / "cover_kbc_v3_2_profile_a_plus_award_test.yaml").read_text())
+    c2 = yaml.safe_load(
+        (CONFIG_DIR / "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml").read_text())
+
+    for config in (a_plus, c2):
+        assert config["experiment"]["split"] == "test"
+        assert config["test_dataset"]["rows"] == 475
+        assert config["leaderboard_probe"]["status"] == "CALIBRATION_REVIEW_LEADERBOARD_PROBE"
+        v31 = config["pipeline"]["selection"]["v3_1"]
+        assert v31["aggressive"]["stock_listing_entity_prompt"] is True
+        assert v31["safe"]["stock_support_dominance"] is False
+        for feature in (
+            "capacity_definition_prompt",
+            "city_of_death_contrast_prompt",
+            "award_expansion_and_fp_cap",
+            "scientific_notation_acquisition",
+        ):
+            assert v31["aggressive"][feature] is False
+
+    a_features = a_plus["leaderboard_repair"]["features"]
+    assert a_plus["leaderboard_repair"]["profile"] == "A_PLUS_AWARD"
+    assert a_features["award_metadata_cleanup"] is True
+    assert a_features["l8_consistency"] is False
+    assert a_features["l9_final_risk_guard"] is False
+    for feature in (
+        "stock_entity_guard",
+        "stock_alias_dedupe",
+        "stock_multi_listing_rescue",
+        "border_alias_dedupe",
+        "border_reciprocity",
+        "border_directional_sweep",
+        "death_existence_gate",
+        "death_city_recall",
+        "area_empty_rescue",
+        "capacity_repair",
+        "award_recipient_witness",
+        "award_time_sliced_recall",
+    ):
+        assert a_features[feature] is False
+    assert a_plus["leaderboard_repair"]["max_calls_by_relation"][STOCK] == 0
+
+    c2_features = c2["leaderboard_repair"]["features"]
+    assert c2["leaderboard_repair"]["profile"] == "C2_AGGRESSIVE_NONSTOCK"
+    for feature in (
+        "stock_entity_guard",
+        "stock_alias_dedupe",
+        "stock_multi_listing_rescue",
+        "l8_stock_consistency",
+        "l9_stock_guard",
+    ):
+        assert c2_features[feature] is False
+    for feature in (
+        "award_metadata_cleanup",
+        "award_recipient_witness",
+        "award_time_sliced_recall",
+        "border_alias_dedupe",
+        "border_reciprocity",
+        "border_directional_sweep",
+        "death_existence_gate",
+        "death_city_recall",
+        "area_empty_rescue",
+        "capacity_repair",
+        "l8_consistency",
+        "l9_final_risk_guard",
+    ):
+        assert c2_features[feature] is True
+    caps = c2["leaderboard_repair"]["max_calls_by_relation"]
+    assert caps[STOCK] == 0
+    assert caps[CITY] == 5
+    assert caps[AWARD] == 8
+
+
+def test_c2_stock_repair_and_stock_l8_l9_are_bypassed():
+    config = yaml.safe_load(
+        (CONFIG_DIR / "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml").read_text())
+    repair_config = LeaderboardRepairConfig.from_mapping(config["leaderboard_repair"])
+    stock = _prediction(
+        "Example Co",
+        STOCK,
+        ["Nasdaq", "NYSE", "New York Stock Exchange", "B3"],
+        row_index=0,
+    )
+    area = _prediction("Example Area", AREA, ["123", "not a number"], row_index=1)
+    result = _stack(repair_config).apply(
+        [stock, area],
+        queries=[_query(stock), _query(area)],
+    )
+
+    assert result.predictions[0].object_entities == stock.object_entities
+    assert result.records[0].calls_used == 0
+    assert result.records[0].skipped == ["relation repair disabled by zero cap"]
+    assert not result.records[0].decisions
+    # Non-Stock L9 remains enabled in C2: numeric outputs are still guarded.
+    assert result.predictions[1].object_entities == ["123"]
+
+
 def test_profile_readiness_is_calibration_review_not_full_test_ready():
     for name in (
         "cover_kbc_v3_2_profile_a_stock_probe_test.yaml",
         "cover_kbc_v3_2_profile_b_repair_core_test.yaml",
         "cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml",
+        "cover_kbc_v3_2_profile_a_plus_award_test.yaml",
+        "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml",
     ):
         config = yaml.safe_load((CONFIG_DIR / name).read_text(encoding="utf-8"))
         report = evaluate_test_readiness(config, base_dir=CONFIG_DIR, split="test")
@@ -406,6 +506,14 @@ def test_run_cover_leaderboard_probe_gate_allows_only_explicit_profiles():
         (CONFIG_DIR / "cover_kbc_v3_2_profile_a_stock_probe_test.yaml").read_text())
     readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")
     assert run_cover._allow_leaderboard_probe(profile, "test", readiness)
+
+    for name in (
+        "cover_kbc_v3_2_profile_a_plus_award_test.yaml",
+        "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml",
+    ):
+        profile = yaml.safe_load((CONFIG_DIR / name).read_text())
+        readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")
+        assert run_cover._allow_leaderboard_probe(profile, "test", readiness)
 
     aggressive = yaml.safe_load(
         (CONFIG_DIR / "cover_kbc_v3_1_aggressive_test.yaml").read_text())

@@ -80,7 +80,8 @@ class LeaderboardRepairStack:
                 record.skipped.append("relation repair disabled by zero cap")
             post_l7 = replace(prediction, object_entities=list(values))
             if self.config.features.l9_final_risk_guard:
-                post_l7 = apply_l9_guard(post_l7, record)
+                post_l7 = apply_l9_guard(
+                    post_l7, record, features=self.config.features)
             record.calls = list(budget.calls)
             record.after = list(post_l7.object_entities)
             repaired.append(post_l7)
@@ -92,7 +93,8 @@ class LeaderboardRepairStack:
             final_predictions = []
             for prediction in repaired:
                 key = (prediction.subject, prediction.relation)
-                guarded = apply_l9_guard(prediction, records[key])
+                guarded = apply_l9_guard(
+                    prediction, records[key], features=self.config.features)
                 records[key].after = list(guarded.object_entities)
                 records[key].calls = list(callers[key].row_budget.calls)
                 final_predictions.append(guarded)

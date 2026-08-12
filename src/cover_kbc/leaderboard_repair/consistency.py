@@ -12,7 +12,7 @@ from cover_kbc.types import Prediction
 from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
 from cover_kbc.leaderboard_repair.types import RowRepairRecord
-from cover_kbc.leaderboard_repair.util import BORDERS, dedupe_aliases
+from cover_kbc.leaderboard_repair.util import BORDERS, STOCK, dedupe_aliases
 
 
 def apply_l8_consistency(
@@ -23,14 +23,27 @@ def apply_l8_consistency(
 ) -> list[Prediction]:
     if not config.features.l8_consistency:
         return list(predictions)
-    repaired = [replace(p, object_entities=_dedupe_for_relation(p.relation, p.object_entities))
-                for p in predictions]
+    repaired = [
+        replace(
+            p,
+            object_entities=_dedupe_for_relation(
+                p.relation,
+                p.object_entities,
+                stock_enabled=config.features.l8_stock_consistency,
+            ),
+        )
+        for p in predictions
+    ]
     if config.features.border_reciprocity:
         repaired = _repair_border_reciprocity(repaired, records, callers)
     return repaired
 
 
-def _dedupe_for_relation(relation: str, values: Sequence[str]) -> list[str]:
+def _dedupe_for_relation(
+    relation: str, values: Sequence[str], *, stock_enabled: bool = True
+) -> list[str]:
+    if relation == STOCK and not stock_enabled:
+        return list(values)
     if relation in CONTRACTS and CONTRACTS[relation].output_type.value == "ENTITY":
         return dedupe_aliases(values)
     return list(values)
