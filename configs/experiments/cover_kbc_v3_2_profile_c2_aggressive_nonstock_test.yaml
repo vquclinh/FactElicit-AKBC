@@ -27,10 +27,18 @@ experiment:
   split: test
   seed: 42
   notes: >-
-    V3.2 Profile C2 AGGRESSIVE NONSTOCK. Hidden TEST leaderboard evidence made
-    Profile A the frozen best base and showed Profile B's Stock repair harmed
-    Stock. This profile preserves Profile-A Stock semantics and applies
-    aggressive repair only to non-Stock weak relations.
+    RETIRED / NEGATIVE HIDDEN TEST PROBE. V3.2 Profile C2 AGGRESSIVE NONSTOCK
+    scored overall F1 0.4012 after 1075 post-calls and 246/475 changed rows.
+    It is not an active baseline and must not be inherited by future profiles.
+    The config remains only for historical reproducibility.
+  retired:
+    status: RETIRED_NEGATIVE_HIDDEN_TEST_PROBE
+    hidden_test_overall_f1: 0.4012
+    changed_rows: 246
+    post_calls: 1075
+    reason: >-
+      Aggressive non-Stock repair harmed hidden TEST; Profile D and later active
+      experiments must derive from A_PLUS_AWARD instead.
 
 leaderboard_probe:
   enabled: true

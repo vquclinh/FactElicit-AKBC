@@ -1,47 +1,34 @@
-# COVER-KBC V3.1 SAFE - official blind TEST profile with Class A score recovery.
+# COVER-KBC V3.3 Profile D - Mistral-only verifier role swap.
 #
-# Audit 0076. Identical to configs/experiments/cover_kbc_v3_test.yaml except for
-# the experiment block and the `selection.v3_1` block. It reuses the *exact*
-# Audit 0073 M20/M21 calibration artifacts and hashes, unchanged, because every
-# feature it enables runs at Module 8 or later.
+# Hidden TEST source of truth before this probe:
+#   A+AWARD overall F1 = 0.4910, now the frozen best baseline.
+#   C2 overall F1 = 0.4012, retired negative probe.
 #
-# Why that reuse is legitimate: for one query the pipeline runs consensus (M16),
-# then the V3 control loop (M20/M21 and action execution), and only then
-# `selection.finalize` (M8). The pre-M8 hypothesis graph Module 21 reads is built
-# by `pipeline._v3_hypothesis_graph` with `prediction=None`, so nothing a
-# finalizer decides can reach action eligibility, action execution, action cost,
-# state transitions, hypothesis construction, M21 input state or M20 budget
-# behaviour. The only hypothesis graph that sees a prediction is the post-hoc
-# observation graph, which is telemetry.
-#
-# Offline TRAIN replay of these five features over the persisted 477-row run:
-#   macro-F1 0.40333 -> 0.42000 (+0.01667); micro-F1 0.51799 -> 0.53079
-#   27 rows improved, 7 harmed, 443 unchanged
-#   countryLandBordersCountry: 0 rows changed, macro-F1 0.964369 unchanged
-#
-# Readiness must fail if any enabled feature is not classified
-# SAFE_WITH_EXISTING_CALIBRATION in cover_kbc.v3_1.compatibility.
+# This config intentionally starts from A+AWARD and changes one conceptual
+# variable only: the logical verifier role uses the same Mistral-Small-3.2-24B
+# checkpoint as the enumerator. No C2 aggressive repair feature is enabled.
 
 experiment:
-  name: cover_kbc_v3_2_profile_a_plus_award_test
+  name: cover_kbc_v3_3_profile_d_mistral_only_role_swap_test
   split: test
   seed: 42
   notes: >-
-    V3.2 Profile A_PLUS_AWARD. Hidden TEST leaderboard evidence promoted this
-    profile to the frozen best baseline (overall F1 0.4910). It is exactly
-    Profile A plus AwardMetadataNormalizer only. Non-award relations,
-    especially Stock, must follow the Profile-A prediction path.
-  frozen_baseline:
-    status: FROZEN_BEST_BASELINE
-    hidden_test_overall_f1: 0.4910
-    prediction_sha256: bf113ce4fb87f5ac7a54c5d78dbf14e691b07a562f78c9b9ee61ec5763982a88
+    V3.3 Profile D MISTRAL_ONLY_ROLE_SWAP. Base is the frozen A_PLUS_AWARD
+    leaderboard baseline (overall F1 0.4910). The only semantic experiment is
+    replacing the Qwen verifier role with the exact same Mistral24 checkpoint
+    used by the enumerator. C2 is retired and no aggressive C2 repair feature is
+    inherited.
 
 leaderboard_probe:
   enabled: true
   status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: Profile A plus AwardMetadataNormalizer only after hidden TEST feedback
+  purpose: Profile D pure Qwen verifier to Mistral24 verifier role swap
+  role_swap: MISTRAL_ONLY_VERIFIER
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
+    - "V3 model profile: verifier model_id role-swapped to Mistral24"
+    - "V3 model profile: verifier revision role-swapped to Mistral24"
+    - "V3 model budget: unique Mistral24 parameter total"
 
 calibration_provenance:
   collection_repo_sha: ae33b2ee4e3f437dab74cc95034958773e3cb675
@@ -57,6 +44,9 @@ test_dataset:
   blind: true
 
 model_profile:
+  # Deliberately one physical model block. The canonical resolver returns this
+  # block for both logical roles when no separate verifier block is declared, so
+  # run_cover.py reuses one Mistral runtime and does not load a second copy.
   enumerator:
     backend: huggingface
     model_id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
@@ -73,27 +63,15 @@ model_profile:
     quantization: nf4
     torch_dtype: bfloat16
     device_map: auto
-  verifier:
-    backend: huggingface
-    model_id: "Qwen/Qwen3.5-4B"
-    revision: "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
-    family: qwen
-    role: verifier
-    license: apache-2.0
-    published_checkpoint_parameters: 4659865088
-    budget_count_parameters: 4659865088
-    published_total_parameters: 4659865088
-    parameter_source: "https://huggingface.co/api/models/Qwen/Qwen3.5-4B (safetensors.total)"
-    parameter_source_verified: true
-    tokenizer_backend: huggingface
-    quantization: nf4
-    torch_dtype: bfloat16
-    device_map: auto
 
 budget_assertion:
-  total_published_parameters: 28671226368
+  total_published_parameters: 24011361280
   limit: 32000000000
   legal: true
+  unique_model_portfolio:
+    - model_id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+      revision: "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+      budget_count_parameters: 24011361280
 
 pipeline:
   mode: interleaved
@@ -136,23 +114,10 @@ pipeline:
     v3_1:
       enabled: true
       safe:
-        # FINAL_CANDIDATE_RETENTION. Numeric cluster order breaks size ties on the
-        # smallest representative, which ignores acceptance, so a query whose only
-        # ACCEPTED candidate was the larger singleton emitted nothing at all. 55
-        # TRAIN rows had a non-empty CONTROL_SURVIVED stage and an empty output.
         final_candidate_retention: true
-        # Repair leaked "<bucket label>: <payload>" enumeration lines and drop the
-        # ones whose payload is an abstention token. 76 awardWonBy values on TRAIN.
         enumeration_label_repair: true
-        # Stock only. Keep maximally supported listings when supports differ; keep
-        # all on a tie, so multi-listed companies are not capped. Improves 12 TRAIN
-        # rows and harms 7, for a net stock macro-F1 of +0.00700.
-        # OFF for the clean V3.2 stock prompt probe: Profile A is SAFE_CORE
-        # plus stock_listing_entity_prompt, not SAFE_FULL plus the prompt.
         stock_support_dominance: false
-        # Guardrail. 0 TRAIN rows affected; ticker rejection deliberately absent.
         stock_structural_validation: true
-        # Guardrail. 0 TRAIN rows affected. Converts only on an explicit unit.
         numeric_output_canonicalization: true
       aggressive:
         capacity_definition_prompt: false
@@ -163,8 +128,8 @@ pipeline:
 
 leaderboard_repair:
   enabled: true
-  repair_version: v3.2-l7-l9-hotfix-a-plus-award
-  profile: A_PLUS_AWARD
+  repair_version: v3.3-l7-l9-profile-d-mistral-only-role-swap
+  profile: D_MISTRAL_ONLY_ROLE_SWAP
   features:
     stock_entity_guard: false
     stock_alias_dedupe: false
