@@ -22,11 +22,17 @@ The full design is in [`COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`](COVER_KBC_V2_ARCHIT
 
 ## Status
 
-**Current frozen leaderboard baseline:** Profile D, the Mistral-only verifier
-role-swap probe, promoted after hidden TEST scoring at overall F1 `0.4952`.
-It is the previous A+Award baseline plus only one causal change: the verifier
-role uses the same Mistral-Small-3.2-24B checkpoint as the enumerator. Profile E
-and later repair ideas are not implemented in this baseline.
+**Current development pipeline:** Profile E1, conservative Mistral City empty
+rescue, configured at
+[`configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml`](configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml).
+It is Profile D plus only one unscored development experiment: for final-empty
+`personHasCityOfDeath` rows, ask the same Mistral checkpoint a strict two-stage
+life-status/city question.
+
+**Last verified hidden-TEST baseline:** Profile D, the Mistral-only verifier
+role-swap probe, hidden TEST overall F1 `0.4952`, configured at
+[`configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml`](configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml).
+Profile E1 has not yet been promoted from leaderboard feedback.
 
 Heavyweight inference runs on Google Colab, not on the development machine.
 The local repository validates configuration, contracts, readiness gates,
@@ -42,8 +48,9 @@ artifact provenance, and non-neural tests. See
 | verifier | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | counted once |
 | **total unique neural parameters** | | **24,011,361,280** (24.01B ≤ 32B) |
 
-Profile D declares one physical Mistral model block and reuses that runtime for
-both logical roles. Qwen is not active in the frozen leaderboard baseline.
+Profile E1/Profile D declare one physical Mistral model block and reuse that
+runtime for both logical roles. Qwen is not active in the current development
+pipeline or last verified frozen leaderboard baseline.
 
 ## Quickstart
 
@@ -52,8 +59,8 @@ pip install -e '.[dev]'          # add '.[hf]' for the neural backends
 
 python -m pytest -q              # no model required
 
-# Check the 32B budget (downloads nothing, fails closed)
-python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml
+# Check the 32B budget for the current development pipeline (downloads nothing)
+python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml
 
 # Non-neural plumbing runs (NOT system results)
 python scripts/run_cover.py  --config configs/experiments/smoke_abstain.yaml
@@ -68,7 +75,7 @@ python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
 drives the same three phases:
 
 ```bash
-python scripts/run_cover.py --config configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml --no-eval
+python scripts/run_cover.py --config configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml --no-eval
 ```
 
 Each run writes `outputs/<run_id>/` containing `predictions.jsonl`,

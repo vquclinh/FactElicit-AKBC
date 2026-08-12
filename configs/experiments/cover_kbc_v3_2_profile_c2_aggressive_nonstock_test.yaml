@@ -30,7 +30,8 @@ experiment:
     RETIRED / NEGATIVE HIDDEN TEST PROBE. V3.2 Profile C2 AGGRESSIVE NONSTOCK
     scored overall F1 0.4012 after 1075 post-calls and 246/475 changed rows.
     It is not an active baseline and must not be inherited by future profiles.
-    The config remains only for historical reproducibility.
+    The retired runtime implementation was removed in Audit 0088; this file
+    remains only as historical provenance.
   retired:
     status: RETIRED_NEGATIVE_HIDDEN_TEST_PROBE
     hidden_test_overall_f1: 0.4012
@@ -39,11 +40,12 @@ experiment:
     reason: >-
       Aggressive non-Stock repair harmed hidden TEST; later active experiments
       must derive from the Profile D frozen baseline instead of C2.
+    runtime_implementation_status: RETIRED_IMPLEMENTATION_REMOVED_AUDIT_0088
 
 leaderboard_probe:
-  enabled: true
-  status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: aggressive non-Stock repair on top of frozen Profile A Stock base
+  enabled: false
+  status: RETIRED_NEGATIVE_HIDDEN_TEST_PROBE
+  purpose: archived negative Profile C2 probe; not an active run target
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
 
@@ -166,9 +168,10 @@ pipeline:
         scientific_notation_acquisition: false
 
 leaderboard_repair:
-  enabled: true
+  enabled: false
   repair_version: v3.2-l7-l9-hotfix-c2-nonstock
   profile: C2_AGGRESSIVE_NONSTOCK
+  archived_runtime_status: RETIRED_IMPLEMENTATION_REMOVED_AUDIT_0088
   features:
     stock_entity_guard: false
     stock_alias_dedupe: false

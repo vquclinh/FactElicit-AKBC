@@ -1,4 +1,4 @@
-"""Orchestrator for L7-L9 leaderboard repair."""
+"""Orchestrator for active post-pipeline leaderboard repair."""
 
 from __future__ import annotations
 
@@ -13,16 +13,20 @@ from cover_kbc.types import Prediction, Query
 from cover_kbc.v3_core.hypothesis import QueryHypothesisGraph
 
 from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig, build_config
-from cover_kbc.leaderboard_repair.consistency import apply_l8_consistency
 from cover_kbc.leaderboard_repair.relations import REPAIR_BY_RELATION
-from cover_kbc.leaderboard_repair.risk_guard import apply_l9_guard
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
 from cover_kbc.leaderboard_repair.types import RepairResult, RowBudget, RowRepairRecord
 from cover_kbc.leaderboard_repair.util import CITY, candidate_signals
 
 
 class LeaderboardRepairStack:
-    """Feature-flagged post-pipeline repair stack."""
+    """Feature-flagged post-pipeline repair stack.
+
+    The active development line uses only deterministic award metadata cleanup
+    and E1's Mistral City empty-row rescue. Retired C2 L8/L9 behaviours remain
+    in historical audits/config metadata, but are no longer executable runtime
+    branches.
+    """
 
     def __init__(
         self,
@@ -49,7 +53,6 @@ class LeaderboardRepairStack:
         }
         repaired: list[Prediction] = []
         records: dict[tuple[str, str], RowRepairRecord] = {}
-        callers: dict[tuple[str, str], RepairCaller] = {}
 
         for prediction in predictions:
             key = (prediction.subject, prediction.relation)
@@ -78,32 +81,11 @@ class LeaderboardRepairStack:
                 values = repairer(prediction, signals, caller, self.config, record)
             elif cap <= 0:
                 record.skipped.append("relation repair disabled by zero cap")
-            post_l7 = replace(prediction, object_entities=list(values))
-            if self.config.features.l9_final_risk_guard:
-                post_l7 = apply_l9_guard(
-                    post_l7, record, features=self.config.features)
+            post_repair = replace(prediction, object_entities=list(values))
             record.calls = list(budget.calls)
-            record.after = list(post_l7.object_entities)
-            repaired.append(post_l7)
+            record.after = list(post_repair.object_entities)
+            repaired.append(post_repair)
             records[key] = record
-            callers[key] = caller
-
-        repaired = apply_l8_consistency(repaired, records, callers, self.config)
-        if self.config.features.l9_final_risk_guard:
-            final_predictions = []
-            for prediction in repaired:
-                key = (prediction.subject, prediction.relation)
-                guarded = apply_l9_guard(
-                    prediction, records[key], features=self.config.features)
-                records[key].after = list(guarded.object_entities)
-                records[key].calls = list(callers[key].row_budget.calls)
-                final_predictions.append(guarded)
-            repaired = final_predictions
-        else:
-            for prediction in repaired:
-                key = (prediction.subject, prediction.relation)
-                records[key].after = list(prediction.object_entities)
-                records[key].calls = list(callers[key].row_budget.calls)
 
         ordered_records = [records[(p.subject, p.relation)] for p in repaired]
         accounting = self.accounting(ordered_records, predictions_before=predictions)

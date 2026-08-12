@@ -49,10 +49,17 @@ def _sha(path: Path) -> str:
 
 
 def _copy_corpus(tmp_path: Path) -> Path:
-    source = resolve_merged_corpus_dir(MERGED)
+    source = _require_merged_corpus()
     target = tmp_path / "merged_v3_calibration"
     shutil.copytree(source, target)
     return target
+
+
+def _require_merged_corpus() -> Path:
+    try:
+        return resolve_merged_corpus_dir(MERGED)
+    except V3CalibrationDerivationError as exc:
+        pytest.skip(f"generated merged V3 calibration corpus is not present: {exc}")
 
 
 def _refresh_hashes(corpus: Path) -> None:
@@ -87,18 +94,20 @@ def _load_config() -> dict:
 def test_v3_derivation_repeats_byte_identically(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
-    a = derive_v3_calibration(merged_corpus=MERGED, output_dir=first)
-    b = derive_v3_calibration(merged_corpus=MERGED, output_dir=second)
+    corpus = _require_merged_corpus()
+    a = derive_v3_calibration(merged_corpus=corpus, output_dir=first)
+    b = derive_v3_calibration(merged_corpus=corpus, output_dir=second)
     assert a["artifact_sha256"] == b["artifact_sha256"]
     for name in PRODUCTION_ARTIFACTS:
         assert (first / name).read_bytes() == (second / name).read_bytes()
 
 
 def test_wrong_merged_corpus_sha_is_refused() -> None:
+    corpus = _require_merged_corpus()
     with pytest.raises(V3CalibrationDerivationError, match="expected"):
-        load_merged_v3_corpus(MERGED, expected_merged_corpus_sha256="0" * 64)
+        load_merged_v3_corpus(corpus, expected_merged_corpus_sha256="0" * 64)
     assert load_merged_v3_corpus(
-        MERGED).merged_corpus_sha256 == EXPECTED_MERGED_CORPUS_SHA256
+        corpus).merged_corpus_sha256 == EXPECTED_MERGED_CORPUS_SHA256
 
 
 def test_duplicate_action_effect_id_is_rejected(tmp_path: Path) -> None:
@@ -223,7 +232,10 @@ def test_v3_derivation_does_not_read_val_or_test(
 
     monkeypatch.setattr(builtins, "open", guarded_open)
     monkeypatch.setattr(Path, "open", guarded_path_open)
-    derive_v3_calibration(merged_corpus=MERGED, output_dir=tmp_path / "out")
+    derive_v3_calibration(
+        merged_corpus=_require_merged_corpus(),
+        output_dir=tmp_path / "out",
+    )
 
 
 def test_generated_v3_artifact_hashes_match_report() -> None:

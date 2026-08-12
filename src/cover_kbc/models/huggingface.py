@@ -6,11 +6,11 @@ with no GPU stack. Nothing here downloads a model at import time.
 
 Three things this backend has to get right:
 
-**Multimodal checkpoints.** Both target models are released as
-``*ForConditionalGeneration`` (Mistral3, Qwen3_5) with a vision tower, even
-though our task is text-only. The loader tries the auto classes in order rather
-than assuming ``AutoModelForCausalLM`` works, and records what it actually
-materialised.
+**Multimodal checkpoints.** The active Mistral-Small-3.2 checkpoint is released
+as ``*ForConditionalGeneration`` with a vision tower, even though our task is
+text-only. Historical Qwen profiles used the same broad loader path. The loader
+tries the auto classes in order rather than assuming ``AutoModelForCausalLM``
+works, and records what it actually materialised.
 
 **Label tokenisation.** ``score_labels`` asserts that every label encodes to a
 single token before using next-token logits. If any label is multi-token it

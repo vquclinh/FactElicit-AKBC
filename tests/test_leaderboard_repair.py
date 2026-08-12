@@ -1,16 +1,16 @@
-"""V3.2 leaderboard repair stack tests.
+"""Active leaderboard repair stack tests.
 
-These tests use only synthetic/scripted model outputs.  They prove the stack is
-feature-flagged, bounded, relation-isolated and compliant with the no-web /
-no-TEST-gold / no subject-answer-table constraints.
+The live development line is Profile E1: Profile D plus deterministic award
+metadata cleanup and Mistral City empty-row rescue. Retired B/C/C2 repair
+experiments remain documented in configs/audits but are no longer executable
+runtime branches.
 """
 
 from __future__ import annotations
 
-import json
 import importlib.util
-import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import yaml
@@ -21,35 +21,22 @@ from cover_kbc.controller_calibration.readiness import (
 )
 from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
 from cover_kbc.leaderboard_repair.stack import LeaderboardRepairStack, build_repair_stack
-from cover_kbc.leaderboard_repair.util import (
-    AWARD,
-    BORDERS,
-    CAPACITY,
-    CITY,
-    STOCK,
-    AREA,
-    normalize_award_metadata,
-)
+from cover_kbc.leaderboard_repair.util import AWARD, CITY, STOCK, normalize_award_metadata
 from cover_kbc.models.offline import ScriptedRuntime
-from cover_kbc.types import EmptyReason, Prediction, Query
-from cover_kbc.v3_core.hypothesis import (
-    Hypothesis,
-    QueryHypothesisGraph,
-    SemanticType,
-)
+from cover_kbc.types import Prediction, Query
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO_ROOT / "configs" / "experiments"
 PACKAGE = REPO_ROOT / "src" / "cover_kbc" / "leaderboard_repair"
 
 
-def _prediction(subject: str, relation: str, values=None, row_index=0, **kw):
+def _prediction(subject: str, relation: str, values=None, row_index=0) -> Prediction:
     return Prediction(
         subject=subject,
         relation=relation,
         object_entities=list(values or []),
         row_index=row_index,
-        **kw,
     )
 
 
@@ -57,33 +44,17 @@ def _query(prediction: Prediction) -> Query:
     return Query(prediction.subject, prediction.relation, prediction.row_index)
 
 
-def _graph(prediction: Prediction, values: list[tuple[str, int]]) -> QueryHypothesisGraph:
-    hypotheses = tuple(
-        Hypothesis(
-            hypothesis_id=f"h{i}",
-            normalized_value=value.lower(),
-            display=value,
-            semantic_type=SemanticType.STOCK_EXCHANGE,
-            independent_support_count=support,
-        )
-        for i, (value, support) in enumerate(values)
-    )
-    return QueryHypothesisGraph(
-        schema_version="test",
-        relation=prediction.relation,
-        subject=prediction.subject,
-        row_index=prediction.row_index,
-        relation_profile={},
-        hypotheses=hypotheses,
-    )
-
-
-def _stack(config: LeaderboardRepairConfig, enum=None, ver=None) -> LeaderboardRepairStack:
+def _stack(config: LeaderboardRepairConfig, runtime=None) -> LeaderboardRepairStack:
+    resolved = runtime or ScriptedRuntime(model_id="mistral", role="verifier")
     return LeaderboardRepairStack(
         config=config,
-        enumerator=enum or ScriptedRuntime(model_id="mistral", role="enumerator"),
-        verifier=ver or ScriptedRuntime(model_id="qwen", role="verifier"),
+        enumerator=resolved,
+        verifier=resolved,
     )
+
+
+def _load(name: str) -> dict:
+    return yaml.safe_load((CONFIG_DIR / name).read_text(encoding="utf-8")) or {}
 
 
 def test_disabled_stack_is_not_constructed_and_keeps_frozen_behavior():
@@ -107,196 +78,7 @@ def test_repair_source_has_no_web_rag_test_gold_or_subject_answer_table_patterns
             assert marker not in source, (path, marker)
 
 
-def test_stock_guard_dedupe_and_rescue_preserves_multi_listing():
-    prediction = _prediction("Example Holdings", STOCK, ["NYSE", "Example Holdings"])
-    verifier = ScriptedRuntime(
-        {
-            ("l7_stock_entity_guard", "Example Holdings", STOCK): [
-                "KEEP: NYSE\nDROP: Example Holdings | company name"
-            ],
-            ("l7_stock_multi_listing_rescue", "Example Holdings", STOCK): [
-                "RESTORE: NYSE; London Stock Exchange confidence=0.92"
-            ],
-        },
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {
-            "stock_entity_guard": True,
-            "stock_alias_dedupe": True,
-            "stock_multi_listing_rescue": True,
-        },
-        "max_calls_by_relation": {STOCK: 2},
-    })
-    graph = _graph(prediction, [("London Stock Exchange", 2)])
-    result = _stack(config, ver=verifier).apply(
-        [prediction], queries=[_query(prediction)], hypothesis_graphs=[graph])
-    assert result.predictions[0].object_entities == ["NYSE", "London Stock Exchange"]
-    record = result.records[0].to_json()
-    assert record["calls_used"] == 2
-    assert any(d["feature"] == "StockMultiListingRescue" for d in record["decisions"])
-
-
-def test_stock_rescue_requires_pre_final_support():
-    prediction = _prediction("Example Holdings", STOCK, ["NYSE"])
-    verifier = ScriptedRuntime(
-        {("l7_stock_multi_listing_rescue", "Example Holdings", STOCK): [
-            "RESTORE: NYSE; London Stock Exchange confidence=0.95"
-        ]},
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {"stock_multi_listing_rescue": True},
-        "max_calls_by_relation": {STOCK: 2},
-    })
-    graph = _graph(prediction, [("London Stock Exchange", 0)])
-    result = _stack(config, ver=verifier).apply(
-        [prediction], queries=[_query(prediction)], hypothesis_graphs=[graph])
-    assert result.predictions[0].object_entities == ["NYSE"]
-
-
-def test_border_reciprocity_does_not_blindly_union_unknown():
-    a = _prediction("Aland", BORDERS, ["Borduria"], row_index=0)
-    b = _prediction("Borduria", BORDERS, [], row_index=1)
-    verifier = ScriptedRuntime(
-        {("l8_border_reciprocity", "Aland", BORDERS): ["UNKNOWN: disputed"]},
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {"border_reciprocity": True},
-        "max_calls_by_relation": {BORDERS: 1},
-    })
-    result = _stack(config, ver=verifier).apply([a, b], queries=[_query(a), _query(b)])
-    assert result.predictions[0].object_entities == ["Borduria"]
-    assert result.predictions[1].object_entities == []
-    assert any("unknown_preserved_existing_state" == d["decision"]
-               for d in result.records[0].decisions)
-
-
-def test_border_reciprocity_valid_makes_reciprocal_and_invalid_removes_direction():
-    a = _prediction("Aland", BORDERS, ["Borduria"], row_index=0)
-    b = _prediction("Borduria", BORDERS, [], row_index=1)
-    verifier = ScriptedRuntime(
-        {("l8_border_reciprocity", "Aland", BORDERS): ["VALID: land boundary"]},
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {"border_reciprocity": True},
-        "max_calls_by_relation": {BORDERS: 1},
-    })
-    result = _stack(config, ver=verifier).apply([a, b], queries=[_query(a), _query(b)])
-    assert result.predictions[1].object_entities == ["Aland"]
-
-    verifier = ScriptedRuntime(
-        {("l8_border_reciprocity", "Aland", BORDERS): ["INVALID: maritime only"]},
-        model_id="qwen",
-        role="verifier",
-    )
-    result = _stack(config, ver=verifier).apply([a, b], queries=[_query(a), _query(b)])
-    assert result.predictions[0].object_entities == []
-
-
-def test_city_living_status_preserves_empty_output():
-    prediction = _prediction(
-        "Living Person", CITY, [], empty_reason=EmptyReason.UNRESOLVED_ABSTENTION)
-    enum = ScriptedRuntime(
-        {("l7_death_status_mistral", "Living Person", CITY): ["ALIVE confidence=0.91"]},
-        model_id="mistral",
-        role="enumerator",
-    )
-    ver = ScriptedRuntime(
-        {("l7_death_status_qwen", "Living Person", CITY): ["ALIVE confidence=0.88"]},
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {"death_existence_gate": True, "death_city_recall": True},
-        "max_calls_by_relation": {CITY: 4},
-    })
-    result = _stack(config, enum=enum, ver=ver).apply([prediction], queries=[_query(prediction)])
-    assert result.predictions[0].object_entities == []
-    assert "life_status_evidence" in json.dumps(result.records[0].to_json())
-
-
-def test_city_deceased_recall_uses_two_views_and_singleton_output():
-    prediction = _prediction("Dead Person", CITY, [])
-    enum = ScriptedRuntime(
-        {
-            ("l7_death_status_mistral", "Dead Person", CITY): ["DECEASED confidence=0.9"],
-            ("l7_death_city_direct", "Dead Person", CITY): ["CITY: Testville"],
-        },
-        model_id="mistral",
-        role="enumerator",
-    )
-    ver = ScriptedRuntime(
-        {
-            ("l7_death_status_qwen", "Dead Person", CITY): ["DECEASED confidence=0.8"],
-            ("l7_death_city_final_locality", "Dead Person", CITY): ["CITY: Testville"],
-        },
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {"death_existence_gate": True, "death_city_recall": True},
-        "max_calls_by_relation": {CITY: 4},
-    })
-    result = _stack(config, enum=enum, ver=ver).apply([prediction], queries=[_query(prediction)])
-    assert result.predictions[0].object_entities == ["Testville"]
-    assert result.records[0].calls_used == 4
-
-
-def test_area_and_capacity_numeric_consensus_use_five_percent_tolerance():
-    area = _prediction("Test Island", AREA, [])
-    enum = ScriptedRuntime(
-        {("l7_area_recall_exact_entity", "Test Island", AREA): ["AREA: 100 km2"]},
-        model_id="mistral",
-        role="enumerator",
-    )
-    ver = ScriptedRuntime(
-        {("l7_area_recall_semantic_contrast", "Test Island", AREA): ["AREA: 104 square kilometres"]},
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {"area_empty_rescue": True},
-        "max_calls_by_relation": {AREA: 3},
-    })
-    result = _stack(config, enum=enum, ver=ver).apply([area], queries=[_query(area)])
-    assert result.predictions[0].object_entities == ["102"]
-
-    capacity = _prediction("Exact Arena in Test City", CAPACITY, [])
-    enum = ScriptedRuntime(
-        {("l7_capacity_exact_venue_direct", "Exact Arena in Test City", CAPACITY): ["CAPACITY: 10000"]},
-        model_id="mistral",
-        role="enumerator",
-    )
-    ver = ScriptedRuntime(
-        {("l7_capacity_exact_venue_variants", "Exact Arena in Test City", CAPACITY): ["CAPACITY: 10450"]},
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {"capacity_repair": True},
-        "max_calls_by_relation": {CAPACITY: 3},
-    })
-    result = _stack(config, enum=enum, ver=ver).apply([capacity], queries=[_query(capacity)])
-    assert result.predictions[0].object_entities == ["10225"]
-    assert "Do not substitute another stadium/arena" in ver.seen_prompts[0]
-
-
-def test_award_normalizer_is_idempotent_and_witness_filters_only_invalids():
+def test_award_normalizer_is_idempotent_and_zero_call():
     assert normalize_award_metadata("1998: Richard Pryor") == "Richard Pryor"
     assert normalize_award_metadata("Groups: NONE") is None
     once = normalize_award_metadata("George Carlin (second time)")
@@ -304,199 +86,125 @@ def test_award_normalizer_is_idempotent_and_witness_filters_only_invalids():
     assert normalize_award_metadata(once) == once
 
     prediction = _prediction(
-        "Exact Award", AWARD,
-        ["1998: Richard Pryor", "Groups: NONE", "Nominee Person"])
-    verifier = ScriptedRuntime(
-        {("l7_award_recipient_witness", "Exact Award", AWARD): [
-            "VALID: Richard Pryor | 1998 event\nINVALID: Nominee Person | nominee"
-        ]},
-        model_id="qwen",
-        role="verifier",
+        "Exact Award",
+        AWARD,
+        ["1998: Richard Pryor", "Groups: NONE", "George Carlin (second time)"],
     )
     config = LeaderboardRepairConfig.from_mapping({
         "enabled": True,
-        "features": {
-            "award_metadata_cleanup": True,
-            "award_recipient_witness": True,
-        },
-        "max_calls_by_relation": {AWARD: 8},
+        "features": {"award_metadata_cleanup": True},
+        "max_calls_by_relation": {AWARD: 1},
     })
-    result = _stack(config, ver=verifier).apply([prediction], queries=[_query(prediction)])
-    assert result.predictions[0].object_entities == ["Richard Pryor"]
-
-
-def test_repair_budgets_are_bounded_and_accounted_by_relation():
-    prediction = _prediction("Dead Person", CITY, [])
-    enum = ScriptedRuntime(
-        {
-            ("l7_death_status_mistral", "Dead Person", CITY): ["DECEASED confidence=0.9"],
-            ("l7_death_city_direct", "Dead Person", CITY): ["CITY: Alpha"],
-        },
-        model_id="mistral",
-        role="enumerator",
-    )
-    ver = ScriptedRuntime(
-        {("l7_death_status_qwen", "Dead Person", CITY): ["DECEASED confidence=0.8"]},
-        model_id="qwen",
-        role="verifier",
-    )
-    config = LeaderboardRepairConfig.from_mapping({
-        "enabled": True,
-        "features": {"death_existence_gate": True, "death_city_recall": True},
-        "max_calls_by_relation": {CITY: 3},
-    })
-    result = _stack(config, enum=enum, ver=ver).apply([prediction], queries=[_query(prediction)])
-    assert result.records[0].calls_used == 3
-    assert result.accounting["by_relation"][CITY]["max_repair_calls"] == 3
-    assert any("budget exhausted" in item for item in result.records[0].skipped)
-
-
-def test_profile_configs_parse_and_have_expected_features():
-    profiles = {
-        "cover_kbc_v3_2_profile_a_stock_probe_test.yaml": ("A_STOCK_PROBE", False),
-        "cover_kbc_v3_2_profile_b_repair_core_test.yaml": ("B_REPAIR_CORE", True),
-        "cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml": ("C_AGGRESSIVE_RECALL", True),
-    }
-    for name, (profile, repair_enabled) in profiles.items():
-        config = yaml.safe_load((CONFIG_DIR / name).read_text(encoding="utf-8"))
-        assert config["experiment"]["split"] == "test"
-        assert config["test_dataset"]["rows"] == 475
-        assert config["leaderboard_probe"]["enabled"] is True
-        v31 = config["pipeline"]["selection"]["v3_1"]
-        assert v31["aggressive"]["stock_listing_entity_prompt"] is True
-        assert v31["safe"]["stock_support_dominance"] is False
-        for feature in (
-            "capacity_definition_prompt",
-            "city_of_death_contrast_prompt",
-            "award_expansion_and_fp_cap",
-            "scientific_notation_acquisition",
-        ):
-            assert v31["aggressive"][feature] is False
-        repair = config["leaderboard_repair"]
-        assert repair["profile"] == profile
-        assert repair["enabled"] is repair_enabled
-    c = yaml.safe_load(
-        (CONFIG_DIR / "cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml").read_text())
-    assert c["leaderboard_repair"]["max_calls_by_relation"][CITY] == 5
-    assert c["leaderboard_repair"]["features"]["border_directional_sweep"] is True
-    assert c["leaderboard_repair"]["features"]["award_recipient_witness"] is True
-
-
-def test_hotfix_profiles_resolve_profile_a_stock_background_and_repair_flags():
-    a_plus = yaml.safe_load(
-        (CONFIG_DIR / "cover_kbc_v3_2_profile_a_plus_award_test.yaml").read_text())
-    c2 = yaml.safe_load(
-        (CONFIG_DIR / "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml").read_text())
-
-    for config in (a_plus, c2):
-        assert config["experiment"]["split"] == "test"
-        assert config["test_dataset"]["rows"] == 475
-        assert config["leaderboard_probe"]["status"] == "CALIBRATION_REVIEW_LEADERBOARD_PROBE"
-        v31 = config["pipeline"]["selection"]["v3_1"]
-        assert v31["aggressive"]["stock_listing_entity_prompt"] is True
-        assert v31["safe"]["stock_support_dominance"] is False
-        for feature in (
-            "capacity_definition_prompt",
-            "city_of_death_contrast_prompt",
-            "award_expansion_and_fp_cap",
-            "scientific_notation_acquisition",
-        ):
-            assert v31["aggressive"][feature] is False
-
-    a_features = a_plus["leaderboard_repair"]["features"]
-    assert a_plus["leaderboard_repair"]["profile"] == "A_PLUS_AWARD"
-    assert a_features["award_metadata_cleanup"] is True
-    assert a_features["l8_consistency"] is False
-    assert a_features["l9_final_risk_guard"] is False
-    for feature in (
-        "stock_entity_guard",
-        "stock_alias_dedupe",
-        "stock_multi_listing_rescue",
-        "border_alias_dedupe",
-        "border_reciprocity",
-        "border_directional_sweep",
-        "death_existence_gate",
-        "death_city_recall",
-        "area_empty_rescue",
-        "capacity_repair",
-        "award_recipient_witness",
-        "award_time_sliced_recall",
-    ):
-        assert a_features[feature] is False
-    assert a_plus["leaderboard_repair"]["max_calls_by_relation"][STOCK] == 0
-
-    c2_features = c2["leaderboard_repair"]["features"]
-    assert c2["leaderboard_repair"]["profile"] == "C2_AGGRESSIVE_NONSTOCK"
-    for feature in (
-        "stock_entity_guard",
-        "stock_alias_dedupe",
-        "stock_multi_listing_rescue",
-        "l8_stock_consistency",
-        "l9_stock_guard",
-    ):
-        assert c2_features[feature] is False
-    for feature in (
-        "award_metadata_cleanup",
-        "award_recipient_witness",
-        "award_time_sliced_recall",
-        "border_alias_dedupe",
-        "border_reciprocity",
-        "border_directional_sweep",
-        "death_existence_gate",
-        "death_city_recall",
-        "area_empty_rescue",
-        "capacity_repair",
-        "l8_consistency",
-        "l9_final_risk_guard",
-    ):
-        assert c2_features[feature] is True
-    caps = c2["leaderboard_repair"]["max_calls_by_relation"]
-    assert caps[STOCK] == 0
-    assert caps[CITY] == 5
-    assert caps[AWARD] == 8
-
-
-def test_c2_stock_repair_and_stock_l8_l9_are_bypassed():
-    config = yaml.safe_load(
-        (CONFIG_DIR / "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml").read_text())
-    repair_config = LeaderboardRepairConfig.from_mapping(config["leaderboard_repair"])
-    stock = _prediction(
-        "Example Co",
-        STOCK,
-        ["Nasdaq", "NYSE", "New York Stock Exchange", "B3"],
-        row_index=0,
-    )
-    area = _prediction("Example Area", AREA, ["123", "not a number"], row_index=1)
-    result = _stack(repair_config).apply(
-        [stock, area],
-        queries=[_query(stock), _query(area)],
-    )
-
-    assert result.predictions[0].object_entities == stock.object_entities
+    result = _stack(config).apply([prediction], queries=[_query(prediction)])
+    assert result.predictions[0].object_entities == ["Richard Pryor", "George Carlin"]
     assert result.records[0].calls_used == 0
-    assert result.records[0].skipped == ["relation repair disabled by zero cap"]
-    assert not result.records[0].decisions
-    # Non-Stock L9 remains enabled in C2: numeric outputs are still guarded.
-    assert result.predictions[1].object_entities == ["123"]
+    assert result.accounting["by_relation"][AWARD]["features"] == {
+        "AwardMetadataNormalizer": 1
+    }
 
 
-def test_profile_readiness_is_calibration_review_not_full_test_ready():
-    for name in (
-        "cover_kbc_v3_2_profile_a_stock_probe_test.yaml",
-        "cover_kbc_v3_2_profile_b_repair_core_test.yaml",
-        "cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml",
-        "cover_kbc_v3_2_profile_a_plus_award_test.yaml",
-        "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml",
-        "cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml",
-        "cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml",
-    ):
-        config = yaml.safe_load((CONFIG_DIR / name).read_text(encoding="utf-8"))
-        report = evaluate_test_readiness(config, base_dir=CONFIG_DIR, split="test")
-        assert report.state is not ReadinessState.FULL_TEST_READY
-        assert any("CALIBRATION_REVIEW_REQUIRED" in b for b in report.blockers)
+def test_e1_city_rescue_mutates_only_empty_deceased_city_rows():
+    predictions = [
+        _prediction("Already Known", CITY, ["Existing City"], row_index=0),
+        _prediction("Living Person", CITY, [], row_index=1),
+        _prediction("Unknown Person", CITY, [], row_index=2),
+        _prediction("Invalid Person", CITY, [], row_index=3),
+        _prediction("Deceased Unknown City", CITY, [], row_index=4),
+        _prediction("Deceased Known City", CITY, [], row_index=5),
+        _prediction("Stock Row", STOCK, ["NYSE"], row_index=6),
+    ]
+    runtime = ScriptedRuntime(
+        {
+            ("e1_city_life_status", "Living Person", CITY): ["LIVING"],
+            ("e1_city_life_status", "Unknown Person", CITY): ["UNKNOWN"],
+            ("e1_city_life_status", "Invalid Person", CITY): ["DECEASED confidence=0.9"],
+            ("e1_city_life_status", "Deceased Unknown City", CITY): ["DECEASED"],
+            ("e1_city_of_death_recall", "Deceased Unknown City", CITY): ["UNKNOWN"],
+            ("e1_city_life_status", "Deceased Known City", CITY): ["DECEASED"],
+            ("e1_city_of_death_recall", "Deceased Known City", CITY): ["CITY: São Paulo"],
+        },
+        model_id="mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        role="verifier",
+    )
+    config = LeaderboardRepairConfig.from_mapping({
+        "enabled": True,
+        "features": {"mistral_city_empty_rescue": True},
+        "max_calls_by_relation": {CITY: 2, STOCK: 0},
+    })
+    result = _stack(config, runtime).apply(
+        predictions,
+        queries=[_query(prediction) for prediction in predictions],
+    )
+    assert [prediction.object_entities for prediction in result.predictions] == [
+        ["Existing City"],
+        [],
+        [],
+        [],
+        [],
+        ["São Paulo"],
+        ["NYSE"],
+    ]
+    assert [record.calls_used for record in result.records] == [0, 1, 1, 1, 2, 2, 0]
+    summary = result.accounting["by_relation"][CITY]["e1_city_rescue"]
+    assert summary == {
+        "eligible_empty_rows": 5,
+        "bypassed_non_empty_rows": 1,
+        "life_status_calls": 5,
+        "deceased_count": 2,
+        "living_count": 1,
+        "unknown_count": 1,
+        "invalid_life_outputs": 1,
+        "city_calls": 2,
+        "city_accepted_count": 1,
+        "city_unknown_count": 1,
+        "invalid_city_outputs": 0,
+        "changed_rows": 1,
+    }
 
 
-def test_run_cover_leaderboard_probe_gate_allows_only_explicit_profiles():
+def test_profile_configs_make_e1_current_and_retired_profiles_archival():
+    e1 = _load("cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml")
+    d = _load("cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml")
+    b = _load("cover_kbc_v3_2_profile_b_repair_core_test.yaml")
+    c = _load("cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml")
+    c2 = _load("cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml")
+
+    assert e1["experiment"]["name"] == "cover_kbc_v3_4_profile_e1_mistral_city_rescue_test"
+    assert e1["experiment"]["profile_e1_probe"]["status"] == "UNMEASURED_LEADERBOARD_PROBE"
+    assert d["experiment"]["frozen_baseline"]["status"] == "FROZEN_BEST_BASELINE"
+
+    for config in (b, c):
+        assert config["experiment"]["historical"]["status"] == (
+            "HISTORICAL_SUPERSEDED_ARCHIVAL_CONFIG"
+        )
+        assert config["leaderboard_probe"]["enabled"] is False
+        assert config["leaderboard_repair"]["enabled"] is False
+        assert config["leaderboard_repair"]["archived_runtime_status"] == (
+            "RETIRED_IMPLEMENTATION_REMOVED_AUDIT_0088"
+        )
+
+    assert c2["experiment"]["retired"]["status"] == "RETIRED_NEGATIVE_HIDDEN_TEST_PROBE"
+    assert c2["leaderboard_probe"]["enabled"] is False
+    assert c2["leaderboard_repair"]["enabled"] is False
+
+
+def test_e1_active_flags_are_only_award_cleanup_and_mistral_city_rescue():
+    e1 = _load("cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml")
+    repair = LeaderboardRepairConfig.from_mapping(e1["leaderboard_repair"])
+    flags = asdict(repair.features)
+    assert flags["award_metadata_cleanup"] is True
+    assert flags["mistral_city_empty_rescue"] is True
+    assert all(
+        value is False
+        for key, value in flags.items()
+        if key not in {"award_metadata_cleanup", "mistral_city_empty_rescue"}
+    )
+    assert repair.max_calls_by_relation[CITY] == 2
+    assert repair.max_calls_by_relation[AWARD] == 1
+    assert repair.max_calls_by_relation[STOCK] == 0
+
+
+def test_profile_readiness_and_probe_gate_match_active_development_line():
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     spec = importlib.util.spec_from_file_location(
         "run_cover_leaderboard_probe_test", REPO_ROOT / "scripts" / "run_cover.py")
@@ -504,28 +212,29 @@ def test_run_cover_leaderboard_probe_gate_allows_only_explicit_profiles():
     sys.modules[spec.name] = run_cover
     spec.loader.exec_module(run_cover)
 
-    profile = yaml.safe_load(
-        (CONFIG_DIR / "cover_kbc_v3_2_profile_a_stock_probe_test.yaml").read_text())
-    readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")
-    assert run_cover._allow_leaderboard_probe(profile, "test", readiness)
-
     for name in (
-        "cover_kbc_v3_2_profile_a_plus_award_test.yaml",
-        "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml",
         "cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml",
         "cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml",
     ):
-        profile = yaml.safe_load((CONFIG_DIR / name).read_text())
+        profile = _load(name)
         readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")
+        assert readiness.state is ReadinessState.NOT_READY
+        assert any("CALIBRATION_REVIEW_REQUIRED" in b for b in readiness.blockers)
         assert run_cover._allow_leaderboard_probe(profile, "test", readiness)
 
-    aggressive = yaml.safe_load(
-        (CONFIG_DIR / "cover_kbc_v3_1_aggressive_test.yaml").read_text())
-    readiness = evaluate_test_readiness(aggressive, base_dir=CONFIG_DIR, split="test")
-    assert not run_cover._allow_leaderboard_probe(aggressive, "test", readiness)
+    for name in (
+        "cover_kbc_v3_2_profile_b_repair_core_test.yaml",
+        "cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml",
+        "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml",
+    ):
+        profile = _load(name)
+        readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")
+        assert not run_cover._allow_leaderboard_probe(profile, "test", readiness)
 
 
 def test_run_cover_help_does_not_load_models():
+    import subprocess
+
     completed = subprocess.run(
         [sys.executable, "scripts/run_cover.py", "--help"],
         cwd=REPO_ROOT,
@@ -534,3 +243,17 @@ def test_run_cover_help_does_not_load_models():
         check=True,
     )
     assert "--config" in completed.stdout
+
+
+def test_active_repair_package_contains_no_retired_c2_runtime_modules():
+    paths = sorted(path.name for path in PACKAGE.glob("*.py"))
+    assert "consistency.py" not in paths
+    assert "risk_guard.py" not in paths
+    assert "parsing.py" not in paths
+    source = "\n".join(path.read_text(encoding="utf-8") for path in PACKAGE.glob("*.py"))
+    assert "BorderDirectionalSweep" not in source
+    assert "DeathCityRecall" not in source
+    assert "AreaEmptyRescue" not in source
+    assert "CapacityRepair" not in source
+    assert "AwardRecipientWitness" not in source
+    assert "AwardTimeSlicedRecall" not in source

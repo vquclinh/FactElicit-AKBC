@@ -27,16 +27,19 @@ experiment:
   split: test
   seed: 42
   notes: >-
-    V3.2 Profile C AGGRESSIVE RECALL. Everything in Profile B plus border
-    directional sweep, death existence/city recall, area empty rescue, capacity
-    exact-venue repair, NumericAttributeResolver and award witness/time-sliced
-    recall. Calibration-review leaderboard probe; no evaluation is performed on
-    TEST.
+    HISTORICAL / SUPERSEDED ARCHIVAL CONFIG. V3.2 Profile C AGGRESSIVE RECALL
+    was the broad post-pipeline repair design before hidden TEST showed the
+    aggressive C2 line was harmful. The retired runtime implementation was
+    removed in Audit 0088; this file remains as provenance.
+  historical:
+    status: HISTORICAL_SUPERSEDED_ARCHIVAL_CONFIG
+    superseded_by: cover_kbc_v3_3_profile_d_mistral_only_role_swap_test
+    runtime_implementation_status: RETIRED_IMPLEMENTATION_REMOVED_AUDIT_0088
 
 leaderboard_probe:
-  enabled: true
-  status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: aggressive V3.2 post-pipeline recall repair on blind TEST
+  enabled: false
+  status: HISTORICAL_SUPERSEDED_ARCHIVAL_CONFIG
+  purpose: archived Profile C aggressive recall probe; not an active run target
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
 
@@ -159,9 +162,10 @@ pipeline:
         scientific_notation_acquisition: false
 
 leaderboard_repair:
-  enabled: true
+  enabled: false
   repair_version: v3.2-l7-l9
   profile: C_AGGRESSIVE_RECALL
+  archived_runtime_status: RETIRED_IMPLEMENTATION_REMOVED_AUDIT_0088
   features:
     stock_entity_guard: true
     stock_alias_dedupe: true

@@ -12,7 +12,7 @@ Architecture position::
             |
             v
     Module 4 kernel: score_labels -> contextual control -> read_labels
-            |                        (frozen Qwen verifier role)
+            |                        (configured verifier role)
             v
     SpecialistVerificationResult   -> specialist_verification.jsonl
 

@@ -483,12 +483,9 @@ def main() -> int:
     # weights. An unsupported execution mode must cost nothing to discover.
     execution_mode = resolve_execution_mode(config)
 
-    # Can this machine actually load these checkpoints? The verifier is a
-    # `qwen3_5` architecture and a transformers too old to know it fails at the
-    # moment the model is constructed - minutes into a run, after other weights
-    # have already downloaded. That was observed for real (Audit 0065), and the
-    # answer comes from installed metadata in milliseconds, so it is answered
-    # here. A stub-backed profile needs no transformers and is not asked for one.
+    # Can this machine actually load the declared checkpoints? This catches
+    # family-specific Hugging Face support requirements before any weight fetch.
+    # A stub-backed profile needs no transformers and is not asked for one.
     try:
         require_huggingface_runtime(enumerator_cfg, verifier_cfg)
     except RuntimeError as error:

@@ -5,7 +5,7 @@ Runs entirely from configuration - no weights are downloaded - so compliance can
 be checked before anybody fetches a checkpoint.
 
 Example:
-    python scripts/audit_model_budget.py configs/models/qwen3.5-9b-baseline.yaml
+    python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml
 """
 
 from __future__ import annotations

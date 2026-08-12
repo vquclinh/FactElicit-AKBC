@@ -33,6 +33,7 @@ model_weights/
 # Generated predictions and experiment artifacts
 outputs/
 predictions/
+tasks.jsonl
 wandb/
 mlruns/
 tensorboard/

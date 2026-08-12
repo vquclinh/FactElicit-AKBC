@@ -67,29 +67,14 @@ def test_no_config_references_the_quarantine():
     assert not offenders, f"a config references the quarantine: {offenders}"
 
 
-def test_only_the_generator_and_its_tests_name_the_quarantine():
-    """Exactly one script may write there, and it writes nowhere else."""
+def test_no_tracked_script_names_the_quarantine():
+    """The old diagnostic patch generator was retired; no script writes there."""
     naming = sorted(
         str(path.relative_to(REPO_ROOT))
         for path in (REPO_ROOT / "scripts").glob("*.py")
         if QUARANTINE_TOKEN in path.read_text(encoding="utf-8")
     )
-    assert naming == ["scripts/build_claude_diagnostic_patch.py"], naming
-
-
-def test_the_generator_contains_no_factual_answer_table():
-    """The guesses live in gitignored outputs, never in the source tree.
-
-    A closed-book benchmark must not acquire a hand-built answer key by having
-    one committed alongside the tooling that consumes it.
-    """
-    source = (REPO_ROOT / "scripts" / "build_claude_diagnostic_patch.py").read_text(
-        encoding="utf-8")
-    for token in ("Stock Exchange", "Nasdaq", "NYSE", "Euronext", "SEHK",
-                  "Bourse", "Börse"):
-        assert token not in source, (
-            f"the generator embeds a factual token {token!r}; guesses belong in "
-            "the gitignored quarantine input, not in source")
+    assert naming == [], naming
 
 
 def test_the_quarantine_is_gitignored():

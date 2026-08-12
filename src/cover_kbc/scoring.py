@@ -76,7 +76,7 @@ class ScoringConfig:
     # -- S(o) weights --------------------------------------------------------
     alpha_support: float = 1.0
     beta_logit: float = 0.6
-    gamma_cross_model: float = 0.5   # Mistral enumerator + Qwen verifier
+    gamma_cross_model: float = 0.5   # enumerator/verifier model disagreement
     delta_contradiction: float = 1.5
     eta_disagreement: float = 1.0
 

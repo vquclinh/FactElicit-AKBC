@@ -1,6 +1,10 @@
 # Implementation status — COVER-KBC v2
 
-Current frozen leaderboard baseline: **Profile D — Mistral-only verifier role
+Current development pipeline: **Profile E1 — Mistral City empty rescue**.
+Profile E1 is Profile D plus a conservative, unscored two-stage Mistral rescue
+only for final-empty `personHasCityOfDeath` rows.
+
+Last verified hidden-TEST baseline: **Profile D — Mistral-only verifier role
 swap**, promoted after hidden TEST scoring at overall F1 `0.4952`. Scope still
 follows `COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`, with later V3/M20/M21 and
 leaderboard-probe audits recorded under [`docs/audits/`](audits/).
@@ -24,7 +28,7 @@ The local machine (RTX 4060 Laptop, 8 GB VRAM, 14 GB RAM) is an implementation
 environment. Everything below is testable without loading a heavyweight model,
 using `ScriptedRuntime` and synthetic logits.
 
-## 2. Frozen leaderboard architecture
+## 2. Active Development Architecture
 
 | role | model | published params |
 |---|---|---|
@@ -32,12 +36,15 @@ using `ScriptedRuntime` and synthetic logits.
 | verifier | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | counted once |
 | **total unique neural parameters** | | **24,011,361,280** (24.01B ≤ 32B) |
 
-Config:
+Current development config:
+[`configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml`](../configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml).
+Last verified baseline config:
 [`configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml`](../configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml).
 Profile D starts from historical A+Award and changes only the verifier model
 identity from Qwen3.5-4B to the exact same Mistral24 checkpoint used by the
-enumerator. No Profile E, C2, direct City QA, numeric resolver, new prompt, new
-threshold, or new repair architecture is part of the frozen baseline.
+enumerator. Profile E1 adds only the current unscored City empty-row rescue. C2,
+numeric resolver, broad border repair, stock repair, award witness recall and
+other aggressive repair paths are retired and not part of the active runtime.
 
 ```
 Subject + Relation
@@ -48,6 +55,8 @@ Subject + Relation
       + Mistral verifier-role alternate recall where the base contract already uses it
    -> Evidence / uncertainty state -> RCSE residual coverage
    -> Active controller  --CONTINUE-> loop   --STOP-> Final selector
+   -> AwardMetadataNormalizer
+   -> E1 City empty-row rescue only for final-empty personHasCityOfDeath rows
    -> ObjectEntities
 ```
 
@@ -135,8 +144,8 @@ gold sets are partial, so a real cardinality estimate would be the wrong target.
 ```bash
 pip install -e '.[dev]'            # add '.[hf]' for neural backends
 
-python -m pytest -q                                       # 251 tests
-python scripts/audit_model_budget.py configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml
+python -m pytest -q
+python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml
 python scripts/run_staged.py all --config configs/experiments/smoke_staged_scripted.yaml --limit 30
 ```
 
@@ -144,17 +153,17 @@ Neural runs use [`notebooks/COVER_KBC_Colab.ipynb`](../notebooks/COVER_KBC_Colab
 which drives the same three phases:
 
 ```bash
-python scripts/run_staged.py enumerate --config C --split val   # Mistral only
-python scripts/run_staged.py verify    --config C --run-dir D   # Qwen only
-python scripts/run_staged.py decide    --config C --run-dir D   # no model
+python scripts/run_cover.py \
+  --config configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml \
+  --no-eval
 ```
 
-Phase C is non-neural, so thresholds can be re-tuned against one expensive set
-of generations without re-running any model.
+Profile E1 is a leaderboard probe, not a newly calibrated baseline. It should
+be compared against Profile D after hidden TEST scoring.
 
 ## 7. Status of results
 
-Profile D is the active frozen leaderboard baseline:
+Profile D is the last verified frozen leaderboard baseline:
 
 | relation | precision | recall | F1 |
 |---|---:|---:|---:|
@@ -200,8 +209,8 @@ at the pinned commit, **not** reproduced by us:
    model identity relative to the older M20/M21 calibration provenance.
    Profile D is accepted through the explicit leaderboard-probe path; no new
    TRAIN calibration is claimed.
-2. **Profile E is not implemented.** Any future direct City QA or L10+ repair
-   experiment must diff cleanly against the Profile D frozen baseline.
+2. **Profile E1 is unscored.** It is the current development pipeline, but it
+   must not be promoted over Profile D until hidden TEST feedback supports that.
 3. **The official `baseline.py` does not exist upstream.** The README references
    it, but commit `30d8cfa` contains no such file. "Baseline reproduction" can
    only be a *reconstruction* from the published config, prompt templates,
@@ -213,4 +222,3 @@ at the pinned commit, **not** reproduced by us:
 
 Deferred: DoLa intermediate-layer decoding (experimental plugin; the
 `hidden_states` seam exists), and learned policies (never — rules forbid).
-

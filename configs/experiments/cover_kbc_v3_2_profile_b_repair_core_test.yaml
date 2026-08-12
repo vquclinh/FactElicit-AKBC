@@ -27,15 +27,21 @@ experiment:
   split: test
   seed: 42
   notes: >-
-    V3.2 Profile B REPAIR CORE. Stock prompt plus precision/cardinality stock
-    repair, award metadata cleanup, and border alias/reciprocity repair. No
-    aggressive City/Area/Capacity recall rescue. Calibration-review leaderboard
-    probe; no evaluation is performed on TEST.
+    HISTORICAL / SUPERSEDED ARCHIVAL CONFIG. V3.2 Profile B REPAIR CORE
+    tested stock prompt plus precision/cardinality stock repair, award metadata
+    cleanup, and border alias/reciprocity repair. Hidden TEST showed overall F1
+    0.4837, below Profile A and later Profile D. The retired runtime
+    implementation was removed in Audit 0088; this file remains as provenance.
+  historical:
+    status: HISTORICAL_SUPERSEDED_ARCHIVAL_CONFIG
+    hidden_test_overall_f1: 0.4837
+    superseded_by: cover_kbc_v3_3_profile_d_mistral_only_role_swap_test
+    runtime_implementation_status: RETIRED_IMPLEMENTATION_REMOVED_AUDIT_0088
 
 leaderboard_probe:
-  enabled: true
-  status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: core post-pipeline repair stack on blind TEST
+  enabled: false
+  status: HISTORICAL_SUPERSEDED_ARCHIVAL_CONFIG
+  purpose: archived Profile B repair-core probe; not an active run target
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
 
@@ -158,9 +164,10 @@ pipeline:
         scientific_notation_acquisition: false
 
 leaderboard_repair:
-  enabled: true
+  enabled: false
   repair_version: v3.2-l7-l9
   profile: B_REPAIR_CORE
+  archived_runtime_status: RETIRED_IMPLEMENTATION_REMOVED_AUDIT_0088
   features:
     stock_entity_guard: true
     stock_alias_dedupe: true

@@ -1,7 +1,7 @@
 """Post-architecture real-model runtime smoke.
 
 Proves that the architecture which passed under `ScriptedRuntime` also executes
-against the two **real frozen models** and their native tokenizer paths. It
+against the configured frozen model runtime(s) and native tokenizer paths. It
 answers runtime questions only — can the weights load, do the tokenizer and
 chat-template paths work, does `score_labels` produce usable logits, does
 Module 17's live call plan cost what Module 20 says it costs, are physical calls
@@ -15,7 +15,7 @@ still a runtime PASS as long as every contract executed correctly.
 runtime compatibility only; no split is loaded, no gold is stored, and nothing
 is scored.
 
-    python scripts/real_model_smoke.py --config configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml
+    python scripts/real_model_smoke.py --config configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml
 """
 
 from __future__ import annotations
@@ -204,14 +204,14 @@ def primitive_generate(runtime: Any, spec: dict) -> dict:
 
 
 def primitive_score_labels(runtime: Any, spec: dict) -> dict:
-    """One real `LMRuntime.score_labels` through the production Qwen runtime."""
+    """One real `LMRuntime.score_labels` through the configured verifier runtime."""
     from cover_kbc.verification.blind import LABEL_TOKENS, VERIFIER_SYSTEM_PROMPT
 
     # `LabelScoreRequest.labels` is a **mapping** from label name to the exact
     # continuation string whose first token is scored. Every production call
     # site passes `dict(LABEL_TOKENS)`; flattening it to its values produced a
     # sequence that `dict(request.labels)` cannot unpack, which is what the
-    # first real Qwen run caught. The runtime was right to refuse it.
+    # first real verifier run caught. The runtime was right to refuse it.
     labels = dict(LABEL_TOKENS)
     prompt = (
         "Statement: Lisbon is the capital of Portugal.\n"
@@ -230,9 +230,9 @@ def primitive_score_labels(runtime: Any, spec: dict) -> dict:
 
     # `LabelScoreResult.logits` is a **mapping** from label *name* to its
     # uncalibrated logit - `{"VALID": .., "INVALID": .., "UNKNOWN": ..}` - not a
-    # sequence. Iterating it yields the names, which is how the first real Qwen
-    # read-out produced `must be real number, not str`. Every numeric check
-    # below therefore reads `.values()`, and every report keeps the names.
+    # sequence. Iterating it yields the names, which is how the first real
+    # verifier read-out produced `must be real number, not str`. Every numeric
+    # check below therefore reads `.values()`, and every report keeps the names.
     logits = dict(result.logits)
     if set(logits) != set(labels):
         raise SmokeFailure(
@@ -729,7 +729,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config", type=Path,
-        default=Path("configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml"))
+        default=Path(
+            "configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml"
+        ))
     parser.add_argument(
         "--out", type=Path,
         default=Path("real_model_architecture_smoke_summary.json"))
@@ -791,8 +793,8 @@ def main() -> int:
         summary["primitive_score_labels"] = primitive_score_labels(
             runtime, verifier_spec)
 
-        # Qwen stays resident across cold AND warm: unloading between them
-        # would reset the contextual-control cache and destroy the experiment.
+        # The verifier stays resident across cold AND warm: unloading between
+        # them would reset the contextual-control cache and destroy the smoke.
         phase = "V_m17_cold_warm"
         print("[V] Module 17 cold/warm regression ...", flush=True)
         summary["m17_call_plan"] = m17_plan_regression(config, runtime)

@@ -38,16 +38,12 @@ class RepairFeatures:
     award_metadata_cleanup: bool = False
     award_recipient_witness: bool = False
     award_time_sliced_recall: bool = False
-    l8_consistency: bool = True
-    #: Whether generic L8 entity consistency may touch Stock outputs.
-    #: Defaults on to preserve Profiles B/C; C2 disables it to keep Profile-A
-    #: Stock semantics while retaining non-Stock consistency repair.
-    l8_stock_consistency: bool = True
-    l9_final_risk_guard: bool = True
-    #: Whether L9 may apply the Stock terminal wrong-type guard.
-    #: Defaults on to preserve Profiles B/C; C2 disables it because hidden-TEST
-    #: evidence showed the Stock repair path harmed Profile-A Stock recall.
-    l9_stock_guard: bool = True
+    #: Retired Audit-0082/C2 flags retained only so historical configs parse.
+    #: The active runtime no longer implements L8/L9 mutation branches.
+    l8_consistency: bool = False
+    l8_stock_consistency: bool = False
+    l9_final_risk_guard: bool = False
+    l9_stock_guard: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any] | None) -> "RepairFeatures":

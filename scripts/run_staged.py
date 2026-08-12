@@ -962,7 +962,7 @@ def phase_resolve(args, config: dict) -> Path:
     may not drop ``Execute(action)`` from the loop - so this reloads whichever
     role the pending actions need and runs them, repeatedly, until none remain.
 
-    The same code path serves the scripted smoke and a real Mistral/Qwen run;
+    The same code path serves the scripted smoke and a real neural run;
     only the runtime implementations differ.
     """
     run_dir = Path(args.run_dir)

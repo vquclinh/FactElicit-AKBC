@@ -273,9 +273,10 @@ class PipelineConfig:
 
     # -- logical model roles -------------------------------------------------
     #: The model ids the *architecture* assigns to each role, independent of
-    #: which runtime objects happen to be resident right now. Staged Phase B
-    #: passes one Qwen runtime as both ``runtime`` and ``verifier_runtime``;
-    #: capability must not be inferred from that coincidence.
+    #: which runtime objects happen to be resident right now. A staged verifier
+    #: phase may pass one verifier-role runtime as both ``runtime`` and
+    #: ``verifier_runtime``; capability must not be inferred from that
+    #: coincidence.
     enumerator_model_id: str = ""
     verifier_model_id: str = ""
 
@@ -693,11 +694,11 @@ class CoverPipeline:
     def verifier_available(self) -> bool:
         """Can the verifier-role scoring capability execute right now?
 
-        A capability question, not a residency one. In staged Phase B the same
-        Qwen runtime is passed as both ``runtime`` and ``verifier_runtime``;
-        judging availability by object or id inequality made blind
-        verification, gate scoring and cross-model recall all vanish exactly
-        when Qwen finally *was* loaded.
+        A capability question, not a residency one. In staged verifier phases
+        the same runtime can be passed as both ``runtime`` and
+        ``verifier_runtime``; judging availability by object or id inequality
+        made blind verification, gate scoring and cross-model recall all vanish
+        exactly when the verifier was loaded.
 
         Available when the runtime bound to the verifier role can score labels
         **and** genuinely fills that role - either it is a distinct object from
@@ -717,12 +718,12 @@ class CoverPipeline:
 
     @property
     def cross_model_recall_available(self) -> bool:
-        """Is Qwen's independent recall genuinely *heterogeneous* evidence?
+        """Is verifier-role recall genuinely *heterogeneous* evidence?
 
         Measured against the **configured enumerator model**, not against
-        whichever runtime object is resident. Qwen recalling a name in Phase B
-        is a second opinion relative to Mistral's enumeration even though only
-        one runtime object exists at that moment.
+        whichever runtime object is resident. A verifier-model recall is a
+        second opinion only when its configured model id differs from the
+        enumerator's configured model id.
         """
         if not self.config.enable_cross_model_recall or not self.verifier_available:
             return False
@@ -783,8 +784,9 @@ class CoverPipeline:
         loaded, this raises rather than silently substituting the enumerator.
 
         Without this, the same frozen config changed its factual decision-maker
-        purely by execution mode: Qwen scored the gate interleaved, Mistral
-        scored it in staged Phase A where the verifier is not resident.
+        purely by execution mode: the verifier scored the gate interleaved, but
+        the enumerator scored it in staged Phase A where the verifier was not
+        resident.
         """
         role = self.config.gate_model_role
         if role is ModelRole.ENUMERATOR:
