@@ -15,7 +15,7 @@ still a runtime PASS as long as every contract executed correctly.
 runtime compatibility only; no split is loaded, no gold is stored, and nothing
 is scored.
 
-    python scripts/real_model_smoke.py --config configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml
+    python scripts/real_model_smoke.py --config configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml
 """
 
 from __future__ import annotations
@@ -730,7 +730,7 @@ def main() -> int:
     parser.add_argument(
         "--config", type=Path,
         default=Path(
-            "configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml"
+            "configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml"
         ))
     parser.add_argument(
         "--out", type=Path,

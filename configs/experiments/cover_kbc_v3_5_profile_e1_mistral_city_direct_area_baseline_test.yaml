@@ -1,26 +1,37 @@
-# COVER-KBC V3.4 Profile E1 - historical conservative Mistral City rescue.
+# COVER-KBC V3.5 Profile E1 - City rescue + Direct Area frozen baseline.
 #
-# Historical source of truth:
+# Current frozen baseline source of truth:
+#   Integrated Profile E1 overall F1 = 0.5752.
 #   Profile D overall F1 = 0.4952, previous frozen baseline.
-#   Integrated E1 with Direct Area supersedes this City-only config.
+#   Historical City-only E1 remains available as v3.4 provenance.
 #   A+AWARD overall F1 = 0.4910, historical superseded baseline.
 #   C2 overall F1 = 0.4012, retired negative probe.
 #
-# This config intentionally starts from Profile D and changes one conceptual
-# variable only: run a two-stage Mistral-native City rescue for final-empty
-# personHasCityOfDeath rows. No non-City relation may be changed.
+# This integrated baseline keeps Profile D's core path, AwardMetadataNormalizer
+# and E1 City empty-row rescue, then applies one Mistral Direct Area call to
+# every hasArea row with DIRECT_ALL replacement semantics.
 
 experiment:
-  name: cover_kbc_v3_4_profile_e1_mistral_city_rescue_test
+  name: cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test
   split: test
   seed: 42
   notes: >-
-    Historical V3.4 Profile E1 MISTRAL_CITY_EMPTY_RESCUE. Base is Profile D
-    (overall F1 0.4952). This City-only experiment is preserved as Audit 0087
-    provenance and is superseded by the integrated E1 Direct Area baseline.
+    V3.5 integrated Profile E1 frozen baseline. It is Profile D plus
+    AwardMetadataNormalizer, the already validated E1 Mistral City empty-row
+    rescue, and MistralDirectArea for every hasArea row. Hidden TEST overall F1
+    is 0.5752. Profile E2 is intentionally not implemented here.
+  frozen_baseline:
+    status: FROZEN_CURRENT_BASELINE
+    hidden_test_overall_f1: 0.5752
+    local_prediction_artifact_path: outputs/submission-best/predictions.jsonl
+    prediction_sha256: 67bd1bc8af01de177520d93f9b5b9fc30839d56f36ceeeb6263813662e52d8a6
+    artifact_status: LOCALLY_VERIFIED_CANONICAL_WINNING_ARTIFACT
+    unique_neural_parameters: 24011361280
+    qwen_runtime_calls: 0
+    calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
   baseline_profile:
     name: cover_kbc_v3_3_profile_d_mistral_only_role_swap_test
-    status: FROZEN_BEST_BASELINE
+    status: PREVIOUS_FROZEN_BASELINE
     hidden_test_overall_f1: 0.4952
     source_commit: 170c48756660a34d611b3a563ac26cd4564434ef
     prediction_sha256: 7a01382de3e95530ecdfabd7cee049712ce7e326f7d4d299e28c5b5ba981320c
@@ -32,18 +43,23 @@ experiment:
     qwen_runtime_calls: 0
     unique_neural_parameters: 24011361280
     calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  profile_e1_probe:
+  historical_e1_city_only:
+    name: cover_kbc_v3_4_profile_e1_mistral_city_rescue_test
     status: HISTORICAL_SUPERSEDED_CITY_ONLY_E1
-    superseded_by: cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test
-    superseded_by_hidden_test_overall_f1: 0.5752
-    causal_question: >-
-      What happens if frozen Profile D is augmented with a conservative
-      Mistral-native two-stage factual rescue only for currently-empty
-      personHasCityOfDeath rows?
-    standalone_observations_are_runtime_knowledge: false
+    audit: docs/audits/0087-profile-e1-mistral-city-empty-rescue.md
+  integrated_e1_baseline:
+    status: HIDDEN_TEST_SCORED_FROZEN_BASELINE
+    architecture:
+      - Profile D core Mistral-only pipeline
+      - AwardMetadataNormalizer
+      - MistralCityEmptyRescue
+      - MistralDirectArea
+    direct_area_mode: DIRECT_ALL
+    profile_e2_reserved_for_future: true
+    standalone_area_observations_are_runtime_knowledge: false
     no_subject_answer_lookup: true
-    no_profile_e_or_other_feature: true
-  baseline_hidden_test_scores:
+    no_web_rag_or_external_corpus: true
+  hidden_test_scores:
     awardWonBy:
       precision: 0.3255
       recall: 0.3707
@@ -57,44 +73,34 @@ experiment:
       recall: 0.9295
       f1: 0.9291
     hasArea:
-      precision: 0.5100
-      recall: 0.3600
-      f1: 0.3600
+      precision: 0.6700
+      recall: 0.6600
+      f1: 0.6600
     hasCapacity:
       precision: 0.3776
       recall: 0.1224
       f1: 0.1224
     personHasCityOfDeath:
-      precision: 0.9900
-      recall: 0.4900
-      f1: 0.4900
+      precision: 0.9600
+      recall: 0.5900
+      f1: 0.5700
     all_relations:
-      precision: 0.7289
-      recall: 0.5087
-      f1: 0.4952
+      precision: 0.7563
+      recall: 0.5929
+      f1: 0.5752
     zero_object_reference:
-      precision: 0.4757
-      recall: 0.9608
-      f1: 0.6364
-  baseline_execution_accounting:
-    total_queries: 475
-    successful_queries: 475
-    failed_queries: 0
-    pipeline_error_rows: 0
-    unresolved_invariant_errors: 0
-  baseline_repair_accounting:
-    changed_rows: 1
-    total_repair_calls: 0
-    only_changed_feature: AwardMetadataNormalizer
-  baseline_call_accounting:
-    total_call_records: 2560
-    mistral_call_records_with_model_id: 1380
-    qwen_call_records_with_model_id: 0
-    generation_calls: 1180
-    decision_calls: 1180
-    gate_calls: 200
-    records_without_model_id: 1180
-  baseline_output_shape:
+      precision: 0.5363
+      recall: 0.9412
+      f1: 0.6833
+  score_deltas_vs_profile_d:
+    all_relations: 0.0800
+    hasArea: 0.3000
+    personHasCityOfDeath: 0.0800
+    awardWonBy: 0.0000
+    companyTradesAtStockExchange: 0.0000
+    countryLandBordersCountry: 0.0000
+    hasCapacity: 0.0000
+  winning_output_shape:
     awardWonBy:
       rows: 10
       empty: 0
@@ -112,8 +118,8 @@ experiment:
       max: 14
     hasArea:
       rows: 100
-      empty: 15
-      objects: 85
+      empty: 1
+      objects: 99
       max: 1
     hasCapacity:
       rows: 98
@@ -122,14 +128,18 @@ experiment:
       max: 1
     personHasCityOfDeath:
       rows: 100
-      empty: 98
-      objects: 2
+      empty: 85
+      objects: 15
       max: 1
+  direct_area_accounting:
+    eligible_hasArea_rows: 100
+    maximum_direct_area_calls: 100
+    model_backed_calls_use_mistral_only: true
 
 leaderboard_probe:
   enabled: true
   status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: Profile E1 conservative Mistral two-stage City rescue on Profile D baseline
+  purpose: Integrated Profile E1 frozen baseline with City rescue and Direct Area
   role_swap: MISTRAL_ONLY_VERIFIER
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
@@ -151,7 +161,7 @@ test_dataset:
   blind: true
 
 model_profile:
-  # Deliberately one physical model block. The canonical resolver returns this
+  # Deliberately one physical model block. The model resolver returns this
   # block for both logical roles when no separate verifier block is declared, so
   # run_cover.py reuses one Mistral runtime and does not load a second copy.
   enumerator:
@@ -235,9 +245,9 @@ pipeline:
 
 leaderboard_repair:
   enabled: true
-  repair_version: v3.4-profile-e1-mistral-city-empty-rescue
-  profile: E1_MISTRAL_CITY_RESCUE
-  direct_area_mode: "OFF"
+  repair_version: v3.5-profile-e1-mistral-city-direct-area-baseline
+  profile: E1_MISTRAL_CITY_DIRECT_AREA_BASELINE
+  direct_area_mode: DIRECT_ALL
   features:
     stock_entity_guard: false
     stock_alias_dedupe: false
@@ -249,7 +259,7 @@ leaderboard_repair:
     death_city_recall: false
     mistral_city_empty_rescue: true
     area_empty_rescue: false
-    mistral_direct_area: false
+    mistral_direct_area: true
     capacity_repair: false
     award_metadata_cleanup: true
     award_recipient_witness: false
@@ -261,7 +271,7 @@ leaderboard_repair:
   max_calls_by_relation:
     countryLandBordersCountry: 0
     companyTradesAtStockExchange: 0
-    hasArea: 0
+    hasArea: 1
     hasCapacity: 0
     personHasCityOfDeath: 2
     awardWonBy: 1

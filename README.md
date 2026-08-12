@@ -22,17 +22,16 @@ The full design is in [`COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`](COVER_KBC_V2_ARCHIT
 
 ## Status
 
-**Current development pipeline:** Profile E1, conservative Mistral City empty
-rescue, configured at
-[`configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml`](configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml).
-It is Profile D plus only one unscored development experiment: for final-empty
-`personHasCityOfDeath` rows, ask the same Mistral checkpoint a strict two-stage
-life-status/city question.
+**Current frozen baseline:** integrated Profile E1, configured at
+[`configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml`](configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml),
+with hidden TEST overall F1 `0.5752`. It is Profile D plus
+`AwardMetadataNormalizer`, `MistralCityEmptyRescue`, and `MistralDirectArea`.
 
-**Last verified hidden-TEST baseline:** Profile D, the Mistral-only verifier
-role-swap probe, hidden TEST overall F1 `0.4952`, configured at
+**Previous frozen baseline:** Profile D, the Mistral-only verifier role-swap
+probe, hidden TEST overall F1 `0.4952`, configured at
 [`configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml`](configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml).
-Profile E1 has not yet been promoted from leaderboard feedback.
+The v3.4 City-only E1 config remains historical provenance. Profile E2 is
+reserved for future work and is not implemented.
 
 Heavyweight inference runs on Google Colab, not on the development machine.
 The local repository validates configuration, contracts, readiness gates,
@@ -48,9 +47,9 @@ artifact provenance, and non-neural tests. See
 | verifier | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | counted once |
 | **total unique neural parameters** | | **24,011,361,280** (24.01B ≤ 32B) |
 
-Profile E1/Profile D declare one physical Mistral model block and reuse that
-runtime for both logical roles. Qwen is not active in the current development
-pipeline or last verified frozen leaderboard baseline.
+Integrated Profile E1 and Profile D declare one physical Mistral model block
+and reuse that runtime for all logical roles. Qwen is not active in the current
+frozen baseline.
 
 ## Quickstart
 
@@ -60,7 +59,7 @@ pip install -e '.[dev]'          # add '.[hf]' for the neural backends
 python -m pytest -q              # no model required
 
 # Check the 32B budget for the current development pipeline (downloads nothing)
-python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml
+python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml
 
 # Non-neural plumbing runs (NOT system results)
 python scripts/run_cover.py  --config configs/experiments/smoke_abstain.yaml
@@ -75,7 +74,7 @@ python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
 drives the same three phases:
 
 ```bash
-python scripts/run_cover.py --config configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml --no-eval
+python scripts/run_cover.py --config configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml --no-eval
 ```
 
 Each run writes `outputs/<run_id>/` containing `predictions.jsonl`,

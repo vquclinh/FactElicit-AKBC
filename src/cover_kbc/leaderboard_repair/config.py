@@ -34,6 +34,7 @@ class RepairFeatures:
     death_city_recall: bool = False
     mistral_city_empty_rescue: bool = False
     area_empty_rescue: bool = False
+    mistral_direct_area: bool = False
     capacity_repair: bool = False
     award_metadata_cleanup: bool = False
     award_recipient_witness: bool = False
@@ -70,6 +71,7 @@ class LeaderboardRepairConfig:
     min_verifier_confidence: float = 0.55
     stock_rescue_min_confidence: float = 0.60
     numeric_cluster_tolerance: float = 0.05
+    direct_area_mode: str = "OFF"
     artifacts_file: str = "leaderboard_repair.jsonl"
     accounting_file: str = "repair_accounting.json"
 
@@ -93,6 +95,7 @@ class LeaderboardRepairConfig:
                 block.get("stock_rescue_min_confidence", 0.60)
             ),
             numeric_cluster_tolerance=float(block.get("numeric_cluster_tolerance", 0.05)),
+            direct_area_mode=str(block.get("direct_area_mode", "OFF")),
             artifacts_file=str(block.get("artifacts_file", "leaderboard_repair.jsonl")),
             accounting_file=str(block.get("accounting_file", "repair_accounting.json")),
         )

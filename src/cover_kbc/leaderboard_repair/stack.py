@@ -16,16 +16,16 @@ from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig, build_c
 from cover_kbc.leaderboard_repair.relations import REPAIR_BY_RELATION
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
 from cover_kbc.leaderboard_repair.types import RepairResult, RowBudget, RowRepairRecord
-from cover_kbc.leaderboard_repair.util import CITY, candidate_signals
+from cover_kbc.leaderboard_repair.util import AREA, CITY, candidate_signals
 
 
 class LeaderboardRepairStack:
     """Feature-flagged post-pipeline repair stack.
 
-    The active development line uses only deterministic award metadata cleanup
-    and E1's Mistral City empty-row rescue. Retired C2 L8/L9 behaviours remain
-    in historical audits/config metadata, but are no longer executable runtime
-    branches.
+    The active baseline uses deterministic award metadata cleanup, E1's Mistral
+    City empty-row rescue, and Direct Area for hasArea rows. Retired C2 L8/L9
+    behaviours remain in historical audits/config metadata, but are no longer
+    executable runtime branches.
     """
 
     def __init__(
@@ -127,6 +127,13 @@ class LeaderboardRepairStack:
             ):
                 by_relation[relation]["e1_city_rescue"] = (
                     _e1_city_rescue_accounting(relation_records)
+                )
+            if (
+                relation == AREA
+                and self.config.features.mistral_direct_area
+            ):
+                by_relation[relation]["direct_area"] = (
+                    _direct_area_accounting(relation_records)
                 )
 
         total_calls = sum(record.calls_used for record in records)
@@ -235,4 +242,43 @@ def _e1_city_rescue_accounting(
                     summary["city_unknown_count"] += 1
                 else:
                     summary["invalid_city_outputs"] += 1
+    return summary
+
+
+def _direct_area_accounting(
+    records: Sequence[RowRepairRecord],
+) -> dict[str, int]:
+    summary = {
+        "eligible_hasArea_rows": 0,
+        "direct_area_calls": 0,
+        "valid_area_count": 0,
+        "unknown_count": 0,
+        "invalid_count": 0,
+        "error_count": 0,
+        "changed_rows": 0,
+    }
+    for record in records:
+        direct_area_decisions = [
+            decision for decision in record.decisions
+            if decision.get("feature") == "MistralDirectArea"
+        ]
+        if not direct_area_decisions:
+            continue
+        if record.changed:
+            summary["changed_rows"] += 1
+        if any("MistralDirectArea" in item for item in record.skipped):
+            summary["error_count"] += 1
+        for decision in direct_area_decisions:
+            kind = str(decision.get("decision", ""))
+            status = str(decision.get("status", ""))
+            if kind == "eligible_has_area_row":
+                summary["eligible_hasArea_rows"] += 1
+            elif kind == "direct_area_output":
+                summary["direct_area_calls"] += 1
+                if status == "VALID_AREA":
+                    summary["valid_area_count"] += 1
+                elif status == "UNKNOWN":
+                    summary["unknown_count"] += 1
+                else:
+                    summary["invalid_count"] += 1
     return summary

@@ -1,9 +1,9 @@
 """Active leaderboard repair stack tests.
 
-The live development line is Profile E1: Profile D plus deterministic award
-metadata cleanup and Mistral City empty-row rescue. Retired B/C/C2 repair
-experiments remain documented in configs/audits but are no longer executable
-runtime branches.
+The active frozen line is integrated Profile E1: Profile D plus deterministic
+award metadata cleanup, Mistral City empty-row rescue and Direct Area. Retired
+B/C/C2 repair experiments remain documented in configs/audits but are no
+longer executable runtime branches.
 """
 
 from __future__ import annotations
@@ -21,7 +21,13 @@ from cover_kbc.controller_calibration.readiness import (
 )
 from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
 from cover_kbc.leaderboard_repair.stack import LeaderboardRepairStack, build_repair_stack
-from cover_kbc.leaderboard_repair.util import AWARD, CITY, STOCK, normalize_award_metadata
+from cover_kbc.leaderboard_repair.util import (
+    AREA,
+    AWARD,
+    CITY,
+    STOCK,
+    normalize_award_metadata,
+)
 from cover_kbc.models.offline import ScriptedRuntime
 from cover_kbc.types import Prediction, Query
 
@@ -162,16 +168,33 @@ def test_e1_city_rescue_mutates_only_empty_deceased_city_rows():
     }
 
 
-def test_profile_configs_make_e1_current_and_retired_profiles_archival():
-    e1 = _load("cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml")
+def test_profile_configs_make_integrated_e1_current_and_retired_profiles_archival():
+    old_e1 = _load("cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml")
+    current_e1 = _load(
+        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml"
+    )
     d = _load("cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml")
     b = _load("cover_kbc_v3_2_profile_b_repair_core_test.yaml")
     c = _load("cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml")
     c2 = _load("cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml")
 
-    assert e1["experiment"]["name"] == "cover_kbc_v3_4_profile_e1_mistral_city_rescue_test"
-    assert e1["experiment"]["profile_e1_probe"]["status"] == "UNMEASURED_LEADERBOARD_PROBE"
-    assert d["experiment"]["frozen_baseline"]["status"] == "FROZEN_BEST_BASELINE"
+    assert current_e1["experiment"]["name"] == (
+        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test"
+    )
+    assert current_e1["experiment"]["frozen_baseline"]["status"] == (
+        "FROZEN_CURRENT_BASELINE"
+    )
+    assert current_e1["experiment"]["hidden_test_scores"]["all_relations"]["f1"] == 0.5752
+    assert old_e1["experiment"]["profile_e1_probe"]["status"] == (
+        "HISTORICAL_SUPERSEDED_CITY_ONLY_E1"
+    )
+    assert old_e1["experiment"]["profile_e1_probe"]["superseded_by"] == (
+        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test"
+    )
+    assert d["experiment"]["frozen_baseline"]["status"] == "PREVIOUS_FROZEN_BASELINE"
+    assert d["experiment"]["frozen_baseline"]["superseded_by"] == (
+        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test"
+    )
 
     for config in (b, c):
         assert config["experiment"]["historical"]["status"] == (
@@ -188,17 +211,26 @@ def test_profile_configs_make_e1_current_and_retired_profiles_archival():
     assert c2["leaderboard_repair"]["enabled"] is False
 
 
-def test_e1_active_flags_are_only_award_cleanup_and_mistral_city_rescue():
-    e1 = _load("cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml")
+def test_e1_active_flags_are_only_award_city_rescue_and_direct_area():
+    e1 = _load(
+        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml"
+    )
     repair = LeaderboardRepairConfig.from_mapping(e1["leaderboard_repair"])
     flags = asdict(repair.features)
     assert flags["award_metadata_cleanup"] is True
     assert flags["mistral_city_empty_rescue"] is True
+    assert flags["mistral_direct_area"] is True
     assert all(
         value is False
         for key, value in flags.items()
-        if key not in {"award_metadata_cleanup", "mistral_city_empty_rescue"}
+        if key not in {
+            "award_metadata_cleanup",
+            "mistral_city_empty_rescue",
+            "mistral_direct_area",
+        }
     )
+    assert repair.direct_area_mode == "DIRECT_ALL"
+    assert repair.max_calls_by_relation[AREA] == 1
     assert repair.max_calls_by_relation[CITY] == 2
     assert repair.max_calls_by_relation[AWARD] == 1
     assert repair.max_calls_by_relation[STOCK] == 0
@@ -215,6 +247,7 @@ def test_profile_readiness_and_probe_gate_match_active_development_line():
     for name in (
         "cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml",
         "cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml",
+        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml",
     ):
         profile = _load(name)
         readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")

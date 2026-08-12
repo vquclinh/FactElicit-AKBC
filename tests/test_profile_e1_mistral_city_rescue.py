@@ -1,4 +1,4 @@
-"""Profile E1 conservative Mistral City rescue guards."""
+"""Historical City-only Profile E1 conservative Mistral City rescue guards."""
 
 from __future__ import annotations
 

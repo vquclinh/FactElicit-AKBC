@@ -9,8 +9,8 @@ Nemotron CUDA dependencies.
 
 This file is the guard against any of that coming back by accident. It asserts
 the *absence* of the retired paths as carefully as it asserts the presence of
-the historical calibrated configs. Profile D is the later active leaderboard
-baseline and is guarded separately.
+the historical calibrated configs. Later Profile D and integrated E1 leaderboard
+baselines are guarded separately.
 
 Historical audits describing the experiment are untouched and remain evidence;
 nothing here reads or rewrites them.

@@ -133,12 +133,16 @@ def test_a_plus_award_is_historical_and_unchanged():
     )
 
 
-def test_profile_d_is_marked_as_frozen_best_baseline_with_hidden_test_metadata():
+def test_profile_d_is_marked_as_previous_frozen_baseline_with_hidden_test_metadata():
     config = _load(D_PATH)
     frozen = config["experiment"]["frozen_baseline"]
     assert frozen == {
-        "status": "FROZEN_BEST_BASELINE",
+        "status": "PREVIOUS_FROZEN_BASELINE",
         "hidden_test_overall_f1": 0.4952,
+        "superseded_by": (
+            "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test"
+        ),
+        "superseded_by_hidden_test_overall_f1": 0.5752,
         "source_commit": PROFILE_D_SOURCE_COMMIT,
         "prediction_sha256": PROFILE_D_PREDICTION_SHA256,
         "standalone_submission_name":
@@ -192,7 +196,12 @@ def test_profile_d_feature_flags_match_a_plus_award_and_exclude_c2():
             assert d_features[name] is True
         elif enabled:
             assert d_features[name] is False, name
-    assert "profile_e" not in json.dumps(profile_d, sort_keys=True).lower()
+    assert profile_d["leaderboard_repair"]["features"].get(
+        "mistral_city_empty_rescue", False
+    ) is False
+    assert profile_d["leaderboard_repair"]["features"].get(
+        "mistral_direct_area", False
+    ) is False
     assert "direct_city" not in json.dumps(profile_d, sort_keys=True).lower()
 
 
