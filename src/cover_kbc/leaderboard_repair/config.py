@@ -32,6 +32,7 @@ class RepairFeatures:
     border_reciprocity: bool = False
     death_existence_gate: bool = False
     death_city_recall: bool = False
+    mistral_city_empty_rescue: bool = False
     area_empty_rescue: bool = False
     capacity_repair: bool = False
     award_metadata_cleanup: bool = False

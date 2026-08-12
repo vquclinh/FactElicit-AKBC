@@ -1,4 +1,4 @@
-"""One active architecture: Mistral-Small-3.2-24B + Qwen3.5-4B, calibrated.
+"""Historical calibrated Mistral-Small-3.2-24B + Qwen3.5-4B configs.
 
 The heterogeneous portfolio - Gemma-3-12B, Nemotron-Nano-9B-v2, Qwen3.5-9B -
 was measured on the official TEST and scored 0.3346 against the two-model
@@ -9,8 +9,8 @@ Nemotron CUDA dependencies.
 
 This file is the guard against any of that coming back by accident. It asserts
 the *absence* of the retired paths as carefully as it asserts the presence of
-the baseline, because a dead branch that can still select an unaudited model is
-worse than one that was never removed.
+the historical calibrated configs. Profile D is the later active leaderboard
+baseline and is guarded separately.
 
 Historical audits describing the experiment are untouched and remain evidence;
 nothing here reads or rewrites them.
@@ -35,7 +35,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 EXPERIMENTS = REPO_ROOT / "configs" / "experiments"
 CALIBRATION = REPO_ROOT / "configs" / "calibration"
 
-#: The one active pair, with the counts this repository already verified.
+#: The historical calibrated pair, with the counts this repository already verified.
 BASELINE_ENUMERATOR = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
 BASELINE_ENUMERATOR_REV = "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
 BASELINE_ENUMERATOR_PARAMS = 24_011_361_280

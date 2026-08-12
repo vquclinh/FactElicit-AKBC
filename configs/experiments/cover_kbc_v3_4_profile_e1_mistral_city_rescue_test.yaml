@@ -1,51 +1,140 @@
-# COVER-KBC V3.1 SAFE - official blind TEST profile with Class A score recovery.
+# COVER-KBC V3.4 Profile E1 - conservative Mistral City rescue.
 #
-# Audit 0076. Identical to configs/experiments/cover_kbc_v3_test.yaml except for
-# the experiment block and the `selection.v3_1` block. It reuses the *exact*
-# Audit 0073 M20/M21 calibration artifacts and hashes, unchanged, because every
-# feature it enables runs at Module 8 or later.
+# Frozen baseline source of truth before this probe:
+#   Profile D overall F1 = 0.4952, now the frozen best baseline.
+#   A+AWARD overall F1 = 0.4910, historical superseded baseline.
+#   C2 overall F1 = 0.4012, retired negative probe.
 #
-# Why that reuse is legitimate: for one query the pipeline runs consensus (M16),
-# then the V3 control loop (M20/M21 and action execution), and only then
-# `selection.finalize` (M8). The pre-M8 hypothesis graph Module 21 reads is built
-# by `pipeline._v3_hypothesis_graph` with `prediction=None`, so nothing a
-# finalizer decides can reach action eligibility, action execution, action cost,
-# state transitions, hypothesis construction, M21 input state or M20 budget
-# behaviour. The only hypothesis graph that sees a prediction is the post-hoc
-# observation graph, which is telemetry.
-#
-# Offline TRAIN replay of these five features over the persisted 477-row run:
-#   macro-F1 0.40333 -> 0.42000 (+0.01667); micro-F1 0.51799 -> 0.53079
-#   27 rows improved, 7 harmed, 443 unchanged
-#   countryLandBordersCountry: 0 rows changed, macro-F1 0.964369 unchanged
-#
-# Readiness must fail if any enabled feature is not classified
-# SAFE_WITH_EXISTING_CALIBRATION in cover_kbc.v3_1.compatibility.
+# This config intentionally starts from Profile D and changes one conceptual
+# variable only: run a two-stage Mistral-native City rescue for final-empty
+# personHasCityOfDeath rows. No non-City relation may be changed.
 
 experiment:
-  name: cover_kbc_v3_2_profile_c2_aggressive_nonstock_test
+  name: cover_kbc_v3_4_profile_e1_mistral_city_rescue_test
   split: test
   seed: 42
   notes: >-
-    RETIRED / NEGATIVE HIDDEN TEST PROBE. V3.2 Profile C2 AGGRESSIVE NONSTOCK
-    scored overall F1 0.4012 after 1075 post-calls and 246/475 changed rows.
-    It is not an active baseline and must not be inherited by future profiles.
-    The config remains only for historical reproducibility.
-  retired:
-    status: RETIRED_NEGATIVE_HIDDEN_TEST_PROBE
-    hidden_test_overall_f1: 0.4012
-    changed_rows: 246
-    post_calls: 1075
-    reason: >-
-      Aggressive non-Stock repair harmed hidden TEST; later active experiments
-      must derive from the Profile D frozen baseline instead of C2.
+    V3.4 Profile E1 MISTRAL_CITY_EMPTY_RESCUE. Base is the frozen Profile D
+    hidden-TEST-winning baseline (overall F1 0.4952). The only experiment is a
+    conservative two-stage Mistral rescue for currently-empty
+    personHasCityOfDeath rows. Profile D non-empty City rows and every non-City
+    relation must remain on the exact Profile D path.
+  baseline_profile:
+    name: cover_kbc_v3_3_profile_d_mistral_only_role_swap_test
+    status: FROZEN_BEST_BASELINE
+    hidden_test_overall_f1: 0.4952
+    source_commit: 170c48756660a34d611b3a563ac26cd4564434ef
+    prediction_sha256: 7a01382de3e95530ecdfabd7cee049712ce7e326f7d4d299e28c5b5ba981320c
+    standalone_submission_name: SUBMIT_PROFILE_D_MISTRAL_ONLY_170c48756660_20260812T104512Z.jsonl
+    full_run_name: profile_d_mistral_only_role_swap_170c48756660_20260812T104512Z
+    predecessor_profile: A_PLUS_AWARD
+    predecessor_hidden_test_overall_f1: 0.4910
+    delta_vs_predecessor: 0.0042
+    qwen_runtime_calls: 0
+    unique_neural_parameters: 24011361280
+    calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
+  profile_e1_probe:
+    status: UNMEASURED_LEADERBOARD_PROBE
+    causal_question: >-
+      What happens if frozen Profile D is augmented with a conservative
+      Mistral-native two-stage factual rescue only for currently-empty
+      personHasCityOfDeath rows?
+    standalone_observations_are_runtime_knowledge: false
+    no_subject_answer_lookup: true
+    no_profile_e_or_other_feature: true
+  baseline_hidden_test_scores:
+    awardWonBy:
+      precision: 0.3255
+      recall: 0.3707
+      f1: 0.3105
+    companyTradesAtStockExchange:
+      precision: 0.9092
+      recall: 0.7863
+      f1: 0.7285
+    countryLandBordersCountry:
+      precision: 0.9712
+      recall: 0.9295
+      f1: 0.9291
+    hasArea:
+      precision: 0.5100
+      recall: 0.3600
+      f1: 0.3600
+    hasCapacity:
+      precision: 0.3776
+      recall: 0.1224
+      f1: 0.1224
+    personHasCityOfDeath:
+      precision: 0.9900
+      recall: 0.4900
+      f1: 0.4900
+    all_relations:
+      precision: 0.7289
+      recall: 0.5087
+      f1: 0.4952
+    zero_object_reference:
+      precision: 0.4757
+      recall: 0.9608
+      f1: 0.6364
+  baseline_execution_accounting:
+    total_queries: 475
+    successful_queries: 475
+    failed_queries: 0
+    pipeline_error_rows: 0
+    unresolved_invariant_errors: 0
+  baseline_repair_accounting:
+    changed_rows: 1
+    total_repair_calls: 0
+    only_changed_feature: AwardMetadataNormalizer
+  baseline_call_accounting:
+    total_call_records: 2560
+    mistral_call_records_with_model_id: 1380
+    qwen_call_records_with_model_id: 0
+    generation_calls: 1180
+    decision_calls: 1180
+    gate_calls: 200
+    records_without_model_id: 1180
+  baseline_output_shape:
+    awardWonBy:
+      rows: 10
+      empty: 0
+      objects: 513
+      max: 102
+    companyTradesAtStockExchange:
+      rows: 100
+      empty: 57
+      objects: 93
+      max: 29
+    countryLandBordersCountry:
+      rows: 67
+      empty: 11
+      objects: 260
+      max: 14
+    hasArea:
+      rows: 100
+      empty: 15
+      objects: 85
+      max: 1
+    hasCapacity:
+      rows: 98
+      empty: 25
+      objects: 73
+      max: 1
+    personHasCityOfDeath:
+      rows: 100
+      empty: 98
+      objects: 2
+      max: 1
 
 leaderboard_probe:
   enabled: true
   status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: aggressive non-Stock repair on top of frozen Profile A Stock base
+  purpose: Profile E1 conservative Mistral two-stage City rescue on Profile D baseline
+  role_swap: MISTRAL_ONLY_VERIFIER
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
+    - "V3 model profile: verifier model_id role-swapped to Mistral24"
+    - "V3 model profile: verifier revision role-swapped to Mistral24"
+    - "V3 model budget: unique Mistral24 parameter total"
 
 calibration_provenance:
   collection_repo_sha: ae33b2ee4e3f437dab74cc95034958773e3cb675
@@ -61,6 +150,9 @@ test_dataset:
   blind: true
 
 model_profile:
+  # Deliberately one physical model block. The canonical resolver returns this
+  # block for both logical roles when no separate verifier block is declared, so
+  # run_cover.py reuses one Mistral runtime and does not load a second copy.
   enumerator:
     backend: huggingface
     model_id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
@@ -77,27 +169,15 @@ model_profile:
     quantization: nf4
     torch_dtype: bfloat16
     device_map: auto
-  verifier:
-    backend: huggingface
-    model_id: "Qwen/Qwen3.5-4B"
-    revision: "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
-    family: qwen
-    role: verifier
-    license: apache-2.0
-    published_checkpoint_parameters: 4659865088
-    budget_count_parameters: 4659865088
-    published_total_parameters: 4659865088
-    parameter_source: "https://huggingface.co/api/models/Qwen/Qwen3.5-4B (safetensors.total)"
-    parameter_source_verified: true
-    tokenizer_backend: huggingface
-    quantization: nf4
-    torch_dtype: bfloat16
-    device_map: auto
 
 budget_assertion:
-  total_published_parameters: 28671226368
+  total_published_parameters: 24011361280
   limit: 32000000000
   legal: true
+  unique_model_portfolio:
+    - model_id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+      revision: "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"
+      budget_count_parameters: 24011361280
 
 pipeline:
   mode: interleaved
@@ -140,23 +220,10 @@ pipeline:
     v3_1:
       enabled: true
       safe:
-        # FINAL_CANDIDATE_RETENTION. Numeric cluster order breaks size ties on the
-        # smallest representative, which ignores acceptance, so a query whose only
-        # ACCEPTED candidate was the larger singleton emitted nothing at all. 55
-        # TRAIN rows had a non-empty CONTROL_SURVIVED stage and an empty output.
         final_candidate_retention: true
-        # Repair leaked "<bucket label>: <payload>" enumeration lines and drop the
-        # ones whose payload is an abstention token. 76 awardWonBy values on TRAIN.
         enumeration_label_repair: true
-        # Stock only. Keep maximally supported listings when supports differ; keep
-        # all on a tie, so multi-listed companies are not capped. Improves 12 TRAIN
-        # rows and harms 7, for a net stock macro-F1 of +0.00700.
-        # OFF for the clean V3.2 stock prompt probe: Profile A is SAFE_CORE
-        # plus stock_listing_entity_prompt, not SAFE_FULL plus the prompt.
         stock_support_dominance: false
-        # Guardrail. 0 TRAIN rows affected; ticker rejection deliberately absent.
         stock_structural_validation: true
-        # Guardrail. 0 TRAIN rows affected. Converts only on an explicit unit.
         numeric_output_canonicalization: true
       aggressive:
         capacity_definition_prompt: false
@@ -167,36 +234,34 @@ pipeline:
 
 leaderboard_repair:
   enabled: true
-  repair_version: v3.2-l7-l9-hotfix-c2-nonstock
-  profile: C2_AGGRESSIVE_NONSTOCK
+  repair_version: v3.4-profile-e1-mistral-city-empty-rescue
+  profile: E1_MISTRAL_CITY_RESCUE
   features:
     stock_entity_guard: false
     stock_alias_dedupe: false
     stock_multi_listing_rescue: false
-    border_alias_dedupe: true
-    border_reciprocity: true
-    border_directional_sweep: true
-    death_existence_gate: true
-    death_city_recall: true
-    area_empty_rescue: true
-    capacity_repair: true
+    border_alias_dedupe: false
+    border_reciprocity: false
+    border_directional_sweep: false
+    death_existence_gate: false
+    death_city_recall: false
+    mistral_city_empty_rescue: true
+    area_empty_rescue: false
+    capacity_repair: false
     award_metadata_cleanup: true
-    award_recipient_witness: true
-    award_time_sliced_recall: true
-    l8_consistency: true
-    # Hidden TEST showed the Stock repair path reduced Stock F1. Keep generic
-    # consistency for non-Stock relations, but never let L8 mutate Stock.
+    award_recipient_witness: false
+    award_time_sliced_recall: false
+    l8_consistency: false
     l8_stock_consistency: false
-    l9_final_risk_guard: true
-    # Preserve Profile-A Stock semantics while retaining useful non-Stock L9.
+    l9_final_risk_guard: false
     l9_stock_guard: false
   max_calls_by_relation:
-    countryLandBordersCountry: 3
+    countryLandBordersCountry: 0
     companyTradesAtStockExchange: 0
-    hasArea: 3
-    hasCapacity: 3
-    personHasCityOfDeath: 5
-    awardWonBy: 8
+    hasArea: 0
+    hasCapacity: 0
+    personHasCityOfDeath: 2
+    awardWonBy: 1
 
 query_intelligence:
   profiler:

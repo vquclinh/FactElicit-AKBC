@@ -22,40 +22,38 @@ The full design is in [`COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`](COVER_KBC_V2_ARCHIT
 
 ## Status
 
-**Milestone 2 complete** — the full architecture is implemented through the
-control layer: relation contracts, typed programs, diverse elicitation with
-relation-specific facets, the candidate-facet evidence graph, a logit-calibrated
-blind verifier with contextual calibration and prompt-distribution disagreement,
-candidate scoring, cross-model evidence, RCSE, the active controller, adaptive
-stopping, and relation-specific final selection.
+**Current frozen leaderboard baseline:** Profile D, the Mistral-only verifier
+role-swap probe, promoted after hidden TEST scoring at overall F1 `0.4952`.
+It is the previous A+Award baseline plus only one causal change: the verifier
+role uses the same Mistral-Small-3.2-24B checkpoint as the enumerator. Profile E
+and later repair ideas are not implemented in this baseline.
 
-**No neural result exists yet.** Heavyweight inference runs on Google Colab, not
-on the development machine; every metric currently in the repository comes from
-a non-neural plumbing check and is labelled as such. See
+Heavyweight inference runs on Google Colab, not on the development machine.
+The local repository validates configuration, contracts, readiness gates,
+artifact provenance, and non-neural tests. See
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) and
-[`docs/audits/`](docs/audits/).
+[`docs/audits/`](docs/audits/), especially Audit 0086.
 
 ## Target architecture
 
 | role | model | published params |
 |---|---|---|
 | enumerator | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | 24,011,361,280 |
-| verifier | `Qwen/Qwen3.5-4B` | 4,659,865,088 |
-| **total** | | **28,671,226,368** (28.67B ≤ 32B) |
+| verifier | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | counted once |
+| **total unique neural parameters** | | **24,011,361,280** (24.01B ≤ 32B) |
 
-Execution is staged, so a GPU need not hold both models at once:
-`enumerate` (Mistral) → persist → `verify` (Qwen) → persist → `decide` (no
-model). The counted budget is unchanged by the split.
+Profile D declares one physical Mistral model block and reuses that runtime for
+both logical roles. Qwen is not active in the frozen leaderboard baseline.
 
 ## Quickstart
 
 ```bash
 pip install -e '.[dev]'          # add '.[hf]' for the neural backends
 
-python -m pytest -q              # 251 tests, no model required
+python -m pytest -q              # no model required
 
 # Check the 32B budget (downloads nothing, fails closed)
-python scripts/audit_model_budget.py configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml
+python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml
 
 # Non-neural plumbing runs (NOT system results)
 python scripts/run_cover.py  --config configs/experiments/smoke_abstain.yaml
@@ -70,9 +68,7 @@ python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
 drives the same three phases:
 
 ```bash
-python scripts/run_staged.py enumerate --config C --split val   # enumerator only
-python scripts/run_staged.py verify    --config C --run-dir D   # verifier only
-python scripts/run_staged.py decide    --config C --run-dir D   # no model at all
+python scripts/run_cover.py --config configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml --no-eval
 ```
 
 Each run writes `outputs/<run_id>/` containing `predictions.jsonl`,

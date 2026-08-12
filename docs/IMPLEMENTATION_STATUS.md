@@ -1,11 +1,9 @@
 # Implementation status — COVER-KBC v2
 
-Current through **Milestone 2** (architecture build-out). Scope follows
-`COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`, with the official task definition and
-evaluator treated as the source of truth wherever the two could be read
-differently.
-
-Audits: [`docs/audits/`](audits/) — `0001` (foundation), `0002` (architecture).
+Current frozen leaderboard baseline: **Profile D — Mistral-only verifier role
+swap**, promoted after hidden TEST scoring at overall F1 `0.4952`. Scope still
+follows `COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`, with later V3/M20/M21 and
+leaderboard-probe audits recorded under [`docs/audits/`](audits/).
 
 ---
 
@@ -26,28 +24,36 @@ The local machine (RTX 4060 Laptop, 8 GB VRAM, 14 GB RAM) is an implementation
 environment. Everything below is testable without loading a heavyweight model,
 using `ScriptedRuntime` and synthetic logits.
 
-## 2. Frozen target architecture
+## 2. Frozen leaderboard architecture
 
 | role | model | published params |
 |---|---|---|
 | enumerator | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | 24,011,361,280 |
-| verifier | `Qwen/Qwen3.5-4B` | 4,659,865,088 |
-| **total** | | **28,671,226,368** (28.67B ≤ 32B) |
+| verifier | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | counted once |
+| **total unique neural parameters** | | **24,011,361,280** (24.01B ≤ 32B) |
 
-Roles are architecture, not interchangeable backends. Config:
-[`configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml`](../configs/experiments/cover_kbc_v2_mistral24_qwen4.yaml).
+Config:
+[`configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml`](../configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml).
+Profile D starts from historical A+Award and changes only the verifier model
+identity from Qwen3.5-4B to the exact same Mistral24 checkpoint used by the
+enumerator. No Profile E, C2, direct City QA, numeric resolver, new prompt, new
+threshold, or new repair architecture is part of the frozen baseline.
 
 ```
 Subject + Relation
    -> Relation Compiler -> Typed Program Router
    -> Mistral 24B elicitation (direct | structural | facets | contrastive | missingness)
    -> Candidate normalizer -> Candidate-Facet Evidence Graph
-   -> Qwen 4.66B blind verifier (VALID/INVALID/UNKNOWN, calibrated label logits)
-      + Qwen independent alternate recall (cross-model evidence)
+   -> Mistral 24B blind verifier (VALID/INVALID/UNKNOWN, same base contract)
+      + Mistral verifier-role alternate recall where the base contract already uses it
    -> Evidence / uncertainty state -> RCSE residual coverage
    -> Active controller  --CONTINUE-> loop   --STOP-> Final selector
    -> ObjectEntities
 ```
+
+The older Mistral+Qwen production/readiness calibration remains historical
+calibration provenance. Profile D is an intentional leaderboard-probe baseline;
+no new TRAIN calibration was invented for the verifier role swap.
 
 ## 3. Module status
 
@@ -148,10 +154,32 @@ of generations without re-running any model.
 
 ## 7. Status of results
 
-**No neural evaluation result exists.** No metric in this repository was
-produced by a heavyweight model. The only executed runs are non-neural plumbing
-checks (abstain baseline; scripted staged smoke test), explicitly labelled as
-such and never reportable as system performance.
+Profile D is the active frozen leaderboard baseline:
+
+| relation | precision | recall | F1 |
+|---|---:|---:|---:|
+| awardWonBy | 0.3255 | 0.3707 | 0.3105 |
+| companyTradesAtStockExchange | 0.9092 | 0.7863 | 0.7285 |
+| countryLandBordersCountry | 0.9712 | 0.9295 | 0.9291 |
+| hasArea | 0.5100 | 0.3600 | 0.3600 |
+| hasCapacity | 0.3776 | 0.1224 | 0.1224 |
+| personHasCityOfDeath | 0.9900 | 0.4900 | 0.4900 |
+| **All Relations** | **0.7289** | **0.5087** | **0.4952** |
+
+Promotion provenance:
+
+- source commit: `170c48756660a34d611b3a563ac26cd4564434ef`
+- submitted prediction SHA256:
+  `7a01382de3e95530ecdfabd7cee049712ce7e326f7d4d299e28c5b5ba981320c`
+- rows: 475
+- unique model portfolio:
+  `mistralai/Mistral-Small-3.2-24B-Instruct-2506`
+- Qwen runtime calls: 0
+- repair accounting: 1 changed row, 0 repair model calls, only
+  `AwardMetadataNormalizer`
+
+Historical A+Award remains preserved at overall F1 `0.4910`; C2 remains a
+retired negative hidden TEST probe at overall F1 `0.4012`.
 
 Official upstream baseline, for later comparison — read from the upstream README
 at the pinned commit, **not** reproduced by us:
@@ -168,21 +196,21 @@ at the pinned commit, **not** reproduced by us:
 
 ## 8. Open issues
 
-1. **No neural validation.** Every neural path is unexercised against real
-   weights. First Colab run is the next step.
-2. **The official `baseline.py` does not exist upstream.** The README references
+1. **Calibration caveat for Profile D.** The verifier role swap changes the
+   model identity relative to the older M20/M21 calibration provenance.
+   Profile D is accepted through the explicit leaderboard-probe path; no new
+   TRAIN calibration is claimed.
+2. **Profile E is not implemented.** Any future direct City QA or L10+ repair
+   experiment must diff cleanly against the Profile D frozen baseline.
+3. **The official `baseline.py` does not exist upstream.** The README references
    it, but commit `30d8cfa` contains no such file. "Baseline reproduction" can
    only be a *reconstruction* from the published config, prompt templates,
    `abstract_model.py` interface and results table.
-3. **Mistral/Qwen loading is untested on real weights.** The multi-auto-class
-   loader and the multi-token label fallback are implemented and unit-tested
-   with fakes, but no real checkpoint has been loaded.
-4. **Thresholds are hand-set, not calibrated.** They must be tuned on `train`
-   and frozen before `val` is scored.
+4. **Thresholds are frozen from existing provenance, not newly re-derived for
+   D.**
 5. **Upstream artifacts left as-is** (intentional): stale
    `seriesHasNumberOfEpisodes` prompt row, `SubjectEntityID` docstring.
 
 Deferred: DoLa intermediate-layer decoding (experimental plugin; the
 `hidden_states` seam exists), and learned policies (never — rules forbid).
-
 

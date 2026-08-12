@@ -38,6 +38,8 @@ from cover_kbc.leaderboard_repair.util import (
     stock_wrong_type_reason,
 )
 
+E1_CITY_RESCUE_FEATURE = "MistralCityEmptyRescue"
+
 
 def repair_stock(
     prediction: Prediction,
@@ -272,6 +274,9 @@ def repair_city(
     config: LeaderboardRepairConfig,
     record: RowRepairRecord,
 ) -> list[str]:
+    if config.features.mistral_city_empty_rescue:
+        return _repair_city_mistral_empty_rescue(prediction, caller, record)
+
     values = list(prediction.object_entities[:1])
     if values or not config.features.death_existence_gate:
         return values[:1]
@@ -372,6 +377,81 @@ def repair_city(
             return [chosen[0]]
     elif len(flat) > 1:
         record.skipped.append("DeathCityRecall contrast: budget exhausted")
+    return []
+
+
+def _repair_city_mistral_empty_rescue(
+    prediction: Prediction,
+    caller: RepairCaller,
+    record: RowRepairRecord,
+) -> list[str]:
+    values = list(prediction.object_entities)
+    if values:
+        record.add_decision(
+            E1_CITY_RESCUE_FEATURE,
+            "bypassed_profile_d_non_empty",
+            existing=list(values),
+        )
+        return values
+
+    record.add_decision(E1_CITY_RESCUE_FEATURE, "eligible_empty_row")
+    text = caller.generate(
+        role="verifier",
+        layer="E1",
+        feature=E1_CITY_RESCUE_FEATURE,
+        prompt=_e1_life_status_prompt(prediction.subject),
+        view_id="e1_city_life_status",
+        max_new_tokens=8,
+    )
+    if text is None:
+        record.skipped.append("MistralCityEmptyRescue: budget exhausted before life status")
+        return []
+    life_label = _parse_e1_life_status(text)
+    record.add_decision(
+        E1_CITY_RESCUE_FEATURE,
+        "life_status_output",
+        label=life_label,
+        raw=text,
+    )
+    if life_label != "DECEASED":
+        record.add_decision(
+            E1_CITY_RESCUE_FEATURE,
+            "kept_empty_after_life_status",
+            label=life_label,
+        )
+        return []
+
+    text = caller.generate(
+        role="verifier",
+        layer="E1",
+        feature=E1_CITY_RESCUE_FEATURE,
+        prompt=_e1_city_prompt(prediction.subject),
+        view_id="e1_city_of_death_recall",
+        max_new_tokens=20,
+    )
+    if text is None:
+        record.skipped.append("MistralCityEmptyRescue: budget exhausted before city recall")
+        return []
+    city_label, city = _parse_e1_city_output(text)
+    record.add_decision(
+        E1_CITY_RESCUE_FEATURE,
+        "city_output",
+        label=city_label,
+        city=city or "",
+        raw=text,
+    )
+    if city_label == "CITY" and city:
+        record.add_decision(
+            E1_CITY_RESCUE_FEATURE,
+            "accepted_city",
+            city=city,
+        )
+        return [city]
+    record.add_decision(
+        E1_CITY_RESCUE_FEATURE,
+        "kept_empty_after_city_recall",
+        label=city_label,
+    )
     return []
 
 
@@ -688,6 +768,69 @@ def _death_city_contrast_prompt(subject: str, candidates: Sequence[str]) -> str:
         f"Candidates: {'; '.join(candidates)}\n"
         "Return VALID: one city, or UNKNOWN."
     )
+
+
+def _e1_life_status_prompt(subject: str) -> str:
+    return (
+        f"Subject: {subject}\n\n"
+        "Question:\n"
+        "Is this exact person deceased?\n\n"
+        "Return exactly one of:\n"
+        "DECEASED\n"
+        "LIVING\n"
+        "UNKNOWN\n\n"
+        "Use UNKNOWN if you are not sufficiently confident.\n\n"
+        "Do not explain your answer."
+    )
+
+
+def _e1_city_prompt(subject: str) -> str:
+    return (
+        f"Subject: {subject}\n\n"
+        "Relation: personHasCityOfDeath\n\n"
+        "The person has already been classified as DECEASED.\n\n"
+        "Question:\n"
+        "In which city did this exact person die?\n\n"
+        "Return exactly one of:\n\n"
+        "CITY: <city name>\n\n"
+        "or:\n\n"
+        "UNKNOWN\n\n"
+        "The answer must be the city/locality of death.\n\n"
+        "Do not return:\n"
+        "- hospital or institution name\n"
+        "- country\n"
+        "- state or province\n"
+        "- birthplace\n"
+        "- main residence\n"
+        "- burial place\n\n"
+        "If you cannot confidently identify the city of death, return UNKNOWN.\n\n"
+        "Do not explain your answer."
+    )
+
+
+def _parse_e1_life_status(text: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return "INVALID"
+    label = lines[0].upper()
+    if label in {"DECEASED", "LIVING", "UNKNOWN"}:
+        return label
+    return "INVALID"
+
+
+def _parse_e1_city_output(text: str) -> tuple[str, str | None]:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return "INVALID", None
+    line = lines[0]
+    if line.upper() == "UNKNOWN":
+        return "UNKNOWN", None
+    if not line.startswith("CITY:"):
+        return "INVALID", None
+    city = line[len("CITY:"):].strip()
+    if not city or any(separator in city for separator in (";", "|")):
+        return "INVALID", None
+    return "CITY", city
 
 
 def _area_entity_type(subject: str) -> str:

@@ -488,6 +488,7 @@ def test_profile_readiness_is_calibration_review_not_full_test_ready():
         "cover_kbc_v3_2_profile_a_plus_award_test.yaml",
         "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml",
         "cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml",
+        "cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml",
     ):
         config = yaml.safe_load((CONFIG_DIR / name).read_text(encoding="utf-8"))
         report = evaluate_test_readiness(config, base_dir=CONFIG_DIR, split="test")
@@ -512,6 +513,7 @@ def test_run_cover_leaderboard_probe_gate_allows_only_explicit_profiles():
         "cover_kbc_v3_2_profile_a_plus_award_test.yaml",
         "cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml",
         "cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml",
+        "cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml",
     ):
         profile = yaml.safe_load((CONFIG_DIR / name).read_text())
         readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")

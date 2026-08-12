@@ -27,14 +27,19 @@ experiment:
   split: test
   seed: 42
   notes: >-
-    V3.2 Profile A_PLUS_AWARD. Hidden TEST leaderboard evidence promoted this
-    profile to the frozen best baseline (overall F1 0.4910). It is exactly
-    Profile A plus AwardMetadataNormalizer only. Non-award relations,
-    especially Stock, must follow the Profile-A prediction path.
+    V3.2 Profile A_PLUS_AWARD. Hidden TEST leaderboard evidence originally
+    promoted this profile to the frozen best baseline (overall F1 0.4910), then
+    Profile D superseded it with overall F1 0.4952. It remains a historical
+    baseline and is exactly Profile A plus AwardMetadataNormalizer only.
+    Non-award relations, especially Stock, must follow the Profile-A prediction
+    path.
   frozen_baseline:
-    status: FROZEN_BEST_BASELINE
+    status: HISTORICAL_BASELINE_SUPERSEDED_BY_PROFILE_D
     hidden_test_overall_f1: 0.4910
     prediction_sha256: bf113ce4fb87f5ac7a54c5d78dbf14e691b07a562f78c9b9ee61ec5763982a88
+    superseded_by: cover_kbc_v3_3_profile_d_mistral_only_role_swap_test
+    superseded_by_hidden_test_overall_f1: 0.4952
+    superseded_by_prediction_sha256: 7a01382de3e95530ecdfabd7cee049712ce7e326f7d4d299e28c5b5ba981320c
 
 leaderboard_probe:
   enabled: true

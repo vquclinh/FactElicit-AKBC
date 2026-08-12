@@ -1,7 +1,8 @@
 # COVER-KBC V3.3 Profile D - Mistral-only verifier role swap.
 #
-# Hidden TEST source of truth before this probe:
-#   A+AWARD overall F1 = 0.4910, now the frozen best baseline.
+# Hidden TEST source of truth after this probe:
+#   Profile D overall F1 = 0.4952, now the frozen best baseline.
+#   A+AWARD overall F1 = 0.4910, historical superseded baseline.
 #   C2 overall F1 = 0.4012, retired negative probe.
 #
 # This config intentionally starts from A+AWARD and changes one conceptual
@@ -13,11 +14,105 @@ experiment:
   split: test
   seed: 42
   notes: >-
-    V3.3 Profile D MISTRAL_ONLY_ROLE_SWAP. Base is the frozen A_PLUS_AWARD
-    leaderboard baseline (overall F1 0.4910). The only semantic experiment is
-    replacing the Qwen verifier role with the exact same Mistral24 checkpoint
-    used by the enumerator. C2 is retired and no aggressive C2 repair feature is
-    inherited.
+    V3.3 Profile D MISTRAL_ONLY_ROLE_SWAP. Hidden TEST promoted this profile to
+    the frozen best baseline (overall F1 0.4952). It is A_PLUS_AWARD plus only
+    the Qwen verifier to Mistral24 verifier role swap. C2 is retired and no
+    aggressive C2 repair feature is inherited.
+  frozen_baseline:
+    status: FROZEN_BEST_BASELINE
+    hidden_test_overall_f1: 0.4952
+    source_commit: 170c48756660a34d611b3a563ac26cd4564434ef
+    prediction_sha256: 7a01382de3e95530ecdfabd7cee049712ce7e326f7d4d299e28c5b5ba981320c
+    standalone_submission_name: SUBMIT_PROFILE_D_MISTRAL_ONLY_170c48756660_20260812T104512Z.jsonl
+    full_run_name: profile_d_mistral_only_role_swap_170c48756660_20260812T104512Z
+    predecessor_profile: A_PLUS_AWARD
+    predecessor_hidden_test_overall_f1: 0.4910
+    delta_vs_predecessor: 0.0042
+    qwen_runtime_calls: 0
+    unique_neural_parameters: 24011361280
+    calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
+  hidden_test_scores:
+    awardWonBy:
+      precision: 0.3255
+      recall: 0.3707
+      f1: 0.3105
+    companyTradesAtStockExchange:
+      precision: 0.9092
+      recall: 0.7863
+      f1: 0.7285
+    countryLandBordersCountry:
+      precision: 0.9712
+      recall: 0.9295
+      f1: 0.9291
+    hasArea:
+      precision: 0.5100
+      recall: 0.3600
+      f1: 0.3600
+    hasCapacity:
+      precision: 0.3776
+      recall: 0.1224
+      f1: 0.1224
+    personHasCityOfDeath:
+      precision: 0.9900
+      recall: 0.4900
+      f1: 0.4900
+    all_relations:
+      precision: 0.7289
+      recall: 0.5087
+      f1: 0.4952
+    zero_object_reference:
+      precision: 0.4757
+      recall: 0.9608
+      f1: 0.6364
+  execution_accounting:
+    total_queries: 475
+    successful_queries: 475
+    failed_queries: 0
+    pipeline_error_rows: 0
+    unresolved_invariant_errors: 0
+  repair_accounting:
+    changed_rows: 1
+    total_repair_calls: 0
+    only_changed_feature: AwardMetadataNormalizer
+  call_accounting:
+    total_call_records: 2560
+    mistral_call_records_with_model_id: 1380
+    qwen_call_records_with_model_id: 0
+    generation_calls: 1180
+    decision_calls: 1180
+    gate_calls: 200
+    records_without_model_id: 1180
+  output_shape:
+    awardWonBy:
+      rows: 10
+      empty: 0
+      objects: 513
+      max: 102
+    companyTradesAtStockExchange:
+      rows: 100
+      empty: 57
+      objects: 93
+      max: 29
+    countryLandBordersCountry:
+      rows: 67
+      empty: 11
+      objects: 260
+      max: 14
+    hasArea:
+      rows: 100
+      empty: 15
+      objects: 85
+      max: 1
+    hasCapacity:
+      rows: 98
+      empty: 25
+      objects: 73
+      max: 1
+    personHasCityOfDeath:
+      rows: 100
+      empty: 98
+      objects: 2
+      max: 1
 
 leaderboard_probe:
   enabled: true

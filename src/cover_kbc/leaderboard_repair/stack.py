@@ -18,7 +18,7 @@ from cover_kbc.leaderboard_repair.relations import REPAIR_BY_RELATION
 from cover_kbc.leaderboard_repair.risk_guard import apply_l9_guard
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
 from cover_kbc.leaderboard_repair.types import RepairResult, RowBudget, RowRepairRecord
-from cover_kbc.leaderboard_repair.util import candidate_signals
+from cover_kbc.leaderboard_repair.util import CITY, candidate_signals
 
 
 class LeaderboardRepairStack:
@@ -139,6 +139,13 @@ class LeaderboardRepairStack:
                 "max_repair_calls": max(calls) if calls else 0,
                 "features": dict(sorted(feature_counts.items())),
             }
+            if (
+                relation == CITY
+                and self.config.features.mistral_city_empty_rescue
+            ):
+                by_relation[relation]["e1_city_rescue"] = (
+                    _e1_city_rescue_accounting(relation_records)
+                )
 
         total_calls = sum(record.calls_used for record in records)
         changed_rows = sum(1 for record in records if record.changed)
@@ -193,3 +200,57 @@ def _assert_query_coverage(predictions: Sequence[Prediction], queries: Sequence[
     actual = [(p.subject, p.relation) for p in predictions]
     if expected != actual:
         raise RuntimeError("leaderboard repair changed row coverage or order")
+
+
+def _e1_city_rescue_accounting(
+    records: Sequence[RowRepairRecord],
+) -> dict[str, int]:
+    summary = {
+        "eligible_empty_rows": 0,
+        "bypassed_non_empty_rows": 0,
+        "life_status_calls": 0,
+        "deceased_count": 0,
+        "living_count": 0,
+        "unknown_count": 0,
+        "invalid_life_outputs": 0,
+        "city_calls": 0,
+        "city_accepted_count": 0,
+        "city_unknown_count": 0,
+        "invalid_city_outputs": 0,
+        "changed_rows": 0,
+    }
+    for record in records:
+        e1_decisions = [
+            decision for decision in record.decisions
+            if decision.get("feature") == "MistralCityEmptyRescue"
+        ]
+        if not e1_decisions:
+            continue
+        if record.changed:
+            summary["changed_rows"] += 1
+        for decision in e1_decisions:
+            kind = str(decision.get("decision", ""))
+            label = str(decision.get("label", ""))
+            if kind == "eligible_empty_row":
+                summary["eligible_empty_rows"] += 1
+            elif kind == "bypassed_profile_d_non_empty":
+                summary["bypassed_non_empty_rows"] += 1
+            elif kind == "life_status_output":
+                summary["life_status_calls"] += 1
+                if label == "DECEASED":
+                    summary["deceased_count"] += 1
+                elif label == "LIVING":
+                    summary["living_count"] += 1
+                elif label == "UNKNOWN":
+                    summary["unknown_count"] += 1
+                else:
+                    summary["invalid_life_outputs"] += 1
+            elif kind == "city_output":
+                summary["city_calls"] += 1
+                if label == "CITY":
+                    summary["city_accepted_count"] += 1
+                elif label == "UNKNOWN":
+                    summary["city_unknown_count"] += 1
+                else:
+                    summary["invalid_city_outputs"] += 1
+    return summary

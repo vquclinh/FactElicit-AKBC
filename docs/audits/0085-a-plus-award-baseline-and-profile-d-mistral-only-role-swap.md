@@ -1,5 +1,10 @@
 # Audit 0085 - A+Award baseline and Profile D Mistral-only role swap
 
+Supersession note, 2026-08-12: Audit 0086 records the later hidden TEST result
+that promoted Profile D to the frozen best baseline at overall F1 `0.4952`.
+This audit remains the historical CPU/static preparation record from before
+that leaderboard result was known.
+
 ## 1. Scope
 
 This audit records a CPU/static implementation pass only.  No TRAIN, VAL, or
@@ -20,10 +25,10 @@ User-provided hidden TEST evidence:
 Source commit at implementation time:
 `e9d2f42505dd2ee98f3e7ab7ad846340d607169a`.
 
-## 3. Why A+Award is promoted
+## 3. Why A+Award was promoted at that time
 
-Profile A+Award is now the frozen best baseline because it is the only measured
-profile above Profile A.  Its intended behavior is:
+At the time of Audit 0085, Profile A+Award was the frozen best baseline because
+it was the only measured profile above Profile A. Its intended behavior was:
 
 - Profile-A base pipeline.
 - `stock_listing_entity_prompt = true`.

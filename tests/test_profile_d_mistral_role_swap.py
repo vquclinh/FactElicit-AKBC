@@ -38,6 +38,9 @@ MISTRAL_PARAMETERS = 24_011_361_280
 DUAL_PARAMETERS = 28_671_226_368
 PARAMETER_LIMIT = 32_000_000_000
 TEST_SHA256 = "67c31c8388c585634df55500612f522ad42da6735d4c89eb59a9ef5a39f043f1"
+A_PLUS_PREDICTION_SHA256 = "bf113ce4fb87f5ac7a54c5d78dbf14e691b07a562f78c9b9ee61ec5763982a88"
+PROFILE_D_SOURCE_COMMIT = "170c48756660a34d611b3a563ac26cd4564434ef"
+PROFILE_D_PREDICTION_SHA256 = "7a01382de3e95530ecdfabd7cee049712ce7e326f7d4d299e28c5b5ba981320c"
 
 
 def _load(path: Path) -> dict:
@@ -93,15 +96,15 @@ def _semantic_diff(a_plus: dict, profile_d: dict) -> dict:
     }
 
 
-def test_a_plus_award_is_marked_as_frozen_baseline_and_unchanged():
+def test_a_plus_award_is_historical_and_unchanged():
     config = _load(A_PLUS_PATH)
     frozen = config["experiment"]["frozen_baseline"]
-    assert frozen["status"] == "FROZEN_BEST_BASELINE"
+    assert frozen["status"] == "HISTORICAL_BASELINE_SUPERSEDED_BY_PROFILE_D"
     assert frozen["hidden_test_overall_f1"] == 0.4910
-    assert (
-        frozen["prediction_sha256"]
-        == "bf113ce4fb87f5ac7a54c5d78dbf14e691b07a562f78c9b9ee61ec5763982a88"
-    )
+    assert frozen["prediction_sha256"] == A_PLUS_PREDICTION_SHA256
+    assert frozen["superseded_by"] == "cover_kbc_v3_3_profile_d_mistral_only_role_swap_test"
+    assert frozen["superseded_by_hidden_test_overall_f1"] == 0.4952
+    assert frozen["superseded_by_prediction_sha256"] == PROFILE_D_PREDICTION_SHA256
     v31 = config["pipeline"]["selection"]["v3_1"]
     assert v31["aggressive"]["stock_listing_entity_prompt"] is True
     assert v31["safe"]["stock_support_dominance"] is False
@@ -130,6 +133,49 @@ def test_a_plus_award_is_marked_as_frozen_baseline_and_unchanged():
     )
 
 
+def test_profile_d_is_marked_as_frozen_best_baseline_with_hidden_test_metadata():
+    config = _load(D_PATH)
+    frozen = config["experiment"]["frozen_baseline"]
+    assert frozen == {
+        "status": "FROZEN_BEST_BASELINE",
+        "hidden_test_overall_f1": 0.4952,
+        "source_commit": PROFILE_D_SOURCE_COMMIT,
+        "prediction_sha256": PROFILE_D_PREDICTION_SHA256,
+        "standalone_submission_name":
+            "SUBMIT_PROFILE_D_MISTRAL_ONLY_170c48756660_20260812T104512Z.jsonl",
+        "full_run_name": "profile_d_mistral_only_role_swap_170c48756660_20260812T104512Z",
+        "predecessor_profile": "A_PLUS_AWARD",
+        "predecessor_hidden_test_overall_f1": 0.4910,
+        "delta_vs_predecessor": 0.0042,
+        "qwen_runtime_calls": 0,
+        "unique_neural_parameters": MISTRAL_PARAMETERS,
+        "calibration_status": "CALIBRATION_REVIEW_LEADERBOARD_PROBE",
+    }
+    assert config["experiment"]["hidden_test_scores"]["all_relations"] == {
+        "precision": 0.7289,
+        "recall": 0.5087,
+        "f1": 0.4952,
+    }
+    assert config["experiment"]["hidden_test_scores"]["personHasCityOfDeath"] == {
+        "precision": 0.9900,
+        "recall": 0.4900,
+        "f1": 0.4900,
+    }
+    assert config["experiment"]["repair_accounting"] == {
+        "changed_rows": 1,
+        "total_repair_calls": 0,
+        "only_changed_feature": "AwardMetadataNormalizer",
+    }
+    assert config["experiment"]["call_accounting"]["qwen_call_records_with_model_id"] == 0
+    assert config["experiment"]["execution_accounting"] == {
+        "total_queries": 475,
+        "successful_queries": 475,
+        "failed_queries": 0,
+        "pipeline_error_rows": 0,
+        "unresolved_invariant_errors": 0,
+    }
+
+
 def test_profile_d_feature_flags_match_a_plus_award_and_exclude_c2():
     a_plus = _load(A_PLUS_PATH)
     profile_d = _load(D_PATH)
@@ -146,6 +192,8 @@ def test_profile_d_feature_flags_match_a_plus_award_and_exclude_c2():
             assert d_features[name] is True
         elif enabled:
             assert d_features[name] is False, name
+    assert "profile_e" not in json.dumps(profile_d, sort_keys=True).lower()
+    assert "direct_city" not in json.dumps(profile_d, sort_keys=True).lower()
 
 
 def test_profile_d_is_exact_mistral_only_model_portfolio_with_unique_budget():
