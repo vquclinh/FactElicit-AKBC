@@ -397,9 +397,12 @@ def test_profile_e3_diff_from_e2_is_area_only_and_model_portfolio_unchanged():
     assert [component.model_id for component in audit.counted_specs] == [MISTRAL_ID]
 
 
-def test_profile_e3_hidden_scores_are_user_provided_current_baseline_metadata():
+def test_profile_e3_hidden_scores_are_user_provided_previous_baseline_metadata():
     e3 = _load(E3_PATH)
-    assert e3["experiment"]["frozen_baseline"]["status"] == "FROZEN_CURRENT_BASELINE"
+    assert e3["experiment"]["frozen_baseline"]["status"] == "PREVIOUS_FROZEN_BASELINE"
+    assert e3["experiment"]["frozen_baseline"]["superseded_by"] == (
+        "cover_kbc_v3_8_profile_f1_stock_empty_rescue_test"
+    )
     assert e3["experiment"]["frozen_baseline"]["hidden_test_overall_f1"] == 0.5857
     assert e3["experiment"]["hidden_test_scores"][AREA]["f1"] == 0.6700
     assert e3["experiment"]["hidden_test_scores"][CAPACITY]["f1"] == 0.1633

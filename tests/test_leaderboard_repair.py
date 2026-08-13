@@ -169,7 +169,7 @@ def test_e1_city_rescue_mutates_only_empty_deceased_city_rows():
     }
 
 
-def test_profile_configs_make_e3_current_and_retired_profiles_archival():
+def test_profile_configs_make_f1_current_and_retired_profiles_archival():
     old_e1 = _load("cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml")
     previous_e1 = _load(
         "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml"
@@ -180,16 +180,31 @@ def test_profile_configs_make_e3_current_and_retired_profiles_archival():
     current_e3 = _load(
         "cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml"
     )
+    current_f1 = _load(
+        "cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml"
+    )
     d = _load("cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml")
     b = _load("cover_kbc_v3_2_profile_b_repair_core_test.yaml")
     c = _load("cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml")
     c2 = _load("cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml")
 
+    assert current_f1["experiment"]["name"] == (
+        "cover_kbc_v3_8_profile_f1_stock_empty_rescue_test"
+    )
+    assert current_f1["experiment"]["frozen_baseline"]["status"] == (
+        "FROZEN_CURRENT_BASELINE"
+    )
+    assert current_f1["experiment"]["hidden_test_scores"]["all_relations"]["f1"] == 0.5878
+    assert current_f1["experiment"]["hidden_test_scores"][STOCK]["f1"] == 0.7385
+
     assert current_e3["experiment"]["name"] == (
         "cover_kbc_v3_7_profile_e3_mistral_area_multiview_test"
     )
     assert current_e3["experiment"]["frozen_baseline"]["status"] == (
-        "FROZEN_CURRENT_BASELINE"
+        "PREVIOUS_FROZEN_BASELINE"
+    )
+    assert current_e3["experiment"]["frozen_baseline"]["superseded_by"] == (
+        "cover_kbc_v3_8_profile_f1_stock_empty_rescue_test"
     )
     assert current_e3["experiment"]["hidden_test_scores"]["all_relations"]["f1"] == 0.5857
     assert current_e3["experiment"]["hidden_test_scores"][AREA]["f1"] == 0.6700
@@ -302,6 +317,43 @@ def test_e3_active_flags_are_e2_plus_area_multiview_only():
     assert repair.max_calls_by_relation[BORDERS] == 0
 
 
+def test_f1_active_flags_are_e3_plus_stock_empty_rescue_only():
+    f1 = _load(
+        "cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml"
+    )
+    repair = LeaderboardRepairConfig.from_mapping(f1["leaderboard_repair"])
+    flags = asdict(repair.features)
+    assert flags["award_metadata_cleanup"] is True
+    assert flags["mistral_city_empty_rescue"] is True
+    assert flags["mistral_direct_area"] is True
+    assert flags["mistral_capacity_multiview"] is True
+    assert flags["mistral_area_multiview"] is True
+    assert flags["mistral_stock_empty_rescue"] is True
+    assert all(
+        value is False
+        for key, value in flags.items()
+        if key not in {
+            "award_metadata_cleanup",
+            "mistral_city_empty_rescue",
+            "mistral_direct_area",
+            "mistral_capacity_multiview",
+            "mistral_area_multiview",
+            "mistral_stock_empty_rescue",
+        }
+    )
+    assert repair.direct_area_mode == "DIRECT_ALL"
+    assert repair.area_multiview_mode == "DIRECT_ALL"
+    assert repair.capacity_multiview_mode == "DIRECT_ALL"
+    assert repair.stock_empty_rescue_mode == "EMPTY_ONLY_STRONG_CONSENSUS"
+    assert repair.stock_empty_rescue_min_support == 3
+    assert repair.max_calls_by_relation[AREA] == 5
+    assert repair.max_calls_by_relation[CAPACITY] == 5
+    assert repair.max_calls_by_relation[CITY] == 2
+    assert repair.max_calls_by_relation[AWARD] == 1
+    assert repair.max_calls_by_relation[STOCK] == 4
+    assert repair.max_calls_by_relation[BORDERS] == 0
+
+
 def test_profile_readiness_and_probe_gate_match_active_development_line():
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     spec = importlib.util.spec_from_file_location(
@@ -316,6 +368,7 @@ def test_profile_readiness_and_probe_gate_match_active_development_line():
         "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml",
         "cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml",
         "cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml",
+        "cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml",
     ):
         profile = _load(name)
         readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")

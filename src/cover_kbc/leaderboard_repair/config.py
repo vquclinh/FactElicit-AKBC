@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 DEFAULT_CAPS = {
     "countryLandBordersCountry": 3,
-    "companyTradesAtStockExchange": 2,
+    "companyTradesAtStockExchange": 4,
     "hasArea": 3,
     "hasCapacity": 3,
     "personHasCityOfDeath": 4,
@@ -27,6 +27,7 @@ class RepairFeatures:
     stock_entity_guard: bool = False
     stock_alias_dedupe: bool = False
     stock_multi_listing_rescue: bool = False
+    mistral_stock_empty_rescue: bool = False
     border_alias_dedupe: bool = False
     border_directional_sweep: bool = False
     border_reciprocity: bool = False
@@ -73,6 +74,8 @@ class LeaderboardRepairConfig:
     min_verifier_confidence: float = 0.55
     stock_rescue_min_confidence: float = 0.60
     numeric_cluster_tolerance: float = 0.05
+    stock_empty_rescue_mode: str = "OFF"
+    stock_empty_rescue_min_support: int = 3
     direct_area_mode: str = "OFF"
     area_multiview_mode: str = "OFF"
     capacity_multiview_mode: str = "OFF"
@@ -99,6 +102,10 @@ class LeaderboardRepairConfig:
                 block.get("stock_rescue_min_confidence", 0.60)
             ),
             numeric_cluster_tolerance=float(block.get("numeric_cluster_tolerance", 0.05)),
+            stock_empty_rescue_mode=str(block.get("stock_empty_rescue_mode", "OFF")),
+            stock_empty_rescue_min_support=int(
+                block.get("stock_empty_rescue_min_support", 3)
+            ),
             direct_area_mode=str(block.get("direct_area_mode", "OFF")),
             area_multiview_mode=str(block.get("area_multiview_mode", "OFF")),
             capacity_multiview_mode=str(block.get("capacity_multiview_mode", "OFF")),

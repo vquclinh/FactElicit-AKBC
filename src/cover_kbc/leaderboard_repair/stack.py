@@ -16,7 +16,7 @@ from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig, build_c
 from cover_kbc.leaderboard_repair.relations import REPAIR_BY_RELATION
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
 from cover_kbc.leaderboard_repair.types import RepairResult, RowBudget, RowRepairRecord
-from cover_kbc.leaderboard_repair.util import AREA, CAPACITY, CITY, candidate_signals
+from cover_kbc.leaderboard_repair.util import AREA, CAPACITY, CITY, STOCK, candidate_signals
 
 
 class LeaderboardRepairStack:
@@ -24,9 +24,9 @@ class LeaderboardRepairStack:
 
     The active baseline uses deterministic award metadata cleanup, E1's Mistral
     City empty-row rescue, Direct Area or E3 Area Multi-View for hasArea rows,
-    and E2 Capacity Multi-View for hasCapacity rows. Retired C2 mutation
-    behaviours remain in historical audits/config metadata, but are no longer
-    executable runtime branches.
+    E2 Capacity Multi-View for hasCapacity rows, and F1's Mistral stock
+    empty-row rescue. Retired C2 mutation behaviours remain in historical
+    audits/config metadata, but are no longer executable runtime branches.
     """
 
     def __init__(
@@ -123,6 +123,13 @@ class LeaderboardRepairStack:
                 "features": dict(sorted(feature_counts.items())),
             }
             if (
+                relation == STOCK
+                and self.config.features.mistral_stock_empty_rescue
+            ):
+                by_relation[relation]["stock_empty_rescue"] = (
+                    _stock_empty_rescue_accounting(relation_records)
+                )
+            if (
                 relation == CITY
                 and self.config.features.mistral_city_empty_rescue
             ):
@@ -205,6 +212,70 @@ def _assert_query_coverage(predictions: Sequence[Prediction], queries: Sequence[
     actual = [(p.subject, p.relation) for p in predictions]
     if expected != actual:
         raise RuntimeError("leaderboard repair changed row coverage or order")
+
+
+def _stock_empty_rescue_accounting(
+    records: Sequence[RowRepairRecord],
+) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "eligible_empty_rows": 0,
+        "bypassed_non_empty_rows": 0,
+        "stock_empty_rescue_s1_direct_listing_calls": 0,
+        "stock_empty_rescue_s2_primary_listing_calls": 0,
+        "stock_empty_rescue_s3_common_shares_calls": 0,
+        "stock_empty_rescue_s4_anti_prior_calls": 0,
+        "valid_count_by_view": {},
+        "unknown_count_by_view": {},
+        "invalid_count_by_view": {},
+        "accepted_count": 0,
+        "rejected_count": 0,
+        "error_count": 0,
+        "changed_rows": 0,
+    }
+    valid_by_view: Counter[str] = Counter()
+    unknown_by_view: Counter[str] = Counter()
+    invalid_by_view: Counter[str] = Counter()
+    for record in records:
+        decisions = [
+            decision for decision in record.decisions
+            if decision.get("feature") == "MistralStockEmptyRescue"
+        ]
+        if not decisions:
+            continue
+        if record.changed:
+            summary["changed_rows"] = int(summary["changed_rows"]) + 1
+        if any("MistralStockEmptyRescue" in item for item in record.skipped):
+            summary["error_count"] = int(summary["error_count"]) + 1
+        for decision in decisions:
+            kind = str(decision.get("decision", ""))
+            view_id = str(decision.get("view_id", ""))
+            status = str(decision.get("status", ""))
+            if kind == "eligible_empty_stock_row":
+                summary["eligible_empty_rows"] = int(summary["eligible_empty_rows"]) + 1
+            elif kind == "bypassed_non_empty_stock_row":
+                summary["bypassed_non_empty_rows"] = (
+                    int(summary["bypassed_non_empty_rows"]) + 1
+                )
+            elif kind == "view_output":
+                calls_key = f"{view_id}_calls"
+                if calls_key in summary:
+                    summary[calls_key] = int(summary[calls_key]) + 1
+                if status == "VALID_EXCHANGE_SET":
+                    valid_by_view[view_id] += 1
+                elif status == "UNKNOWN":
+                    unknown_by_view[view_id] += 1
+                else:
+                    invalid_by_view[view_id] += 1
+            elif kind == "final_decision":
+                reason = str(decision.get("reason", ""))
+                if reason == "STOCK_EMPTY_REPAIR_STRONG_CONSENSUS":
+                    summary["accepted_count"] = int(summary["accepted_count"]) + 1
+                elif reason == "STOCK_EMPTY_REPAIR_REJECTED":
+                    summary["rejected_count"] = int(summary["rejected_count"]) + 1
+    summary["valid_count_by_view"] = dict(sorted(valid_by_view.items()))
+    summary["unknown_count_by_view"] = dict(sorted(unknown_by_view.items()))
+    summary["invalid_count_by_view"] = dict(sorted(invalid_by_view.items()))
+    return summary
 
 
 def _e1_city_rescue_accounting(

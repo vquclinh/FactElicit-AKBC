@@ -1,7 +1,7 @@
-# COVER-KBC V3.7 Profile E3 - Area Multi-View frozen baseline.
+# COVER-KBC V3.8 Profile F1 - Stock Empty Rescue frozen baseline.
 #
-# Historical frozen baseline source of truth:
-#   Profile F1 overall F1 = 0.5878, current frozen baseline.
+# Current frozen baseline source of truth:
+#   Profile F1 overall F1 = 0.5878.
 #   Profile E3 overall F1 = 0.5857, previous frozen baseline.
 #   Profile E2 overall F1 = 0.5836, previous frozen baseline.
 #   Integrated Profile E1 overall F1 = 0.5752, historical frozen baseline.
@@ -10,42 +10,44 @@
 #   A+AWARD overall F1 = 0.4910, historical superseded baseline.
 #   C2 overall F1 = 0.4012, retired negative probe.
 #
-# This Profile E3 baseline keeps Profile E2 unchanged for every relation
-# except hasArea, then applies MistralAreaMultiView to every hasArea row with
-# DIRECT_ALL replacement semantics.
+# This Profile F1 baseline keeps Profile E3 unchanged for every relation except
+# companyTradesAtStockExchange, then applies MistralStockEmptyRescue only to
+# stock rows whose E3 ObjectEntities are empty.
 
 experiment:
-  name: cover_kbc_v3_7_profile_e3_mistral_area_multiview_test
+  name: cover_kbc_v3_8_profile_f1_stock_empty_rescue_test
   split: test
   seed: 42
   notes: >-
-    V3.7 Profile E3 frozen baseline. It is Profile E2 plus only
-    MistralAreaMultiView for every hasArea row. Hidden TEST overall F1 is
-    0.5857 and hasArea F1 is 0.6700. This records a user-provided controlled
-    hidden-TEST Area-only ablation; CHIV is retired and not active.
+    V3.8 Profile F1 frozen baseline. It is Profile E3 plus only
+    MistralStockEmptyRescue for empty companyTradesAtStockExchange rows.
+    Hidden TEST overall F1 is 0.5878 and stock F1 is 0.7385. This records a
+    user-provided controlled hidden-TEST stock-empty rescue probe; the rejected
+    capacity exactness probe remains reverted and not active.
   frozen_baseline:
-    status: PREVIOUS_FROZEN_BASELINE
-    superseded_by: cover_kbc_v3_8_profile_f1_stock_empty_rescue_test
-    hidden_test_overall_f1: 0.5857
+    status: FROZEN_CURRENT_BASELINE
+    hidden_test_overall_f1: 0.5878
+    hidden_test_companyTradesAtStockExchange_f1: 0.7385
     hidden_test_hasArea_f1: 0.6700
     hidden_test_hasCapacity_f1: 0.1633
-    local_prediction_artifact_path: WINNING_PROFILE_E3_ARTIFACT_PENDING_USER_IMPORT
-    prediction_sha256: WINNING_PROFILE_E3_ARTIFACT_SHA_PENDING_USER_IMPORT
-    artifact_status: WINNING_PROFILE_E3_ARTIFACT_NOT_AVAILABLE_LOCALLY
+    local_prediction_artifact_path: WINNING_PROFILE_F1_ARTIFACT_PENDING_USER_IMPORT
+    prediction_sha256: WINNING_PROFILE_F1_ARTIFACT_SHA_PENDING_USER_IMPORT
+    artifact_status: WINNING_PROFILE_F1_ARTIFACT_NOT_AVAILABLE_LOCALLY
     unique_neural_parameters: 24011361280
     qwen_runtime_calls: 0
     calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
   baseline_profile:
-    name: cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test
-    status: HISTORICAL_BASELINE_SUPERSEDED_BY_PROFILE_E3
-    hidden_test_overall_f1: 0.5836
-    hidden_test_hasArea_f1: 0.6600
+    name: cover_kbc_v3_7_profile_e3_mistral_area_multiview_test
+    status: HISTORICAL_BASELINE_SUPERSEDED_BY_PROFILE_F1
+    hidden_test_overall_f1: 0.5857
+    hidden_test_hasArea_f1: 0.6700
+    hidden_test_companyTradesAtStockExchange_f1: 0.7285
     hidden_test_hasCapacity_f1: 0.1633
-    prediction_sha256: WINNING_ARTIFACT_SHA_PENDING_USER_IMPORT
+    prediction_sha256: WINNING_PROFILE_E3_ARTIFACT_SHA_PENDING_USER_IMPORT
     qwen_runtime_calls: 0
     unique_neural_parameters: 24011361280
     calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  profile_e3_baseline:
+  profile_f1_baseline:
     status: HIDDEN_TEST_SCORED_FROZEN_BASELINE
     architecture:
       - Profile D core Mistral-only pipeline
@@ -54,14 +56,19 @@ experiment:
       - MistralDirectArea
       - MistralCapacityMultiView
       - MistralAreaMultiView
+      - MistralStockEmptyRescue
     direct_area_mode: DIRECT_ALL
     area_multiview_mode: DIRECT_ALL
     capacity_multiview_mode: DIRECT_ALL
+    stock_empty_rescue_mode: EMPTY_ONLY_STRONG_CONSENSUS
+    stock_empty_rescue_min_support: 3
     chiv_active: false
     chiv_status: RETIRED_NEGATIVE_HIDDEN_TEST_PROBE
     area_multiview_hidden_test_status: USER_PROVIDED_POSITIVE_CONTROLLED_PROBE
+    stock_empty_rescue_hidden_test_status: USER_PROVIDED_POSITIVE_CONTROLLED_PROBE
     standalone_area_observations_are_runtime_knowledge: false
     standalone_capacity_observations_are_runtime_knowledge: false
+    standalone_stock_observations_are_runtime_knowledge: true
     no_subject_answer_lookup: true
     no_web_rag_or_external_corpus: true
   hidden_test_scores:
@@ -70,9 +77,9 @@ experiment:
       recall: 0.3707
       f1: 0.3105
     companyTradesAtStockExchange:
-      precision: 0.9092
-      recall: 0.7863
-      f1: 0.7285
+      precision: 0.8992
+      recall: 0.7963
+      f1: 0.7385
     countryLandBordersCountry:
       precision: 0.9712
       recall: 0.9295
@@ -90,21 +97,35 @@ experiment:
       recall: 0.5900
       f1: 0.5700
     all_relations:
-      precision: 0.7289
-      recall: 0.6034
-      f1: 0.5857
+      precision: 0.7268
+      recall: 0.6055
+      f1: 0.5878
     zero_object_cases:
-      precision: 0.5963
+      precision: 0.6038
       recall: 0.9412
-      f1: 0.7300
-  score_deltas_vs_profile_e2:
+      f1: 0.7356
+  score_deltas_vs_profile_e3:
     all_relations: 0.0021
     hasCapacity: 0.0000
-    hasArea: 0.0100
+    hasArea: 0.0000
     personHasCityOfDeath: 0.0000
     awardWonBy: 0.0000
-    companyTradesAtStockExchange: 0.0000
+    companyTradesAtStockExchange: 0.0100
     countryLandBordersCountry: 0.0000
+  stock_probe_history:
+    profile_e3:
+      overall_f1: 0.5857
+      companyTradesAtStockExchange_precision: 0.9092
+      companyTradesAtStockExchange_recall: 0.7863
+      companyTradesAtStockExchange_f1: 0.7285
+    empty_rescue:
+      status: PROMOTED
+      overall_f1: 0.5878
+      companyTradesAtStockExchange_precision: 0.8992
+      companyTradesAtStockExchange_recall: 0.7963
+      companyTradesAtStockExchange_f1: 0.7385
+      delta_vs_profile_e3_overall_f1: 0.0021
+      delta_vs_profile_e3_stock_f1: 0.0100
   capacity_probe_history:
     old_capacity_path:
       hasCapacity_f1: 0.1224
@@ -136,7 +157,7 @@ experiment:
       delta_vs_profile_e2_overall_f1: 0.0021
       delta_vs_profile_e2_hasArea_f1: 0.0100
   winning_output_shape:
-    artifact_status: WINNING_PROFILE_E3_ARTIFACT_PENDING_USER_IMPORT
+    artifact_status: WINNING_PROFILE_F1_ARTIFACT_PENDING_USER_IMPORT
   direct_area_accounting:
     eligible_hasArea_rows: 100
     maximum_direct_area_calls: 100
@@ -153,11 +174,18 @@ experiment:
     maximum_calls_per_hasCapacity_row: 5
     judge_calls: adaptive
     model_backed_calls_use_mistral_only: true
+  stock_empty_rescue_accounting:
+    eligible_companyTradesAtStockExchange_rows: 100
+    empty_rows_attempted: E3_EMPTY_STOCK_ROW_COUNT_ARTIFACT_DEPENDENT
+    maximum_calls_per_empty_stock_row: 4
+    acceptance_min_support: 3
+    max_accepted_exchanges_per_empty_row: 1
+    model_backed_calls_use_mistral_only: true
 
 leaderboard_probe:
   enabled: true
   status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: Profile E3 frozen baseline with Area Multi-View on Profile E2
+  purpose: Profile F1 frozen baseline with Stock Empty Rescue on Profile E3
   role_swap: MISTRAL_ONLY_VERIFIER
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
@@ -263,15 +291,18 @@ pipeline:
 
 leaderboard_repair:
   enabled: true
-  repair_version: v3.7-profile-e3-mistral-area-multiview
-  profile: E3_MISTRAL_AREA_MULTIVIEW
+  repair_version: v3.8-profile-f1-stock-empty-rescue
+  profile: F1_STOCK_EMPTY_RESCUE
   direct_area_mode: DIRECT_ALL
   area_multiview_mode: DIRECT_ALL
   capacity_multiview_mode: DIRECT_ALL
+  stock_empty_rescue_mode: EMPTY_ONLY_STRONG_CONSENSUS
+  stock_empty_rescue_min_support: 3
   features:
     stock_entity_guard: false
     stock_alias_dedupe: false
     stock_multi_listing_rescue: false
+    mistral_stock_empty_rescue: true
     border_alias_dedupe: false
     border_reciprocity: false
     border_directional_sweep: false
@@ -292,7 +323,7 @@ leaderboard_repair:
     l9_stock_guard: false
   max_calls_by_relation:
     countryLandBordersCountry: 0
-    companyTradesAtStockExchange: 0
+    companyTradesAtStockExchange: 4
     hasArea: 5
     hasCapacity: 5
     personHasCityOfDeath: 2

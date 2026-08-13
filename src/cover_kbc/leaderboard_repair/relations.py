@@ -11,12 +11,14 @@ from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
 from cover_kbc.leaderboard_repair.area import repair_area
 from cover_kbc.leaderboard_repair.capacity import repair_capacity
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
+from cover_kbc.leaderboard_repair.stock_empty_rescue import repair_stock
 from cover_kbc.leaderboard_repair.types import CandidateSignal, RowRepairRecord
 from cover_kbc.leaderboard_repair.util import (
     AREA,
     AWARD,
     CAPACITY,
     CITY,
+    STOCK,
     normalize_award_metadata,
 )
 
@@ -219,5 +221,6 @@ REPAIR_BY_RELATION = {
     AREA: repair_area,
     CAPACITY: repair_capacity,
     CITY: repair_city,
+    STOCK: repair_stock,
     AWARD: repair_award,
 }
