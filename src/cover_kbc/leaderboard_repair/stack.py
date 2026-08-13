@@ -13,6 +13,10 @@ from cover_kbc.types import Prediction, Query
 from cover_kbc.v3_core.hypothesis import QueryHypothesisGraph
 
 from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig, build_config
+from cover_kbc.leaderboard_repair.capacity_exactness import (
+    capacity_exactness_accounting,
+    apply_capacity_exactness_repair,
+)
 from cover_kbc.leaderboard_repair.relations import REPAIR_BY_RELATION
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
 from cover_kbc.leaderboard_repair.types import RepairResult, RowBudget, RowRepairRecord
@@ -88,6 +92,13 @@ class LeaderboardRepairStack:
             repaired.append(post_repair)
             records[key] = record
 
+        repaired = apply_capacity_exactness_repair(
+            repaired,
+            records_by_key=records,
+            config=self.config,
+            enumerator=self.enumerator,
+            verifier=self.verifier,
+        )
         ordered_records = [records[(p.subject, p.relation)] for p in repaired]
         accounting = self.accounting(ordered_records, predictions_before=predictions)
         _assert_query_coverage(repaired, queries)
@@ -150,6 +161,14 @@ class LeaderboardRepairStack:
             ):
                 by_relation[relation]["capacity_multiview"] = (
                     _capacity_multiview_accounting(relation_records)
+                )
+            if (
+                relation == CAPACITY
+                and self.config.features.mistral_capacity_exactness_repair
+                and self.config.capacity_exactness_repair.enabled
+            ):
+                by_relation[relation]["capacity_exactness_repair"] = (
+                    capacity_exactness_accounting(relation_records)
                 )
 
         total_calls = sum(record.calls_used for record in records)

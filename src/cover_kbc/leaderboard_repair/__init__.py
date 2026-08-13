@@ -4,7 +4,8 @@ The package is intentionally downstream of M1-M21.  When disabled it is not
 constructed; when enabled it receives the completed prediction rows and may
 rewrite only the final `ObjectEntities`, recording separate repair accounting.
 Profile E3 enables deterministic award cleanup, E1 City rescue, E2 Capacity
-Multi-View, and E3 Area Multi-View.
+Multi-View, and E3 Area Multi-View. Profile F1 adds a default-keep
+Capacity-only exactness pass behind an explicit probe flag.
 """
 
 from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
