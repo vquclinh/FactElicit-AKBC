@@ -38,7 +38,6 @@ class RepairCall:
     subject: str
     model_role: str
     model_id: str
-    view_id: str
     prompt: str
     output: str
     prompt_tokens: int = 0
@@ -53,7 +52,6 @@ class RepairCall:
             "SubjectEntity": self.subject,
             "model_role": self.model_role,
             "model_id": self.model_id,
-            "view_id": self.view_id,
             "prompt": self.prompt,
             "output": self.output,
             "prompt_tokens": self.prompt_tokens,
