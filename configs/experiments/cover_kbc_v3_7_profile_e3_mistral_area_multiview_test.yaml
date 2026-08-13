@@ -1,47 +1,49 @@
-# COVER-KBC V3.6 Profile E2 - Capacity Multi-View frozen baseline.
+# COVER-KBC V3.7 Profile E3 - Area Multi-View frozen baseline.
 #
-# Historical frozen baseline source of truth:
-#   Profile E3 overall F1 = 0.5857, current frozen baseline.
-#   Profile E2 overall F1 = 0.5836, superseded by Profile E3.
-#   Integrated Profile E1 overall F1 = 0.5752, previous frozen baseline.
+# Current frozen baseline source of truth:
+#   Profile E3 overall F1 = 0.5857.
+#   Profile E2 overall F1 = 0.5836, previous frozen baseline.
+#   Integrated Profile E1 overall F1 = 0.5752, historical frozen baseline.
 #   Profile D overall F1 = 0.4952, previous frozen baseline.
 #   Historical City-only E1 remains available as v3.4 provenance.
 #   A+AWARD overall F1 = 0.4910, historical superseded baseline.
 #   C2 overall F1 = 0.4012, retired negative probe.
 #
-# This Profile E2 baseline keeps integrated Profile E1 unchanged for every
-# relation except hasCapacity, then applies MistralCapacityMultiView to every
-# hasCapacity row with DIRECT_ALL replacement semantics.
+# This Profile E3 baseline keeps Profile E2 unchanged for every relation
+# except hasArea, then applies MistralAreaMultiView to every hasArea row with
+# DIRECT_ALL replacement semantics.
 
 experiment:
-  name: cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test
+  name: cover_kbc_v3_7_profile_e3_mistral_area_multiview_test
   split: test
   seed: 42
   notes: >-
-    V3.6 Profile E2 frozen baseline. It is integrated Profile E1 plus only
-    MistralCapacityMultiView for every hasCapacity row. Hidden TEST overall F1
-    is 0.5836 and hasCapacity F1 is 0.1633. CHIV is retired and not active.
+    V3.7 Profile E3 frozen baseline. It is Profile E2 plus only
+    MistralAreaMultiView for every hasArea row. Hidden TEST overall F1 is
+    0.5857 and hasArea F1 is 0.6700. This records a user-provided controlled
+    hidden-TEST Area-only ablation; CHIV is retired and not active.
   frozen_baseline:
-    status: HISTORICAL_BASELINE_SUPERSEDED_BY_PROFILE_E3
-    superseded_by: cover_kbc_v3_7_profile_e3_mistral_area_multiview_test
-    superseded_by_hidden_test_overall_f1: 0.5857
-    hidden_test_overall_f1: 0.5836
+    status: FROZEN_CURRENT_BASELINE
+    hidden_test_overall_f1: 0.5857
+    hidden_test_hasArea_f1: 0.6700
     hidden_test_hasCapacity_f1: 0.1633
-    local_prediction_artifact_path: WINNING_ARTIFACT_PENDING_USER_IMPORT
-    prediction_sha256: WINNING_ARTIFACT_SHA_PENDING_USER_IMPORT
-    artifact_status: WINNING_ARTIFACT_NOT_AVAILABLE_LOCALLY
+    local_prediction_artifact_path: WINNING_PROFILE_E3_ARTIFACT_PENDING_USER_IMPORT
+    prediction_sha256: WINNING_PROFILE_E3_ARTIFACT_SHA_PENDING_USER_IMPORT
+    artifact_status: WINNING_PROFILE_E3_ARTIFACT_NOT_AVAILABLE_LOCALLY
     unique_neural_parameters: 24011361280
     qwen_runtime_calls: 0
     calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
   baseline_profile:
-    name: cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test
-    status: PREVIOUS_FROZEN_BASELINE
-    hidden_test_overall_f1: 0.5752
-    prediction_sha256: 67bd1bc8af01de177520d93f9b5b9fc30839d56f36ceeeb6263813662e52d8a6
+    name: cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test
+    status: HISTORICAL_BASELINE_SUPERSEDED_BY_PROFILE_E3
+    hidden_test_overall_f1: 0.5836
+    hidden_test_hasArea_f1: 0.6600
+    hidden_test_hasCapacity_f1: 0.1633
+    prediction_sha256: WINNING_ARTIFACT_SHA_PENDING_USER_IMPORT
     qwen_runtime_calls: 0
     unique_neural_parameters: 24011361280
     calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  profile_e2_baseline:
+  profile_e3_baseline:
     status: HIDDEN_TEST_SCORED_FROZEN_BASELINE
     architecture:
       - Profile D core Mistral-only pipeline
@@ -49,10 +51,13 @@ experiment:
       - MistralCityEmptyRescue
       - MistralDirectArea
       - MistralCapacityMultiView
+      - MistralAreaMultiView
     direct_area_mode: DIRECT_ALL
+    area_multiview_mode: DIRECT_ALL
     capacity_multiview_mode: DIRECT_ALL
     chiv_active: false
     chiv_status: RETIRED_NEGATIVE_HIDDEN_TEST_PROBE
+    area_multiview_hidden_test_status: USER_PROVIDED_POSITIVE_CONTROLLED_PROBE
     standalone_area_observations_are_runtime_knowledge: false
     standalone_capacity_observations_are_runtime_knowledge: false
     no_subject_answer_lookup: true
@@ -72,8 +77,8 @@ experiment:
       f1: 0.9291
     hasArea:
       precision: 0.6700
-      recall: 0.6600
-      f1: 0.6600
+      recall: 0.6700
+      f1: 0.6700
     hasCapacity:
       precision: 0.2449
       recall: 0.1633
@@ -84,12 +89,16 @@ experiment:
       f1: 0.5700
     all_relations:
       precision: 0.7289
-      recall: 0.6013
-      f1: 0.5836
-  score_deltas_vs_profile_e1:
-    all_relations: 0.0084
-    hasCapacity: 0.0409
-    hasArea: 0.0000
+      recall: 0.6034
+      f1: 0.5857
+    zero_object_cases:
+      precision: 0.5963
+      recall: 0.9412
+      f1: 0.7300
+  score_deltas_vs_profile_e2:
+    all_relations: 0.0021
+    hasCapacity: 0.0000
+    hasArea: 0.0100
     personHasCityOfDeath: 0.0000
     awardWonBy: 0.0000
     companyTradesAtStockExchange: 0.0000
@@ -110,40 +119,31 @@ experiment:
       hasCapacity_precision: 0.2449
       hasCapacity_recall: 0.1633
       hasCapacity_f1: 0.1633
+  area_probe_history:
+    old_area:
+      hasArea_f1: 0.3600
+    direct_mistral_area:
+      overall_f1: 0.5752
+      hasArea_f1: 0.6600
+    multiview:
+      status: PROMOTED
+      overall_f1: 0.5857
+      hasArea_precision: 0.6700
+      hasArea_recall: 0.6700
+      hasArea_f1: 0.6700
+      delta_vs_profile_e2_overall_f1: 0.0021
+      delta_vs_profile_e2_hasArea_f1: 0.0100
   winning_output_shape:
-    awardWonBy:
-      rows: 10
-      empty: 0
-      objects: 513
-      max: 102
-    companyTradesAtStockExchange:
-      rows: 100
-      empty: 57
-      objects: 93
-      max: 29
-    countryLandBordersCountry:
-      rows: 67
-      empty: 11
-      objects: 260
-      max: 14
-    hasArea:
-      rows: 100
-      empty: 1
-      objects: 99
-      max: 1
-    hasCapacity:
-      rows: 98
-      empty: 25
-      objects: 73
-      max: 1
-    personHasCityOfDeath:
-      rows: 100
-      empty: 85
-      objects: 15
-      max: 1
+    artifact_status: WINNING_PROFILE_E3_ARTIFACT_PENDING_USER_IMPORT
   direct_area_accounting:
     eligible_hasArea_rows: 100
     maximum_direct_area_calls: 100
+    model_backed_calls_use_mistral_only: true
+  area_multiview_accounting:
+    eligible_hasArea_rows: 100
+    base_multiview_calls: 400
+    maximum_calls_per_hasArea_row: 5
+    judge_calls: adaptive
     model_backed_calls_use_mistral_only: true
   capacity_multiview_accounting:
     eligible_hasCapacity_rows: 98
@@ -155,7 +155,7 @@ experiment:
 leaderboard_probe:
   enabled: true
   status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: Profile E2 frozen baseline with Capacity Multi-View on integrated E1
+  purpose: Profile E3 frozen baseline with Area Multi-View on Profile E2
   role_swap: MISTRAL_ONLY_VERIFIER
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
@@ -261,9 +261,10 @@ pipeline:
 
 leaderboard_repair:
   enabled: true
-  repair_version: v3.6-profile-e2-mistral-capacity-multiview
-  profile: E2_MISTRAL_CAPACITY_MULTIVIEW
+  repair_version: v3.7-profile-e3-mistral-area-multiview
+  profile: E3_MISTRAL_AREA_MULTIVIEW
   direct_area_mode: DIRECT_ALL
+  area_multiview_mode: DIRECT_ALL
   capacity_multiview_mode: DIRECT_ALL
   features:
     stock_entity_guard: false
@@ -277,6 +278,7 @@ leaderboard_repair:
     mistral_city_empty_rescue: true
     area_empty_rescue: false
     mistral_direct_area: true
+    mistral_area_multiview: true
     mistral_capacity_multiview: true
     capacity_repair: false
     award_metadata_cleanup: true
@@ -289,7 +291,7 @@ leaderboard_repair:
   max_calls_by_relation:
     countryLandBordersCountry: 0
     companyTradesAtStockExchange: 0
-    hasArea: 1
+    hasArea: 5
     hasCapacity: 5
     personHasCityOfDeath: 2
     awardWonBy: 1

@@ -22,13 +22,13 @@ The full design is in [`COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`](COVER_KBC_V2_ARCHIT
 
 ## Status
 
-**Current frozen baseline:** Profile E2, configured at
-[`configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml`](configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml),
-with hidden TEST overall F1 `0.5836`. It is integrated Profile E1 plus
-`MistralCapacityMultiView` for `hasCapacity`.
+**Current frozen baseline:** Profile E3, configured at
+[`configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml`](configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml),
+with hidden TEST overall F1 `0.5857`. It is Profile E2 plus
+`MistralAreaMultiView` for `hasArea`.
 
-**Previous frozen baselines:** integrated Profile E1, hidden TEST overall F1
-`0.5752`, and Profile D, hidden TEST overall F1 `0.4952`. Their configs remain
+**Previous frozen baselines:** Profile E2, hidden TEST overall F1 `0.5836`;
+integrated Profile E1, `0.5752`; and Profile D, `0.4952`. Their configs remain
 available as historical provenance. C2 and CHIV are retired negative probes.
 
 Heavyweight inference runs on Google Colab, not on the development machine.
@@ -45,7 +45,7 @@ artifact provenance, and non-neural tests. See
 | verifier | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | counted once |
 | **total unique neural parameters** | | **24,011,361,280** (24.01B ≤ 32B) |
 
-Profile E2 declares one physical Mistral model block and reuses that runtime
+Profile E3 declares one physical Mistral model block and reuses that runtime
 for all logical roles. Qwen is not active in the current frozen baseline.
 
 ## Quickstart
@@ -56,7 +56,7 @@ pip install -e '.[dev]'          # add '.[hf]' for the neural backends
 python -m pytest -q              # no model required
 
 # Check the 32B budget for the current development pipeline (downloads nothing)
-python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml
+python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml
 
 # Non-neural plumbing runs (NOT system results)
 python scripts/run_cover.py  --config configs/experiments/smoke_abstain.yaml
@@ -71,7 +71,7 @@ python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
 drives the same three phases:
 
 ```bash
-python scripts/run_cover.py --config configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml --no-eval
+python scripts/run_cover.py --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml --no-eval
 ```
 
 Each run writes `outputs/<run_id>/` containing `predictions.jsonl`,

@@ -397,7 +397,12 @@ def test_e2_config_derives_from_e1_with_only_capacity_prediction_diff():
     ]
 
     assert e1["experiment"]["frozen_baseline"]["status"] == "PREVIOUS_FROZEN_BASELINE"
-    assert e2["experiment"]["frozen_baseline"]["status"] == "FROZEN_CURRENT_BASELINE"
+    assert e2["experiment"]["frozen_baseline"]["status"] == (
+        "HISTORICAL_BASELINE_SUPERSEDED_BY_PROFILE_E3"
+    )
+    assert e2["experiment"]["frozen_baseline"]["superseded_by"] == (
+        "cover_kbc_v3_7_profile_e3_mistral_area_multiview_test"
+    )
     assert e2["experiment"]["hidden_test_scores"]["all_relations"]["f1"] == 0.5836
     assert e2["experiment"]["hidden_test_scores"][CAPACITY]["f1"] == 0.1633
     assert e2["experiment"]["capacity_probe_history"]["chiv"]["status"] == (

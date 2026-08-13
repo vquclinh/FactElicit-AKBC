@@ -128,6 +128,11 @@ def repair_area(
     valid ``AREA: X`` becomes ``["X"]``; ``UNKNOWN`` or invalid output becomes
     ``[]``. The old numeric answer is not retained as a fallback.
     """
+    if config.features.mistral_area_multiview:
+        from cover_kbc.leaderboard_repair.area_multiview import repair_area_multiview
+
+        return repair_area_multiview(prediction, _signals, caller, config, record)
+
     values = list(prediction.object_entities[:1])
     if not config.features.mistral_direct_area:
         return values
