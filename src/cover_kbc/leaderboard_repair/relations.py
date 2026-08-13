@@ -31,7 +31,7 @@ def repair_city(
     config: LeaderboardRepairConfig,
     record: RowRepairRecord,
 ) -> list[str]:
-    """Run the active E1 empty-row City rescue, when configured."""
+    """Run the active empty-row City rescue, when configured."""
     values = list(prediction.object_entities[:1])
     if not config.features.mistral_city_empty_rescue:
         return values

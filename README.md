@@ -1,128 +1,189 @@
-# FactElicit-AKBC — COVER-KBC v2
+# FactElicit-AKBC
 
-System for the **AKBC Shared Task 2026** (@ EMNLP 2026), *Predicting complete
-knowledge base entries from language models*.
+FactElicit-AKBC is the COVER-KBC system for the AKBC Shared Task 2026: given a
+`SubjectEntity` and one of six relations, predict the complete string-valued
+`ObjectEntities` set, including empty sets and numeric answers.
 
-Given a `SubjectEntity` + `Relation`, predict the complete object set
-`[o1, …, ok]`, where `k` may be 0, 1 or many, across six relations:
-`countryLandBordersCountry`, `personHasCityOfDeath`, `hasCapacity`,
-`awardWonBy`, `companyTradesAtStockExchange`, `hasArea`.
+## Current Best System
 
-**COVER-KBC v2** treats this as *relation-typed active set elicitation*: each
-relation compiles to a typed inference program that discovers candidates through
-structurally diverse views, tracks independent evidence per atomic candidate,
-verifies uncertain candidates with calibrated logits, and allocates further
-test-time compute only while the expected coverage gain justifies it.
+**CURRENT BEST PROFILE**
 
+- Profile: **Profile E3 - Mistral Area Multi-View**
+- Config: [`configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml`](configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml)
+- Hidden TEST Macro-F1: **0.5857**
+- Model: `mistralai/Mistral-Small-3.2-24B-Instruct-2506`
+- Revision: `95a6d26c4bfb886c58daf9d3f7332c857cb27b43`
+- Unique neural parameters: **24,011,361,280 / 32,000,000,000**
+
+Profile E3 is Profile E2 plus `MistralAreaMultiView` for `hasArea`. Qwen is not
+active in the current best pipeline. The same physical Mistral checkpoint is
+reused for every logical role.
+
+## Task
+
+The repository wraps the local challenge snapshot in [`benchmark/`](benchmark/).
+Rows contain `SubjectEntity`, `Relation`, and an object list. Relations can have
+zero, one, or many valid objects. `hasArea` and `hasCapacity` are numeric
+relations evaluated with 5% tolerance by the local evaluator.
+
+## Architecture
+
+```text
+Input row
+  -> relation contract/router
+  -> Mistral closed-book elicitation views
+  -> parsers and evidence graph
+  -> verifier/gates/controller/final selector
+  -> Profile E3 final relation layer
+  -> official JSONL row
 ```
-Contract → Typed Program → Elicit → Graph → Verify → RCSE → Act/Stop → Final Set
+
+```mermaid
+flowchart LR
+    A[Subject + Relation] --> B[Relation Contract]
+    B --> C[Core COVER-KBC Pipeline]
+    C --> D[Final Selector]
+    D --> E[Profile E3 Repair Stack]
+    E --> F[ObjectEntities JSONL]
+    E --> G[Trace + Repair Accounting]
 ```
 
-The full design is in [`COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`](COVER_KBC_V2_ARCHITECTURE_SPEC.pdf).
+Profile E3 final layer:
 
-## Status
+- `AwardMetadataNormalizer` for `awardWonBy`
+- `MistralCityEmptyRescue` for empty `personHasCityOfDeath` rows
+- `MistralAreaMultiView` for all `hasArea` rows
+- `MistralCapacityMultiView` for all `hasCapacity` rows
+- no post-pipeline Stock repair
+- no post-pipeline Border repair
 
-**Current frozen baseline:** Profile E3, configured at
-[`configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml`](configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml),
-with hidden TEST overall F1 `0.5857`. It is Profile E2 plus
-`MistralAreaMultiView` for `hasArea`.
+## Relation-Specific Inference
 
-**Previous frozen baselines:** Profile E2, hidden TEST overall F1 `0.5836`;
-integrated Profile E1, `0.5752`; and Profile D, `0.4952`. Their configs remain
-available as historical provenance. C2 and CHIV are retired negative probes.
+| Relation | Current strategy | Calls / logic | Hidden F1 |
+|---|---|---|---:|
+| `countryLandBordersCountry` | Core small-set border elicitation and precision-aware selection | direct, compass/structural, maritime contrast, verifier/controller; no E3 repair | 0.9291 |
+| `personHasCityOfDeath` | Core null-single city path plus empty-only Mistral rescue | rescue calls life/death gate, then strict `CITY:` parse only if deceased | 0.5700 |
+| `hasCapacity` | Capacity Multi-View | 4 deterministic views, strict `CAPACITY:` parser, 5% clustering, one source-blind judge if ambiguous | 0.1633 |
+| `awardWonBy` | Large-set award enumeration plus metadata cleanup | multi-facet core enumeration, deterministic wrapper removal and dedupe | 0.3105 |
+| `companyTradesAtStockExchange` | Core stock listing path | listing gate, parent/subsidiary contrast, verifier/controller, precision-first selector; no E3 repair | 0.7285 |
+| `hasArea` | Area Multi-View | 4 deterministic views, strict `AREA:` parser, 5% clustering, one source-blind judge if ambiguous | 0.6700 |
 
-Heavyweight inference runs on Google Colab, not on the development machine.
-The local repository validates configuration, contracts, readiness gates,
-artifact provenance, and non-neural tests. See
-[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) and
-[`docs/audits/`](docs/audits/), especially Audit 0086.
+## Results
 
-## Target architecture
+User-provided hidden TEST evidence for the current Profile E3 baseline:
 
-| role | model | published params |
-|---|---|---|
-| enumerator | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | 24,011,361,280 |
-| verifier | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | counted once |
-| **total unique neural parameters** | | **24,011,361,280** (24.01B ≤ 32B) |
+| Relation | P | R | F1 |
+|---|---:|---:|---:|
+| `awardWonBy` | 0.3255 | 0.3707 | 0.3105 |
+| `companyTradesAtStockExchange` | 0.9092 | 0.7863 | 0.7285 |
+| `countryLandBordersCountry` | 0.9712 | 0.9295 | 0.9291 |
+| `hasArea` | 0.6700 | 0.6700 | 0.6700 |
+| `hasCapacity` | 0.2449 | 0.1633 | 0.1633 |
+| `personHasCityOfDeath` | 0.9600 | 0.5900 | 0.5700 |
+| **All Relations** | **0.7289** | **0.6034** | **0.5857** |
 
-Profile E3 declares one physical Mistral model block and reuses that runtime
-for all logical roles. Qwen is not active in the current frozen baseline.
+Zero-object reference: P = 0.5963, R = 0.9412, F1 = 0.7300.
 
-## Quickstart
+## Ablation History
+
+| Profile | Main change | Overall hidden F1 |
+|---|---|---:|
+| Profile D | Mistral-only core / verifier-role consolidation | 0.4952 |
+| Integrated Profile E1 | Profile D + AwardMetadataNormalizer + MistralCityEmptyRescue + MistralDirectArea | 0.5752 |
+| Profile E2 | E1 + MistralCapacityMultiView | 0.5836 |
+| Profile E3 | E2 + MistralAreaMultiView | 0.5857 |
+
+Negative probes such as C2, CHIV, NSMV/Neighborhood capacity, broad numeric
+repair, and direct border experiments are retained only as historical
+provenance in configs/docs/audits when useful. They are not current runtime
+components.
+
+## Reproduction
+
+Install:
 
 ```bash
-pip install -e '.[dev]'          # add '.[hf]' for the neural backends
+pip install -e '.[dev]'
+pip install -e '.[hf]'  # only on the neural runtime machine
+```
 
-python -m pytest -q              # no model required
+Zero-model checks:
 
-# Check the 32B budget for the current development pipeline (downloads nothing)
+```bash
 python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml
-
-# Non-neural plumbing runs (NOT system results)
-python scripts/run_cover.py  --config configs/experiments/smoke_abstain.yaml
-python scripts/run_staged.py all --config configs/experiments/smoke_staged_scripted.yaml --limit 30
-
-# Score any prediction file with the official evaluator
-python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
+python scripts/run_area_multiview.py --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml --split test --output-dir outputs/e3_area_multiview_dry_run --dry-run
+python -m pytest tests/test_profile_e3_area_multiview.py -q
 ```
 
-**Neural runs happen on Colab** via
-[`notebooks/COVER_KBC_Colab.ipynb`](notebooks/COVER_KBC_Colab.ipynb), which
-drives the same three phases:
+Current Profile E3 run:
 
 ```bash
-python scripts/run_cover.py --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml --no-eval
+python scripts/run_cover.py \
+  --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml \
+  --split test \
+  --no-eval
 ```
 
-Each run writes `outputs/<run_id>/` containing `predictions.jsonl`,
-`metrics.json`, `trace.jsonl` (per-query candidates and evidence),
-`calls.jsonl` (one record per model call) and `manifest.json` (config hash,
-model identity and parameter count, seed, dataset and evaluator checksums, git
-revision, token/call totals).
+Targeted relation utilities:
 
-## Layout
+```bash
+python scripts/run_area_multiview.py \
+  --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml \
+  --split test \
+  --output-dir outputs/e3_area_multiview
 
-```
-benchmark/          official snapshot — READ ONLY, never modified in place
-configs/
-  experiments/      run configurations
-  models/           model profiles with published parameter counts
-docs/               implementation status + audits/
-notebooks/          Colab execution entrypoint
-scripts/            run_staged.py, run_cover.py, evaluate_local.py, audit_model_budget.py
-src/cover_kbc/
-  contracts/        relation contracts + typed program router   (Module 0/1)
-  elicitation/      view library, prompt rendering, parsing     (Module 2)
-  evidence/         candidate-facet evidence graph              (Module 3)
-  verification.py   blind verifier, calibration, disagreement   (Module 4)
-  scoring.py        S(o) components + verification tiering      (Module 5)
-  coverage.py       residual coverage & saturation (RCSE)       (Module 6)
-  controller.py     active controller + adaptive stopping       (Module 7)
-  selection.py      relation-specific final selector            (Module 8)
-  staging.py        enumerate/verify/decide phase persistence
-  data/             read-only dataset access, official-format output
-  evaluation/       wrappers around the official evaluator
-  models/           model-agnostic runtime + 32B budget audit
-  runtime/          run manifests and call tracing
-  pipeline.py       orchestrator (staged or interleaved)
-tests/
-outputs/            generated artifacts (gitignored)
+python scripts/run_capacity_multiview.py \
+  --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml \
+  --split test \
+  --output-dir outputs/e3_capacity_multiview
+
+python scripts/merge_targeted_relation_results.py \
+  --baseline-predictions outputs/<baseline>/predictions.jsonl \
+  --targeted-results outputs/e3_area_multiview/area_multiview_results.jsonl \
+  --relation hasArea \
+  --expected-targeted-rows 100 \
+  --output outputs/<merged>/predictions.jsonl
 ```
 
-## Competition constraints
+Local validation:
 
-Closed book. No web search, RAG, external factual corpora or KB lookup on the
-prediction path. No fine-tuning, LoRA, continued pretraining or instruction
-tuning. Total inference-time neural parameters ≤ 32B, counted from *published*
-totals — quantization does not reduce the count, and MoE models count by total
-rather than active parameters. Multi-step inference and non-neural filtering,
-normalization, deduplication, aggregation and scheduling are allowed.
+```bash
+python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
+python -m pyflakes src/ tests/ scripts/
+python -m pytest tests/ -q -p no:randomly
+python -m pytest tests/ -q
+git diff --check
+```
 
-`benchmark/` is a pinned upstream snapshot ([lm-kbc/dataset2026](https://github.com/lm-kbc/dataset2026),
-Apache-2.0). It is treated as an immutable dependency: our code wraps the
-official evaluator and data rather than editing them. All project code lives
-outside it.
+## Repository Layout
 
-Train data may be used for task understanding, few-shot demonstrations, prompt
-design, non-neural threshold calibration and error analysis — never for weight
-updates, and never as a factual lookup table on the inference path.
+```text
+benchmark/                 local official snapshot, treated as read-only
+configs/experiments/       current and archival profile configs
+configs/calibration/       calibration artifacts used by core V3 modules
+docs/                      implementation status, audits, paper summary
+notebooks/                 Colab/runtime driver notebooks
+scripts/run_cover.py       canonical Profile E3 runner
+scripts/run_area_multiview.py
+scripts/run_capacity_multiview.py
+scripts/merge_targeted_relation_results.py
+scripts/audit_model_budget.py
+src/cover_kbc/             production package
+src/cover_kbc/leaderboard_repair/
+tests/                     non-neural regression and integrity tests
+outputs/                   generated artifacts, gitignored
+```
+
+## Model Budget / Rules
+
+The active model portfolio is one open-weight checkpoint with 24,011,361,280
+published parameters. Quantization is a runtime memory choice and does not
+reduce parameter accounting. Profile E3 uses closed-book inference: no web, no
+RAG, no external factual corpora or KB lookup, no training, no fine-tuning, and
+no subject-answer lookup table.
+
+## Historical Audits
+
+[`docs/audits/`](docs/audits/) contains the provenance trail for prior profiles,
+promotions, diagnostics, and rejected probes. The paper-ready consolidated
+summary is [`docs/PAPER_SYSTEM_SUMMARY.md`](docs/PAPER_SYSTEM_SUMMARY.md).

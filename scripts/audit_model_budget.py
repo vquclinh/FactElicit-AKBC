@@ -5,7 +5,7 @@ Runs entirely from configuration - no weights are downloaded - so compliance can
 be checked before anybody fetches a checkpoint.
 
 Example:
-    python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml
+    python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml
 """
 
 from __future__ import annotations

@@ -1,7 +1,8 @@
 # COVER-KBC V3.5 Profile E1 - City rescue + Direct Area frozen baseline.
 #
 # Baseline source of truth:
-#   Profile E2 overall F1 = 0.5836, current frozen baseline.
+#   Profile E3 overall F1 = 0.5857, current frozen baseline.
+#   Profile E2 overall F1 = 0.5836, historical superseded baseline.
 #   Integrated Profile E1 overall F1 = 0.5752, previous frozen baseline.
 #   Profile D overall F1 = 0.4952, previous frozen baseline.
 #   Historical City-only E1 remains available as v3.4 provenance.
@@ -20,7 +21,8 @@ experiment:
     V3.5 integrated Profile E1 baseline. It is Profile D plus
     AwardMetadataNormalizer, the already validated E1 Mistral City empty-row
     rescue, and MistralDirectArea for every hasArea row. Hidden TEST overall F1
-    is 0.5752. It is superseded by Profile E2 Capacity Multi-View at 0.5836.
+    is 0.5752. It is superseded by Profile E2 Capacity Multi-View at 0.5836
+    and the current Profile E3 Area Multi-View baseline at 0.5857.
   frozen_baseline:
     status: PREVIOUS_FROZEN_BASELINE
     hidden_test_overall_f1: 0.5752

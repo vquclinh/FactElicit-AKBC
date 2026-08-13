@@ -15,7 +15,7 @@ still a runtime PASS as long as every contract executed correctly.
 runtime compatibility only; no split is loaded, no gold is stored, and nothing
 is scored.
 
-    python scripts/real_model_smoke.py --config configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml
+    python scripts/real_model_smoke.py --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml
 """
 
 from __future__ import annotations

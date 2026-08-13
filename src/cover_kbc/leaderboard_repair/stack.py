@@ -24,7 +24,7 @@ class LeaderboardRepairStack:
 
     The active baseline uses deterministic award metadata cleanup, E1's Mistral
     City empty-row rescue, Direct Area or E3 Area Multi-View for hasArea rows,
-    and E2 Capacity Multi-View for hasCapacity rows. Retired C2 L8/L9
+    and E2 Capacity Multi-View for hasCapacity rows. Retired C2 mutation
     behaviours remain in historical audits/config metadata, but are no longer
     executable runtime branches.
     """

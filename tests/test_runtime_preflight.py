@@ -4,7 +4,7 @@ On an L4 (Audit 0065) ``transformers`` 4.57.6 raised *"The checkpoint has model
 type qwen3_5 but Transformers does not recognize this architecture"* — after
 minutes of downloading, at the moment the verifier was constructed.
 
-That remains a historical Qwen-profile concern, but the active E1 development
+That remains a historical Qwen-profile concern, but the active Profile E3
 pipeline is Mistral-only. The runner now enforces the stricter Qwen floor only
 when a declared neural block actually names Qwen.
 

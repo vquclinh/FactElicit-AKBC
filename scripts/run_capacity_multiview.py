@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Profile E2 Capacity Multi-View on hasCapacity rows only."""
+"""Run the active Capacity Multi-View final layer on hasCapacity rows only."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def head_sha() -> str:
 
 
 def validate_capacity_model_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Validate that Profile E2 resolves to one shared Mistral model."""
+    """Validate that Capacity Multi-View resolves to one shared Mistral model."""
     enumerator, verifier = model_blocks(config)
     if enumerator != verifier:
         raise CapacityRunError("Capacity Multi-View requires one shared Mistral runtime")
@@ -77,7 +77,7 @@ def validate_capacity_model_config(config: Mapping[str, Any]) -> Mapping[str, An
         raise CapacityRunError(f"unexpected revision {enumerator.get('revision')!r}")
     serialized = json.dumps(config.get("model_profile") or {}, sort_keys=True)
     if "Qwen/Qwen3.5-4B" in serialized:
-        raise CapacityRunError("Profile E2 model portfolio must not contain Qwen")
+        raise CapacityRunError("Capacity Multi-View model portfolio must not contain Qwen")
     audit = audit_parameter_budget([spec_from_config(enumerator)])
     if not audit.passed:
         raise CapacityRunError(audit.summary())

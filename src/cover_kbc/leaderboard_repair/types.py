@@ -1,4 +1,4 @@
-"""Typed records emitted by the V3.2 repair stack."""
+"""Typed records emitted by the downstream leaderboard repair stack."""
 
 from __future__ import annotations
 

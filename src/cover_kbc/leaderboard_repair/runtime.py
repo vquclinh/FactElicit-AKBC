@@ -1,4 +1,4 @@
-"""Model-call helpers with separate L7-L9 accounting."""
+"""Model-call helpers with separate leaderboard repair accounting."""
 
 from __future__ import annotations
 

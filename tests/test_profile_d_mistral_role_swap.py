@@ -144,9 +144,9 @@ def test_profile_d_is_marked_as_previous_frozen_baseline_with_hidden_test_metada
         ),
         "superseded_by_hidden_test_overall_f1": 0.5752,
         "current_frozen_baseline": (
-            "cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test"
+            "cover_kbc_v3_7_profile_e3_mistral_area_multiview_test"
         ),
-        "current_frozen_baseline_hidden_test_overall_f1": 0.5836,
+        "current_frozen_baseline_hidden_test_overall_f1": 0.5857,
         "source_commit": PROFILE_D_SOURCE_COMMIT,
         "prediction_sha256": PROFILE_D_PREDICTION_SHA256,
         "standalone_submission_name":

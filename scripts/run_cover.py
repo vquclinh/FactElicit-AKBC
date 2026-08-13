@@ -830,8 +830,8 @@ def main() -> int:
 
     if repair_result is not None and repair_stack is not None:
         records_path, accounting_path = repair_stack.write_artifacts(repair_result, out_dir)
-        print(f"[L7-L9] {records_path}  ({len(repair_result.records)} queries)")
-        print(f"[L7-L9] {accounting_path}")
+        print(f"[repair] {records_path}  ({len(repair_result.records)} queries)")
+        print(f"[repair] {accounting_path}")
 
     if result.errors:
         (out_dir / "errors.json").write_text(json.dumps(result.errors, indent=2))

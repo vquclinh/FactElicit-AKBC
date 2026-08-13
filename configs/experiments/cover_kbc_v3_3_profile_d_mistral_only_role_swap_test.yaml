@@ -3,7 +3,8 @@
 # Hidden TEST source of truth:
 #   Profile D overall F1 = 0.4952, previous frozen baseline.
 #   Integrated E1 overall F1 = 0.5752, superseded frozen baseline.
-#   Profile E2 overall F1 = 0.5836, current frozen baseline.
+#   Profile E3 overall F1 = 0.5857, current frozen baseline.
+#   Profile E2 overall F1 = 0.5836, historical superseded baseline.
 #   A+AWARD overall F1 = 0.4910, historical superseded baseline.
 #   C2 overall F1 = 0.4012, retired negative probe.
 #
@@ -18,17 +19,17 @@ experiment:
   notes: >-
     V3.3 Profile D MISTRAL_ONLY_ROLE_SWAP. Hidden TEST promoted this profile to
     the frozen baseline at overall F1 0.4952; it is now a previous frozen
-    baseline superseded by integrated Profile E1 at 0.5752 and Profile E2 at
-    0.5836. It is A_PLUS_AWARD plus only the Qwen verifier to Mistral24
-    verifier role swap. C2 is retired and no aggressive C2 repair feature is
-    inherited.
+    baseline superseded by integrated Profile E1 at 0.5752, Profile E2 at
+    0.5836, and current Profile E3 at 0.5857. It is A_PLUS_AWARD plus only the
+    Qwen verifier to Mistral24 verifier role swap. C2 is retired and no
+    aggressive C2 repair feature is inherited.
   frozen_baseline:
     status: PREVIOUS_FROZEN_BASELINE
     hidden_test_overall_f1: 0.4952
     superseded_by: cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test
     superseded_by_hidden_test_overall_f1: 0.5752
-    current_frozen_baseline: cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test
-    current_frozen_baseline_hidden_test_overall_f1: 0.5836
+    current_frozen_baseline: cover_kbc_v3_7_profile_e3_mistral_area_multiview_test
+    current_frozen_baseline_hidden_test_overall_f1: 0.5857
     source_commit: 170c48756660a34d611b3a563ac26cd4564434ef
     prediction_sha256: 7a01382de3e95530ecdfabd7cee049712ce7e326f7d4d299e28c5b5ba981320c
     standalone_submission_name: SUBMIT_PROFILE_D_MISTRAL_ONLY_170c48756660_20260812T104512Z.jsonl

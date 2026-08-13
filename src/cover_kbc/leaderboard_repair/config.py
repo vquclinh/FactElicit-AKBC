@@ -1,4 +1,4 @@
-"""Configuration for the V3.2 leaderboard repair stack."""
+"""Configuration for the downstream leaderboard repair stack."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ DEFAULT_CAPS = {
 
 @dataclass(frozen=True)
 class RepairFeatures:
-    """Feature flags for L7-L9.
+    """Feature flags for the downstream leaderboard repair stack.
 
     All defaults are off so a config that omits `leaderboard_repair` exactly
     preserves the frozen pipeline.
@@ -42,7 +42,7 @@ class RepairFeatures:
     award_recipient_witness: bool = False
     award_time_sliced_recall: bool = False
     #: Retired Audit-0082/C2 flags retained only so historical configs parse.
-    #: The active runtime no longer implements L8/L9 mutation branches.
+    #: The active runtime no longer implements retired C2 mutation branches.
     l8_consistency: bool = False
     l8_stock_consistency: bool = False
     l9_final_risk_guard: bool = False
@@ -61,10 +61,10 @@ class RepairFeatures:
 
 @dataclass(frozen=True)
 class LeaderboardRepairConfig:
-    """Top-level L7-L9 config block."""
+    """Top-level downstream leaderboard repair config block."""
 
     enabled: bool = False
-    repair_version: str = "v3.2-l7-l9"
+    repair_version: str = "leaderboard-repair-default"
     profile: str = "off"
     features: RepairFeatures = field(default_factory=RepairFeatures)
     max_calls_by_relation: dict[str, int] = field(
@@ -90,7 +90,7 @@ class LeaderboardRepairConfig:
         })
         return cls(
             enabled=bool(block.get("enabled", False)),
-            repair_version=str(block.get("repair_version", "v3.2-l7-l9")),
+            repair_version=str(block.get("repair_version", "leaderboard-repair-default")),
             profile=str(block.get("profile", "off")),
             features=features,
             max_calls_by_relation=caps,
