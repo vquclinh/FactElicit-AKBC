@@ -16,16 +16,17 @@ from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig, build_c
 from cover_kbc.leaderboard_repair.relations import REPAIR_BY_RELATION
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
 from cover_kbc.leaderboard_repair.types import RepairResult, RowBudget, RowRepairRecord
-from cover_kbc.leaderboard_repair.util import AREA, CITY, candidate_signals
+from cover_kbc.leaderboard_repair.util import AREA, CAPACITY, CITY, candidate_signals
 
 
 class LeaderboardRepairStack:
     """Feature-flagged post-pipeline repair stack.
 
     The active baseline uses deterministic award metadata cleanup, E1's Mistral
-    City empty-row rescue, and Direct Area for hasArea rows. Retired C2 L8/L9
-    behaviours remain in historical audits/config metadata, but are no longer
-    executable runtime branches.
+    City empty-row rescue, Direct Area for hasArea rows, and E2 Capacity
+    Multi-View for hasCapacity rows. Retired C2 L8/L9 behaviours remain in
+    historical audits/config metadata, but are no longer executable runtime
+    branches.
     """
 
     def __init__(
@@ -134,6 +135,13 @@ class LeaderboardRepairStack:
             ):
                 by_relation[relation]["direct_area"] = (
                     _direct_area_accounting(relation_records)
+                )
+            if (
+                relation == CAPACITY
+                and self.config.features.mistral_capacity_multiview
+            ):
+                by_relation[relation]["capacity_multiview"] = (
+                    _capacity_multiview_accounting(relation_records)
                 )
 
         total_calls = sum(record.calls_used for record in records)
@@ -281,4 +289,85 @@ def _direct_area_accounting(
                     summary["unknown_count"] += 1
                 else:
                     summary["invalid_count"] += 1
+    return summary
+
+
+def _capacity_multiview_accounting(
+    records: Sequence[RowRepairRecord],
+) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "eligible_hasCapacity_rows": 0,
+        "capacity_multiview_v1_calls": 0,
+        "capacity_multiview_v2_calls": 0,
+        "capacity_multiview_v3_calls": 0,
+        "capacity_multiview_v4_calls": 0,
+        "capacity_multiview_judge_calls": 0,
+        "valid_count_by_view": {},
+        "unknown_count_by_view": {},
+        "invalid_count_by_view": {},
+        "strong_consensus_count": 0,
+        "judge_selected_count": 0,
+        "fallback_v1_count": 0,
+        "fallback_top_cluster_count": 0,
+        "empty_count": 0,
+        "error_count": 0,
+        "changed_rows": 0,
+    }
+    valid_by_view: Counter[str] = Counter()
+    unknown_by_view: Counter[str] = Counter()
+    invalid_by_view: Counter[str] = Counter()
+    for record in records:
+        decisions = [
+            decision for decision in record.decisions
+            if decision.get("feature") == "MistralCapacityMultiView"
+        ]
+        if not decisions:
+            continue
+        if record.changed:
+            summary["changed_rows"] = int(summary["changed_rows"]) + 1
+        if any("MistralCapacityMultiView" in item for item in record.skipped):
+            summary["error_count"] = int(summary["error_count"]) + 1
+        for decision in decisions:
+            kind = str(decision.get("decision", ""))
+            view_id = str(decision.get("view_id", ""))
+            status = str(decision.get("status", ""))
+            if kind == "eligible_has_capacity_row":
+                summary["eligible_hasCapacity_rows"] = (
+                    int(summary["eligible_hasCapacity_rows"]) + 1
+                )
+            elif kind == "view_output":
+                calls_key = f"{view_id}_calls"
+                if calls_key in summary:
+                    summary[calls_key] = int(summary[calls_key]) + 1
+                if status == "VALID_CAPACITY":
+                    valid_by_view[view_id] += 1
+                elif status == "UNKNOWN":
+                    unknown_by_view[view_id] += 1
+                else:
+                    invalid_by_view[view_id] += 1
+            elif kind == "judge_output":
+                summary["capacity_multiview_judge_calls"] = (
+                    int(summary["capacity_multiview_judge_calls"]) + 1
+                )
+            elif kind == "final_decision":
+                reason = str(decision.get("reason", ""))
+                if reason == "strong_cluster":
+                    summary["strong_consensus_count"] = (
+                        int(summary["strong_consensus_count"]) + 1
+                    )
+                elif reason == "judge_selected":
+                    summary["judge_selected_count"] = (
+                        int(summary["judge_selected_count"]) + 1
+                    )
+                elif reason == "fallback_v1":
+                    summary["fallback_v1_count"] = int(summary["fallback_v1_count"]) + 1
+                elif reason == "fallback_top_cluster":
+                    summary["fallback_top_cluster_count"] = (
+                        int(summary["fallback_top_cluster_count"]) + 1
+                    )
+                elif reason == "no_numeric_values":
+                    summary["empty_count"] = int(summary["empty_count"]) + 1
+    summary["valid_count_by_view"] = dict(sorted(valid_by_view.items()))
+    summary["unknown_count_by_view"] = dict(sorted(unknown_by_view.items()))
+    summary["invalid_count_by_view"] = dict(sorted(invalid_by_view.items()))
     return summary

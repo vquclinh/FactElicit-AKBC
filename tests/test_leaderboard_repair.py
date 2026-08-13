@@ -1,9 +1,8 @@
 """Active leaderboard repair stack tests.
 
-The active frozen line is integrated Profile E1: Profile D plus deterministic
-award metadata cleanup, Mistral City empty-row rescue and Direct Area. Retired
-B/C/C2 repair experiments remain documented in configs/audits but are no
-longer executable runtime branches.
+The active frozen line is Profile E2: integrated Profile E1 plus Capacity
+Multi-View for hasCapacity. Retired B/C/C2 repair experiments remain documented
+in configs/audits but are no longer executable runtime branches.
 """
 
 from __future__ import annotations
@@ -24,6 +23,8 @@ from cover_kbc.leaderboard_repair.stack import LeaderboardRepairStack, build_rep
 from cover_kbc.leaderboard_repair.util import (
     AREA,
     AWARD,
+    BORDERS,
+    CAPACITY,
     CITY,
     STOCK,
     normalize_award_metadata,
@@ -168,23 +169,37 @@ def test_e1_city_rescue_mutates_only_empty_deceased_city_rows():
     }
 
 
-def test_profile_configs_make_integrated_e1_current_and_retired_profiles_archival():
+def test_profile_configs_make_e2_current_and_retired_profiles_archival():
     old_e1 = _load("cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml")
-    current_e1 = _load(
+    previous_e1 = _load(
         "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml"
+    )
+    current_e2 = _load(
+        "cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml"
     )
     d = _load("cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml")
     b = _load("cover_kbc_v3_2_profile_b_repair_core_test.yaml")
     c = _load("cover_kbc_v3_2_profile_c_aggressive_recall_test.yaml")
     c2 = _load("cover_kbc_v3_2_profile_c2_aggressive_nonstock_test.yaml")
 
-    assert current_e1["experiment"]["name"] == (
-        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test"
+    assert current_e2["experiment"]["name"] == (
+        "cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test"
     )
-    assert current_e1["experiment"]["frozen_baseline"]["status"] == (
+    assert current_e2["experiment"]["frozen_baseline"]["status"] == (
         "FROZEN_CURRENT_BASELINE"
     )
-    assert current_e1["experiment"]["hidden_test_scores"]["all_relations"]["f1"] == 0.5752
+    assert current_e2["experiment"]["hidden_test_scores"]["all_relations"]["f1"] == 0.5836
+    assert current_e2["experiment"]["hidden_test_scores"][CAPACITY]["f1"] == 0.1633
+
+    assert previous_e1["experiment"]["name"] == (
+        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test"
+    )
+    assert previous_e1["experiment"]["frozen_baseline"]["status"] == (
+        "PREVIOUS_FROZEN_BASELINE"
+    )
+    assert previous_e1["experiment"]["frozen_baseline"]["superseded_by"] == (
+        "cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test"
+    )
     assert old_e1["experiment"]["profile_e1_probe"]["status"] == (
         "HISTORICAL_SUPERSEDED_CITY_ONLY_E1"
     )
@@ -192,9 +207,6 @@ def test_profile_configs_make_integrated_e1_current_and_retired_profiles_archiva
         "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test"
     )
     assert d["experiment"]["frozen_baseline"]["status"] == "PREVIOUS_FROZEN_BASELINE"
-    assert d["experiment"]["frozen_baseline"]["superseded_by"] == (
-        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test"
-    )
 
     for config in (b, c):
         assert config["experiment"]["historical"]["status"] == (
@@ -211,15 +223,16 @@ def test_profile_configs_make_integrated_e1_current_and_retired_profiles_archiva
     assert c2["leaderboard_repair"]["enabled"] is False
 
 
-def test_e1_active_flags_are_only_award_city_rescue_and_direct_area():
-    e1 = _load(
-        "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml"
+def test_e2_active_flags_are_only_award_city_area_and_capacity_multiview():
+    e2 = _load(
+        "cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml"
     )
-    repair = LeaderboardRepairConfig.from_mapping(e1["leaderboard_repair"])
+    repair = LeaderboardRepairConfig.from_mapping(e2["leaderboard_repair"])
     flags = asdict(repair.features)
     assert flags["award_metadata_cleanup"] is True
     assert flags["mistral_city_empty_rescue"] is True
     assert flags["mistral_direct_area"] is True
+    assert flags["mistral_capacity_multiview"] is True
     assert all(
         value is False
         for key, value in flags.items()
@@ -227,13 +240,17 @@ def test_e1_active_flags_are_only_award_city_rescue_and_direct_area():
             "award_metadata_cleanup",
             "mistral_city_empty_rescue",
             "mistral_direct_area",
+            "mistral_capacity_multiview",
         }
     )
     assert repair.direct_area_mode == "DIRECT_ALL"
+    assert repair.capacity_multiview_mode == "DIRECT_ALL"
     assert repair.max_calls_by_relation[AREA] == 1
+    assert repair.max_calls_by_relation[CAPACITY] == 5
     assert repair.max_calls_by_relation[CITY] == 2
     assert repair.max_calls_by_relation[AWARD] == 1
     assert repair.max_calls_by_relation[STOCK] == 0
+    assert repair.max_calls_by_relation[BORDERS] == 0
 
 
 def test_profile_readiness_and_probe_gate_match_active_development_line():
@@ -248,6 +265,7 @@ def test_profile_readiness_and_probe_gate_match_active_development_line():
         "cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml",
         "cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml",
         "cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml",
+        "cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml",
     ):
         profile = _load(name)
         readiness = evaluate_test_readiness(profile, base_dir=CONFIG_DIR, split="test")

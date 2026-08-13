@@ -1,4 +1,4 @@
-"""Integrated Profile E1 Direct Area baseline guards."""
+"""Historical integrated Profile E1 Direct Area baseline guards."""
 
 from __future__ import annotations
 
@@ -195,7 +195,10 @@ def test_integrated_e1_config_diff_from_city_only_e1_is_only_direct_area():
         "HISTORICAL_SUPERSEDED_CITY_ONLY_E1"
     )
     assert integrated_e1["experiment"]["frozen_baseline"]["status"] == (
-        "FROZEN_CURRENT_BASELINE"
+        "PREVIOUS_FROZEN_BASELINE"
+    )
+    assert integrated_e1["experiment"]["frozen_baseline"]["superseded_by"] == (
+        "cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test"
     )
     assert integrated_e1["experiment"]["frozen_baseline"]["prediction_sha256"] == (
         INTEGRATED_E1_PREDICTION_SHA256
@@ -206,7 +209,7 @@ def test_integrated_e1_config_diff_from_city_only_e1_is_only_direct_area():
         "f1": 0.5752,
     }
     assert integrated_e1["experiment"]["integrated_e1_baseline"][
-        "profile_e2_reserved_for_future"
+        "superseded_by_profile_e2_capacity_multiview"
     ] is True
 
 

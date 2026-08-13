@@ -9,9 +9,16 @@ from cover_kbc.types import Prediction
 
 from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
 from cover_kbc.leaderboard_repair.area import repair_area
+from cover_kbc.leaderboard_repair.capacity import repair_capacity
 from cover_kbc.leaderboard_repair.runtime import RepairCaller
 from cover_kbc.leaderboard_repair.types import CandidateSignal, RowRepairRecord
-from cover_kbc.leaderboard_repair.util import AREA, AWARD, CITY, normalize_award_metadata
+from cover_kbc.leaderboard_repair.util import (
+    AREA,
+    AWARD,
+    CAPACITY,
+    CITY,
+    normalize_award_metadata,
+)
 
 
 E1_CITY_RESCUE_FEATURE = "MistralCityEmptyRescue"
@@ -210,6 +217,7 @@ def _unique_by_strict_key(values: Iterable[str]) -> list[str]:
 
 REPAIR_BY_RELATION = {
     AREA: repair_area,
+    CAPACITY: repair_capacity,
     CITY: repair_city,
     AWARD: repair_award,
 }

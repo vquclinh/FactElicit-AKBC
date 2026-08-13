@@ -1,12 +1,12 @@
 # Implementation status — COVER-KBC v2
 
-Current frozen baseline: **Integrated Profile E1 — Mistral City empty rescue +
-Direct Area**, hidden TEST overall F1 `0.5752`.
-Integrated E1 is Profile D plus `AwardMetadataNormalizer`,
-`MistralCityEmptyRescue`, and `MistralDirectArea`.
+Current frozen baseline: **Profile E2 — Mistral Capacity Multi-View**, hidden
+TEST overall F1 `0.5836`.
+Profile E2 is integrated Profile E1 plus `MistralCapacityMultiView` for
+`hasCapacity`.
 
-Previous frozen baseline: **Profile D — Mistral-only verifier role swap**,
-hidden TEST overall F1 `0.4952`. Scope still follows
+Previous frozen baselines: integrated Profile E1 at hidden TEST overall F1
+`0.5752`, and Profile D at `0.4952`. Scope still follows
 `COVER_KBC_V2_ARCHITECTURE_SPEC.pdf`, with later V3/M20/M21 and
 leaderboard-probe audits recorded under [`docs/audits/`](audits/).
 
@@ -38,14 +38,17 @@ using `ScriptedRuntime` and synthetic logits.
 | **total unique neural parameters** | | **24,011,361,280** (24.01B ≤ 32B) |
 
 Current frozen baseline config:
-[`configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml`](../configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml).
+[`configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml`](../configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml).
 Previous frozen baseline config:
+[`configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml`](../configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml).
+Earlier Profile D baseline config:
 [`configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml`](../configs/experiments/cover_kbc_v3_3_profile_d_mistral_only_role_swap_test.yaml).
 Profile D starts from historical A+Award and changes only the verifier model
 identity from Qwen3.5-4B to the exact same Mistral24 checkpoint used by the
-enumerator. Integrated E1 adds City empty-row rescue and Direct Area. C2,
-numeric resolver, broad border repair, stock repair, award witness recall and
-other aggressive repair paths are retired and not part of the active runtime.
+enumerator. Integrated E1 adds City empty-row rescue and Direct Area. Profile
+E2 adds only Capacity Multi-View. C2, CHIV, numeric resolver, broad border
+repair, stock repair, award witness recall and other aggressive repair paths
+are retired and not part of the active runtime.
 
 ```
 Subject + Relation
@@ -59,13 +62,14 @@ Subject + Relation
    -> AwardMetadataNormalizer
    -> E1 City empty-row rescue only for final-empty personHasCityOfDeath rows
    -> Direct Area for every hasArea row
+   -> Capacity Multi-View for every hasCapacity row
    -> ObjectEntities
 ```
 
 The older Mistral+Qwen production/readiness calibration remains historical
-calibration provenance. Integrated E1 is hidden-TEST scored, but no new TRAIN
-calibration was invented for the verifier role swap, City rescue, or Direct
-Area.
+calibration provenance. Profile E2 is hidden-TEST scored, but no new TRAIN
+calibration was invented for the verifier role swap, City rescue, Direct Area,
+or Capacity Multi-View.
 
 ## 3. Module status
 
@@ -148,7 +152,7 @@ gold sets are partial, so a real cardinality estimate would be the wrong target.
 pip install -e '.[dev]'            # add '.[hf]' for neural backends
 
 python -m pytest -q
-python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml
+python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml
 python scripts/run_staged.py all --config configs/experiments/smoke_staged_scripted.yaml --limit 30
 ```
 
@@ -157,17 +161,19 @@ which drives the same three phases:
 
 ```bash
 python scripts/run_cover.py \
-  --config configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml \
+  --config configs/experiments/cover_kbc_v3_6_profile_e2_mistral_capacity_multiview_test.yaml \
   --no-eval
 ```
 
 Historical City-only E1 remains available at
 `configs/experiments/cover_kbc_v3_4_profile_e1_mistral_city_rescue_test.yaml`.
-Integrated E1 is hidden-TEST scored and frozen, but not newly TRAIN-calibrated.
+Integrated E1 remains available at
+`configs/experiments/cover_kbc_v3_5_profile_e1_mistral_city_direct_area_baseline_test.yaml`.
+Profile E2 is hidden-TEST scored and frozen, but not newly TRAIN-calibrated.
 
 ## 7. Status of results
 
-Integrated Profile E1 is the current frozen leaderboard baseline:
+Profile E2 is the current frozen leaderboard baseline:
 
 | relation | precision | recall | F1 |
 |---|---:|---:|---:|
@@ -175,9 +181,9 @@ Integrated Profile E1 is the current frozen leaderboard baseline:
 | companyTradesAtStockExchange | 0.9092 | 0.7863 | 0.7285 |
 | countryLandBordersCountry | 0.9712 | 0.9295 | 0.9291 |
 | hasArea | 0.6700 | 0.6600 | 0.6600 |
-| hasCapacity | 0.3776 | 0.1224 | 0.1224 |
+| hasCapacity | 0.2449 | 0.1633 | 0.1633 |
 | personHasCityOfDeath | 0.9600 | 0.5900 | 0.5700 |
-| **All Relations** | **0.7563** | **0.5929** | **0.5752** |
+| **All Relations** | **0.7289** | **0.6013** | **0.5836** |
 
 Promotion provenance:
 
@@ -185,19 +191,21 @@ Promotion provenance:
   `170c48756660a34d611b3a563ac26cd4564434ef`
 - previous baseline Profile D prediction SHA256:
   `7a01382de3e95530ecdfabd7cee049712ce7e326f7d4d299e28c5b5ba981320c`
-- local integrated E1 prediction artifact:
-  `outputs/submission-best/predictions.jsonl`
-- local integrated E1 prediction SHA256:
+- previous integrated E1 prediction SHA256:
   `67bd1bc8af01de177520d93f9b5b9fc30839d56f36ceeeb6263813662e52d8a6`
+- Profile E2 winning artifact SHA256:
+  `WINNING_ARTIFACT_SHA_PENDING_USER_IMPORT`
 - rows: 475
 - unique model portfolio:
   `mistralai/Mistral-Small-3.2-24B-Instruct-2506`
 - Qwen runtime calls: 0
 - Direct Area applies to all 100 `hasArea` rows with one Mistral call per row.
+- Capacity Multi-View applies to all 98 `hasCapacity` rows with four Mistral
+  views and an adaptive one-call ambiguity judge.
 
-Profile D remains preserved at overall F1 `0.4952`. Historical A+Award remains
-preserved at overall F1 `0.4910`; C2 remains a retired negative hidden TEST
-probe at overall F1 `0.4012`.
+Integrated Profile E1 remains preserved at overall F1 `0.5752`; Profile D
+remains preserved at overall F1 `0.4952`. Historical A+Award remains preserved
+at overall F1 `0.4910`; C2 and CHIV remain retired negative hidden TEST probes.
 
 Official upstream baseline, for later comparison — read from the upstream README
 at the pinned commit, **not** reproduced by us:
@@ -214,19 +222,17 @@ at the pinned commit, **not** reproduced by us:
 
 ## 8. Open issues
 
-1. **Calibration caveat for integrated E1.** The verifier role swap and the
-   post-pipeline City/Area calls are hidden-TEST scored but not newly
+1. **Calibration caveat for Profile E2.** The verifier role swap and the
+   post-pipeline City/Area/Capacity calls are hidden-TEST scored but not newly
    TRAIN-calibrated. The explicit leaderboard-probe readiness path remains the
    honest status.
-2. **Profile E2 is reserved for future work.** No Profile E2 runtime or config
-   is implemented in this promotion.
-3. **The official `baseline.py` does not exist upstream.** The README references
+2. **The official `baseline.py` does not exist upstream.** The README references
    it, but commit `30d8cfa` contains no such file. "Baseline reproduction" can
    only be a *reconstruction* from the published config, prompt templates,
    `abstract_model.py` interface and results table.
-4. **Thresholds are frozen from existing provenance, not newly re-derived for
+3. **Thresholds are frozen from existing provenance, not newly re-derived for
    D.**
-5. **Upstream artifacts left as-is** (intentional): stale
+4. **Upstream artifacts left as-is** (intentional): stale
    `seriesHasNumberOfEpisodes` prompt row, `SubjectEntityID` docstring.
 
 Deferred: DoLa intermediate-layer decoding (experimental plugin; the
