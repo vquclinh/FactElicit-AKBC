@@ -1,1 +1,0 @@
-- [Never commit — the user commits themselves](never-commit-user-commits-themselves.md) — do the verification, leave it uncommitted, even if the task spec says to commit

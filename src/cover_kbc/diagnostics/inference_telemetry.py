@@ -2,11 +2,9 @@
 
 This is one half of the V3A gold boundary, and the half that runs *inside* a
 run. It reads a finished ``EvidenceGraph`` and its ``Prediction`` and writes
-down where every candidate got to. It never reads a label, never imports the
-gold reader, never touches ``ObjectEntities`` from a dataset row, and has no
-parameter through which one could be supplied. Correctness is decided later,
-offline, by :mod:`cover_kbc.diagnostics.gold_attribution` - which is a separate
-module for exactly this reason.
+down where every candidate got to. It never reads a label, never touches
+``ObjectEntities`` from a dataset row, and has no parameter through which one
+could be supplied.
 
 The three properties that make it safe to run on any split, blind included:
 

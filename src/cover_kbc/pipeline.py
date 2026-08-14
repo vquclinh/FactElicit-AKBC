@@ -50,11 +50,6 @@ from cover_kbc.controller import (
     choose_action,
     record_outcome,
 )
-from cover_kbc.controller_calibration.collection_policy import (
-    BLOCKED_HISTORY,
-    BLOCKED_OTHER,
-    BLOCKED_UNAFFORDABLE,
-)
 from cover_kbc.coverage import GateState, RCSEState, trusted_keys
 from cover_kbc.elicitation.engine import ElicitationEngine
 from cover_kbc.elicitation.library import get_view, views_for
@@ -155,6 +150,10 @@ from cover_kbc.verification import (
     verify_candidate,
     verify_multi_template,
 )
+
+BLOCKED_UNAFFORDABLE = "blocked_unaffordable"
+BLOCKED_HISTORY = "blocked_history"
+BLOCKED_OTHER = "blocked_other"
 
 #: Gate questions per relation. Phrased so that NO is the empty-answer case.
 GATE_QUESTIONS: dict[str, str] = {
@@ -653,11 +652,11 @@ class CoverPipeline:
         #: state can report query-scoped accounting rather than a run total.
         self._query_baselines: dict[tuple[str, str, int], dict[str, int]] = {}
         # Chooses which *legal* catalogue entries execute. Deliberately
-        # injected rather than decided here: in collection it will be the
-        # TrainCollectionPolicy, in production it belongs to Modules 20/21, and
-        # neither of those is the pipeline's judgement to make. ``None`` means
-        # nothing is selected - fail-closed, so an uncalibrated production run
-        # spends nothing rather than verifying everything it can see.
+        # injected rather than decided here: in production it belongs to
+        # Modules 20/21, and that is not the pipeline's judgement to make.
+        # ``None`` means nothing is selected - fail-closed, so an uncalibrated
+        # production run spends nothing rather than verifying everything it can
+        # see.
         self.action_selector = action_selector
         # V3A failure attribution, observability only. ``None`` - the default -
         # is the pre-V3A code path exactly. When present it is consulted at one
@@ -1424,8 +1423,8 @@ class CoverPipeline:
         no role to swap to and nothing to defer.
 
         Audit 0078. Applying the staged restriction to interleaved runs created
-        a pending action with no consumer: ``resume`` is called only by
-        ``scripts/run_staged.py``, never by ``run``/``run_query``. The action
+        a pending action with no consumer: ``resume`` is not used by
+        ``run``/``run_query``. The action
         therefore survived to ``decide_graph``, which correctly refused to
         finalize over executable work - 39 of the 475 frozen TEST rows died
         that way, every one ``companyTradesAtStockExchange``, the only relation

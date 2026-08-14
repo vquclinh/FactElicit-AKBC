@@ -6,8 +6,12 @@ Writes predictions, a full per-query trace, a call-level log and a run manifest
 under ``outputs/<run_id>/``.
 
 Examples:
-    python scripts/run_cover.py --config configs/experiments/smoke_abstain.yaml
-    python scripts/run_cover.py --config configs/experiments/smoke_abstain.yaml --limit 30
+    python scripts/run_cover.py \
+      --config configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml \
+      --split test --no-eval
+    python scripts/run_cover.py \
+      --config configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml \
+      --split val --limit 30
 """
 
 from __future__ import annotations
@@ -152,10 +156,8 @@ def build_diagnostic_recorder(
     """The V3A failure recorder, if this experiment asks for one.
 
     ``None`` - the default for every committed leaderboard config - is the
-    pre-V3A path exactly. The recorder itself is gold-free and would be safe on
-    any split; what is *not* safe is joining it to labels, and that is refused
-    by :class:`~cover_kbc.diagnostics.TrainGoldAttribution` at analysis time
-    rather than guessed at here.
+    pre-V3A path exactly. The recorder itself is gold-free and safe on blind
+    splits because it only observes predictions after finalization.
     """
     block = dict(config.get("diagnostics") or {})
     if not block.get("enabled", False):
@@ -553,10 +555,9 @@ def main() -> int:
                     f"{required.value} ({readiness.state.value})")
         print(f"readiness   : {readiness.state.value}")
 
-    # Resolve both logical roles through the *canonical* resolver, so this
-    # entry point cannot disagree with `run_staged.py` about which models a
-    # config declares - and cannot silently fall back to a stub when handed the
-    # frozen target's nested profile.
+    # Resolve both logical roles through the canonical resolver, so this entry
+    # point cannot silently fall back to a stub when handed the frozen target's
+    # nested profile.
     runtime = build_runtime(enumerator_cfg)
     verifier_runtime = (
         runtime if verifier_cfg == enumerator_cfg else build_runtime(verifier_cfg)
@@ -622,11 +623,9 @@ def main() -> int:
         print(f"telemetry   : {telemetry_path}")
 
     with RunTracer(out_dir / "calls.jsonl") as tracer:
-        # The canonical config path, so this runner cannot drift from
-        # `run_staged.py` on any factual setting. The execution mode is the
-        # config's to declare and is resolved above, not overridden here: a
-        # runner that silently ran a mode the experiment did not ask for makes
-        # the config a comment (Audit 0051).
+        # The execution mode is the config's to declare and is resolved above,
+        # not overridden here: a runner that silently ran a mode the experiment
+        # did not ask for makes the config a comment (Audit 0051).
         config_block = dict(pipeline_cfg)
         config_block["mode"] = execution_mode.value
         config_block.setdefault("seed", manifest.seed)

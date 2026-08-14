@@ -85,7 +85,7 @@ User-provided hidden TEST evidence for the current Profile F1 baseline:
 
 Zero-object reference: P = 0.6038, R = 0.9412, F1 = 0.7356.
 
-## Ablation History
+## Configuration History
 
 | Profile | Main change | Overall hidden F1 |
 |---|---|---:|
@@ -95,9 +95,9 @@ Zero-object reference: P = 0.6038, R = 0.9412, F1 = 0.7356.
 | Profile E3 | E2 + MistralAreaMultiView | 0.5857 |
 | Profile F1 | E3 + MistralStockEmptyRescue | 0.5878 |
 
-Negative probes such as C2, CHIV, NSMV/Neighborhood capacity, broad numeric
-repair, and direct border experiments are retained only as historical
-provenance in configs/docs/audits when useful. They are not current runtime
+Only the current F1 config is kept under `configs/experiments/` for the public
+release. Historical probes and rejected variants are documented in
+`docs/audits/` when provenance matters, but they are not active runtime
 components.
 
 ## Reproduction
@@ -113,59 +113,51 @@ Zero-model checks:
 
 ```bash
 python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml
-python scripts/run_stock_empty_rescue.py --config configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml --baseline-predictions outputs/submission-best/predictions.jsonl --split test --output-dir outputs/f1_stock_empty_rescue_dry_run --dry-run
-python -m pytest tests/test_profile_f1_stock_empty_rescue.py -q
+python -m pytest -q
 ```
 
-Leaderboard-tested Profile F1 reproduction path:
+Full pipeline entrypoint:
+
+```bash
+python scripts/run_cover.py \
+  --config configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml \
+  --split test \
+  --output-dir outputs/profile_f1_full_run \
+  --no-eval
+```
+
+The hidden TEST gold labels are not available locally, so TEST metrics cannot be
+recomputed from this repository.
+
+The leaderboard-tested F1 promotion was artifact-seeded: it starts from the
+hidden-winning Profile E3 475-row prediction artifact and changes only eligible
+empty `companyTradesAtStockExchange` rows. If you have that E3 artifact, use:
 
 ```bash
 python scripts/run_stock_empty_rescue.py \
   --config configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml \
-  --baseline-predictions outputs/submission-best/predictions.jsonl \
+  --baseline-predictions /path/to/profile_e3_best_predictions.jsonl \
   --split test \
   --output-dir outputs/f1_stock_empty_rescue
 
 python scripts/merge_targeted_relation_results.py \
-  --baseline-predictions outputs/submission-best/predictions.jsonl \
+  --baseline-predictions /path/to/profile_e3_best_predictions.jsonl \
   --targeted-results outputs/f1_stock_empty_rescue/stock_empty_rescue_results.jsonl \
   --relation companyTradesAtStockExchange \
   --expected-targeted-rows 100 \
   --output outputs/profile_f1_stock_empty_rescue_475.jsonl
-```
 
-This path starts from the hidden-winning Profile E3 475-row artifact and changes
-only the Stock rows. A fresh full `scripts/run_cover.py` TEST run is a valid
-diagnostic run, but it recomputes every relation and is not the artifact-seeded
-path that produced the user-provided 0.5878 leaderboard score.
-
-Targeted relation utilities:
-
-```bash
-python scripts/run_area_multiview.py \
-  --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml \
+python scripts/package_submission.py \
+  --predictions outputs/profile_f1_stock_empty_rescue_475.jsonl \
+  --input benchmark/data/test.jsonl \
   --split test \
-  --output-dir outputs/e3_area_multiview
-
-python scripts/run_capacity_multiview.py \
-  --config configs/experiments/cover_kbc_v3_7_profile_e3_mistral_area_multiview_test.yaml \
-  --split test \
-  --output-dir outputs/e3_capacity_multiview
-
-python scripts/merge_targeted_relation_results.py \
-  --baseline-predictions outputs/<baseline>/predictions.jsonl \
-  --targeted-results outputs/e3_area_multiview/area_multiview_results.jsonl \
-  --relation hasArea \
-  --expected-targeted-rows 100 \
-  --output outputs/<merged>/predictions.jsonl
+  --out outputs/profile_f1_stock_empty_rescue_submission.zip
 ```
 
 Local validation:
 
 ```bash
 python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
-python -m pyflakes src/ tests/ scripts/
-python -m pytest tests/ -q -p no:randomly
 python -m pytest tests/ -q
 git diff --check
 ```
@@ -174,19 +166,18 @@ git diff --check
 
 ```text
 benchmark/                 local official snapshot, treated as read-only
-configs/experiments/       current and archival profile configs
+configs/experiments/       current F1 profile config
 configs/calibration/       calibration artifacts used by core V3 modules
-docs/                      implementation status, audits, paper summary
-notebooks/                 Colab/runtime driver notebooks
-scripts/run_cover.py       full pipeline runner / diagnostic entrypoint
-scripts/run_area_multiview.py
-scripts/run_capacity_multiview.py
+docs/                      implementation status and audit trail
+notebooks/                 F1 Colab runtime notebook
+scripts/run_cover.py       full pipeline runner
 scripts/run_stock_empty_rescue.py
 scripts/merge_targeted_relation_results.py
+scripts/package_submission.py
 scripts/audit_model_budget.py
 src/cover_kbc/             production package
 src/cover_kbc/leaderboard_repair/
-tests/                     non-neural regression and integrity tests
+tests/                     public smoke tests
 outputs/                   generated artifacts, gitignored
 ```
 
@@ -201,5 +192,4 @@ no subject-answer lookup table.
 ## Historical Audits
 
 [`docs/audits/`](docs/audits/) contains the provenance trail for prior profiles,
-promotions, diagnostics, and rejected probes. The paper-ready consolidated
-summary is [`docs/PAPER_SYSTEM_SUMMARY.md`](docs/PAPER_SYSTEM_SUMMARY.md).
+promotions, diagnostics, and rejected probes.
