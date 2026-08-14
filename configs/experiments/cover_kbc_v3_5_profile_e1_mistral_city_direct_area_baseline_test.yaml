@@ -253,6 +253,7 @@ leaderboard_repair:
   enabled: true
   repair_version: v3.5-profile-e1-mistral-city-direct-area-baseline
   profile: E1_MISTRAL_CITY_DIRECT_AREA_BASELINE
+  city_rescue_mode: DIRECT_ALL_STANDALONE
   direct_area_mode: DIRECT_ALL
   features:
     stock_entity_guard: false

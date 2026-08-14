@@ -74,6 +74,7 @@ class LeaderboardRepairConfig:
     min_verifier_confidence: float = 0.55
     stock_rescue_min_confidence: float = 0.60
     numeric_cluster_tolerance: float = 0.05
+    city_rescue_mode: str = "EMPTY_ONLY"
     stock_empty_rescue_mode: str = "OFF"
     stock_empty_rescue_min_support: int = 3
     direct_area_mode: str = "OFF"
@@ -102,6 +103,7 @@ class LeaderboardRepairConfig:
                 block.get("stock_rescue_min_confidence", 0.60)
             ),
             numeric_cluster_tolerance=float(block.get("numeric_cluster_tolerance", 0.05)),
+            city_rescue_mode=str(block.get("city_rescue_mode", "EMPTY_ONLY")),
             stock_empty_rescue_mode=str(block.get("stock_empty_rescue_mode", "OFF")),
             stock_empty_rescue_min_support=int(
                 block.get("stock_empty_rescue_min_support", 3)

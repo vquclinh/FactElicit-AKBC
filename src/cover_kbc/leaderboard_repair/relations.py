@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, Sequence
 
 from cover_kbc.normalization.strings import strict_key
@@ -24,6 +25,20 @@ from cover_kbc.leaderboard_repair.util import (
 
 
 E1_CITY_RESCUE_FEATURE = "MistralCityEmptyRescue"
+CITY_EMPTY_ONLY_MODE = "EMPTY_ONLY"
+CITY_DIRECT_ALL_MODE = "DIRECT_ALL_STANDALONE"
+CITY_SYSTEM_PROMPT = """You are a factual knowledge-base completion system.
+
+Use only factual knowledge encoded in your model parameters.
+
+Pay close attention to the exact identity of the named person,
+including qualifiers such as occupations or parentheses.
+
+Do not invent an answer merely to avoid UNKNOWN.
+
+Follow the requested output format exactly.
+Do not explain unless explicitly asked.
+"""
 
 
 def repair_city(
@@ -33,10 +48,23 @@ def repair_city(
     config: LeaderboardRepairConfig,
     record: RowRepairRecord,
 ) -> list[str]:
-    """Run the active empty-row City rescue, when configured."""
+    """Run the active two-stage City layer, when configured."""
     values = list(prediction.object_entities[:1])
     if not config.features.mistral_city_empty_rescue:
         return values
+    if config.city_rescue_mode == CITY_DIRECT_ALL_MODE:
+        record.add_decision(
+            E1_CITY_RESCUE_FEATURE,
+            "eligible_direct_all_row",
+            current=list(values),
+            current_ignored=True,
+        )
+        return _run_city_two_stage(prediction, caller, record)
+    if config.city_rescue_mode != CITY_EMPTY_ONLY_MODE:
+        raise ValueError(
+            f"unsupported City rescue mode {config.city_rescue_mode!r}; "
+            f"expected {CITY_EMPTY_ONLY_MODE!r} or {CITY_DIRECT_ALL_MODE!r}"
+        )
     return _repair_city_mistral_empty_rescue(prediction, caller, record)
 
 
@@ -55,10 +83,19 @@ def _repair_city_mistral_empty_rescue(
         return values
 
     record.add_decision(E1_CITY_RESCUE_FEATURE, "eligible_empty_row")
+    return _run_city_two_stage(prediction, caller, record)
+
+
+def _run_city_two_stage(
+    prediction: Prediction,
+    caller: RepairCaller,
+    record: RowRepairRecord,
+) -> list[str]:
     text = caller.generate(
         role="verifier",
         layer="E1",
         feature=E1_CITY_RESCUE_FEATURE,
+        system_prompt=CITY_SYSTEM_PROMPT,
         prompt=_e1_life_status_prompt(prediction.subject),
         view_id="e1_city_life_status",
         max_new_tokens=8,
@@ -85,6 +122,7 @@ def _repair_city_mistral_empty_rescue(
         role="verifier",
         layer="E1",
         feature=E1_CITY_RESCUE_FEATURE,
+        system_prompt=CITY_SYSTEM_PROMPT,
         prompt=_e1_city_prompt(prediction.subject),
         view_id="e1_city_of_death_recall",
         max_new_tokens=20,
@@ -182,7 +220,7 @@ def _e1_city_prompt(subject: str) -> str:
 
 def _parse_e1_life_status(text: str) -> str:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if len(lines) != 1:
+    if not lines:
         return "INVALID"
     label = lines[0].upper()
     if label in {"DECEASED", "LIVING", "UNKNOWN"}:
@@ -192,15 +230,16 @@ def _parse_e1_life_status(text: str) -> str:
 
 def _parse_e1_city_output(text: str) -> tuple[str, str | None]:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if len(lines) != 1:
+    if not lines:
         return "INVALID", None
     line = lines[0]
     if line.upper() == "UNKNOWN":
         return "UNKNOWN", None
-    if not line.startswith("CITY:"):
+    match = re.match(r"^CITY\s*:\s*(.+?)\s*$", line, flags=re.IGNORECASE)
+    if match is None:
         return "INVALID", None
-    city = line[len("CITY:"):].strip()
-    if not city or any(separator in city for separator in (";", "|")):
+    city = match.group(1).strip()
+    if not city or city.upper() == "UNKNOWN":
         return "INVALID", None
     return "CITY", city
 

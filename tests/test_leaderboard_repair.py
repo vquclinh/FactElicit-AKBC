@@ -274,6 +274,7 @@ def test_e2_active_flags_are_only_award_city_area_and_capacity_multiview():
         }
     )
     assert repair.direct_area_mode == "DIRECT_ALL"
+    assert repair.city_rescue_mode == "DIRECT_ALL_STANDALONE"
     assert repair.area_multiview_mode == "OFF"
     assert repair.capacity_multiview_mode == "DIRECT_ALL"
     assert repair.max_calls_by_relation[AREA] == 1
@@ -307,6 +308,7 @@ def test_e3_active_flags_are_e2_plus_area_multiview_only():
         }
     )
     assert repair.direct_area_mode == "DIRECT_ALL"
+    assert repair.city_rescue_mode == "DIRECT_ALL_STANDALONE"
     assert repair.area_multiview_mode == "DIRECT_ALL"
     assert repair.capacity_multiview_mode == "DIRECT_ALL"
     assert repair.max_calls_by_relation[AREA] == 5
@@ -342,6 +344,7 @@ def test_f1_active_flags_are_e3_plus_stock_empty_rescue_only():
         }
     )
     assert repair.direct_area_mode == "DIRECT_ALL"
+    assert repair.city_rescue_mode == "DIRECT_ALL_STANDALONE"
     assert repair.area_multiview_mode == "DIRECT_ALL"
     assert repair.capacity_multiview_mode == "DIRECT_ALL"
     assert repair.stock_empty_rescue_mode == "EMPTY_ONLY_STRONG_CONSENSUS"

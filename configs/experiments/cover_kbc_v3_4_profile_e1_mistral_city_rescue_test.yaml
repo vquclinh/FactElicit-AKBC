@@ -237,6 +237,7 @@ leaderboard_repair:
   enabled: true
   repair_version: v3.4-profile-e1-mistral-city-empty-rescue
   profile: E1_MISTRAL_CITY_RESCUE
+  city_rescue_mode: DIRECT_ALL_STANDALONE
   direct_area_mode: "OFF"
   features:
     stock_entity_guard: false

@@ -263,6 +263,7 @@ leaderboard_repair:
   enabled: true
   repair_version: v3.6-profile-e2-mistral-capacity-multiview
   profile: E2_MISTRAL_CAPACITY_MULTIVIEW
+  city_rescue_mode: DIRECT_ALL_STANDALONE
   direct_area_mode: DIRECT_ALL
   capacity_multiview_mode: DIRECT_ALL
   features:

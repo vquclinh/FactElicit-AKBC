@@ -265,6 +265,7 @@ leaderboard_repair:
   enabled: true
   repair_version: v3.7-profile-e3-mistral-area-multiview
   profile: E3_MISTRAL_AREA_MULTIVIEW
+  city_rescue_mode: DIRECT_ALL_STANDALONE
   direct_area_mode: DIRECT_ALL
   area_multiview_mode: DIRECT_ALL
   capacity_multiview_mode: DIRECT_ALL

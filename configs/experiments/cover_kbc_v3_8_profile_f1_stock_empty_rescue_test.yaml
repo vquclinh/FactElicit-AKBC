@@ -293,6 +293,7 @@ leaderboard_repair:
   enabled: true
   repair_version: v3.8-profile-f1-stock-empty-rescue
   profile: F1_STOCK_EMPTY_RESCUE
+  city_rescue_mode: DIRECT_ALL_STANDALONE
   direct_area_mode: DIRECT_ALL
   area_multiview_mode: DIRECT_ALL
   capacity_multiview_mode: DIRECT_ALL

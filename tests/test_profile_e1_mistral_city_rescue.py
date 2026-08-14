@@ -17,6 +17,7 @@ from cover_kbc.controller_calibration.readiness import (
 from cover_kbc.data.loader import load_dataset
 from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
 from cover_kbc.leaderboard_repair.relations import (
+    CITY_SYSTEM_PROMPT,
     _parse_e1_city_output,
     _parse_e1_life_status,
 )
@@ -86,6 +87,7 @@ def _prediction_affecting_sections(config: dict) -> dict:
         "leaderboard_repair_enabled": repair.enabled,
         "leaderboard_repair_features": asdict(repair.features),
         "leaderboard_repair_caps": dict(repair.max_calls_by_relation),
+        "leaderboard_repair_city_rescue_mode": repair.city_rescue_mode,
         "query_intelligence": config["query_intelligence"],
         "specialists": config["specialists"],
         "consensus": config["consensus"],
@@ -118,7 +120,15 @@ def test_e1_config_diff_from_profile_d_is_only_city_rescue_and_metadata():
     profile_e1 = _load(E1_PATH)
 
     diff = _semantic_diff(profile_d, profile_e1)
-    assert set(diff) == {"leaderboard_repair_caps", "leaderboard_repair_features"}
+    assert set(diff) == {
+        "leaderboard_repair_caps",
+        "leaderboard_repair_city_rescue_mode",
+        "leaderboard_repair_features",
+    }
+    assert diff["leaderboard_repair_city_rescue_mode"] == [
+        "EMPTY_ONLY",
+        "DIRECT_ALL_STANDALONE",
+    ]
 
     feature_before, feature_after = diff["leaderboard_repair_features"]
     feature_delta = {
@@ -288,6 +298,10 @@ def test_e1_deceased_city_sets_singleton_and_uses_same_mistral_runtime():
     assert [request.decode.temperature for request in runtime.requests] == [0.0, 0.0]
     assert [request.decode.top_p for request in runtime.requests] == [1.0, 1.0]
     assert [request.decode.max_new_tokens for request in runtime.requests] == [8, 20]
+    assert [request.system_prompt for request in runtime.requests] == [
+        CITY_SYSTEM_PROMPT,
+        CITY_SYSTEM_PROMPT,
+    ]
     assert runtime.requests[0].prompt == (
         "Subject: Deceased City Person\n\n"
         "Question:\n"
@@ -328,22 +342,49 @@ def test_e1_deceased_city_sets_singleton_and_uses_same_mistral_runtime():
     assert summary["changed_rows"] == 1
 
 
-def test_e1_city_parser_rejects_arbitrary_prose_and_packed_outputs():
+def test_e1_city_parser_matches_standalone_colab_first_line_protocol():
     assert _parse_e1_life_status("deceased") == "DECEASED"
-    assert _parse_e1_life_status("DECEASED\nbecause") == "INVALID"
+    assert _parse_e1_life_status("DECEASED\nbecause") == "DECEASED"
     assert _parse_e1_life_status("ALIVE") == "INVALID"
     assert _parse_e1_city_output("CITY: Los Angeles") == ("CITY", "Los Angeles")
+    assert _parse_e1_city_output("city : Los Angeles") == ("CITY", "Los Angeles")
     assert _parse_e1_city_output("CITY: Łódź") == ("CITY", "Łódź")
     assert _parse_e1_city_output("UNKNOWN") == ("UNKNOWN", None)
     assert _parse_e1_city_output("The person died in Paris.") == ("INVALID", None)
-    assert _parse_e1_city_output("CITY: Paris; London") == ("INVALID", None)
-    assert _parse_e1_city_output("CITY: Paris\nNo explanation") == ("INVALID", None)
+    assert _parse_e1_city_output("CITY: UNKNOWN") == ("INVALID", None)
+    assert _parse_e1_city_output("CITY: Paris\nNo explanation") == ("CITY", "Paris")
+
+
+def test_city_direct_all_mode_overwrites_non_empty_with_standalone_protocol():
+    prediction = _prediction("Known Nonempty Person", CITY, ["Old City"])
+    runtime = CapturingScriptedRuntime(
+        {
+            ("e1_city_life_status", "Known Nonempty Person", CITY): ["DECEASED"],
+            ("e1_city_of_death_recall", "Known Nonempty Person", CITY): ["CITY: New City"],
+        },
+        model_id=MISTRAL_ID,
+        role="verifier",
+    )
+    config = LeaderboardRepairConfig.from_mapping({
+        "enabled": True,
+        "city_rescue_mode": "DIRECT_ALL_STANDALONE",
+        "features": {"mistral_city_empty_rescue": True},
+        "max_calls_by_relation": {CITY: 2},
+    })
+    result = _stack(config, runtime).apply([prediction], queries=[_query(prediction)])
+    assert result.predictions[0].object_entities == ["New City"]
+    assert result.records[0].calls_used == 2
+    assert [request.system_prompt for request in runtime.requests] == [
+        CITY_SYSTEM_PROMPT,
+        CITY_SYSTEM_PROMPT,
+    ]
 
 
 def test_e1_does_not_mutate_non_city_relations_or_enable_c2_features():
     profile_e1 = _load(E1_PATH)
     repair = LeaderboardRepairConfig.from_mapping(profile_e1["leaderboard_repair"])
     features = asdict(repair.features)
+    assert repair.city_rescue_mode == "DIRECT_ALL_STANDALONE"
     for feature in (
         "stock_entity_guard",
         "stock_alias_dedupe",
