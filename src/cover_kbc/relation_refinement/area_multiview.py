@@ -1,4 +1,4 @@
-"""Profile E3 Mistral Area Multi-View resolver."""
+"""Profile F1 Mistral Area Multi-View resolver."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from typing import Mapping, Sequence
 
 from cover_kbc.types import Prediction
 
-from cover_kbc.leaderboard_repair.area import (
+from cover_kbc.relation_refinement.area import (
     DIRECT_AREA_SYSTEM_PROMPT,
     direct_area_prompt,
 )
-from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
-from cover_kbc.leaderboard_repair.runtime import RepairCaller
-from cover_kbc.leaderboard_repair.types import CandidateSignal, RowRepairRecord
+from cover_kbc.relation_refinement.config import RelationRefinementConfig
+from cover_kbc.relation_refinement.runtime import RefinementCaller
+from cover_kbc.relation_refinement.types import CandidateSignal, RowRefinementRecord
 
 
 AREA_MULTIVIEW_FEATURE = "MistralAreaMultiView"
@@ -146,7 +146,7 @@ class AreaDecision:
 
 
 def area_view_prompt(subject: str, view_id: str) -> str:
-    """Render one of the four tested Profile E3 Area views."""
+    """Render one of the four Profile F1 Area views."""
     if view_id == "area_multiview_v1_direct":
         return direct_area_prompt(subject)
     if view_id == "area_multiview_v2_entity_type":
@@ -377,14 +377,14 @@ def decide_area_multiview(
     return AreaDecision((), NO_VALUE, judge_status=judge_status, judge_value=judge_value or "")
 
 
-def repair_area_multiview(
+def refine_area_multiview(
     prediction: Prediction,
     _signals: Sequence[CandidateSignal],
-    caller: RepairCaller,
-    config: LeaderboardRepairConfig,
-    record: RowRepairRecord,
+    caller: RefinementCaller,
+    config: RelationRefinementConfig,
+    record: RowRefinementRecord,
 ) -> list[str]:
-    """Run Profile E3 Area Multi-View, when configured."""
+    """Run Profile F1 Area Multi-View, when configured."""
     current = list(prediction.object_entities[:1])
     if not config.features.mistral_area_multiview:
         return current
@@ -408,7 +408,7 @@ def repair_area_multiview(
     for view_id in VIEW_IDS:
         text = caller.generate(
             role="verifier",
-            layer="E3_AREA_MULTIVIEW",
+            layer="F1_AREA_MULTIVIEW",
             feature=AREA_MULTIVIEW_FEATURE,
             system_prompt=AREA_SYSTEM_PROMPT,
             prompt=area_view_prompt(prediction.subject, view_id),
@@ -461,7 +461,7 @@ def repair_area_multiview(
         )
         text = caller.generate(
             role="verifier",
-            layer="E3_AREA_MULTIVIEW",
+            layer="F1_AREA_MULTIVIEW",
             feature=AREA_MULTIVIEW_FEATURE,
             system_prompt=AREA_SYSTEM_PROMPT,
             prompt=prompt,

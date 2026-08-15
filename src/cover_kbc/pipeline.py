@@ -733,7 +733,7 @@ class CoverPipeline:
     def _v3_train_collection_active(self) -> bool:
         """Whether V3 may mutate the evidence graph before Module 8.
 
-        V3 shadow remains post-hoc observability. The only source milestone path
+        V3 shadow remains observation-only. The only source milestone path
         allowed to execute V3 actions without TRAIN-derived V3 calibration is
         deterministic TRAIN collection.
         """

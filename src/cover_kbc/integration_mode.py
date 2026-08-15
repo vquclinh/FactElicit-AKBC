@@ -70,7 +70,7 @@ class IntegrationMode(str, Enum):
 
         Collection executes actions chosen by a fixed policy rather than by
         calibrated utility. Pointing it at VALIDATION would produce a
-        leaderboard number for a system that does not exist, and pointing it at
+        validation score for a system that does not exist, and pointing it at
         TEST would spend the blind split on diagnostics.
         """
         return self is IntegrationMode.TRAIN_CALIBRATION_COLLECTION_ONLY

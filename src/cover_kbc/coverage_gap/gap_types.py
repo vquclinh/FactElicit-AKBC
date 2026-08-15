@@ -9,7 +9,7 @@ cardinality oracle. The upgraded version constructs a non-neural ensemble"*::
 **`R_t` is a residual search-need heuristic. It is not a probability.** It is
 not the probability the answer is wrong, not the number of unseen true objects,
 not the probability another object exists, not factual confidence and not
-expected leaderboard gain. Every public rendering of it says so.
+expected official-score gain. Every public rendering of it says so.
 
 Three things this module is **not**:
 

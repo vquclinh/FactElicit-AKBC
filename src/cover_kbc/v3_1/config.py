@@ -8,7 +8,7 @@ last stage of a query: the pre-M8 hypothesis graph that Module 21 reads is
 built with ``prediction=None`` (``pipeline._v3_hypothesis_graph``), so nothing
 decided here can reach action eligibility, action execution, action cost, state
 transitions, hypothesis construction, M21 input state or M20 budget behaviour.
-The only V3 graph that sees a prediction is the post-hoc observation graph
+The only V3 graph that sees a prediction is the observation-only graph
 (``pipeline._observe_v3_core``), which is telemetry. That is the formal
 compatibility proof, and :mod:`cover_kbc.v3_1.compatibility` restates it in a
 form tests can assert against.

@@ -1,4 +1,4 @@
-"""Configuration for the downstream leaderboard repair stack."""
+"""Configuration for the downstream relation refinement stack."""
 
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ DEFAULT_CAPS = {
 
 
 @dataclass(frozen=True)
-class RepairFeatures:
-    """Feature flags for the downstream leaderboard repair stack.
+class RefinementFeatures:
+    """Feature flags for the downstream relation refinement stack.
 
-    All defaults are off so a config that omits `leaderboard_repair` exactly
+    All defaults are off so a config that omits `relation_refinement` exactly
     preserves the frozen pipeline.
     """
 
@@ -38,7 +38,7 @@ class RepairFeatures:
     mistral_direct_area: bool = False
     mistral_area_multiview: bool = False
     mistral_capacity_multiview: bool = False
-    capacity_repair: bool = False
+    capacity_refinement: bool = False
     award_metadata_cleanup: bool = False
     award_recipient_witness: bool = False
     award_time_sliced_recall: bool = False
@@ -50,7 +50,7 @@ class RepairFeatures:
     l9_stock_guard: bool = False
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any] | None) -> "RepairFeatures":
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> "RefinementFeatures":
         fields = cls.__dataclass_fields__
         data = {
             key: bool(value)
@@ -61,13 +61,13 @@ class RepairFeatures:
 
 
 @dataclass(frozen=True)
-class LeaderboardRepairConfig:
-    """Top-level downstream leaderboard repair config block."""
+class RelationRefinementConfig:
+    """Top-level downstream relation refinement config block."""
 
     enabled: bool = False
-    repair_version: str = "leaderboard-repair-default"
+    refinement_version: str = "relation-refinement-default"
     profile: str = "off"
-    features: RepairFeatures = field(default_factory=RepairFeatures)
+    features: RefinementFeatures = field(default_factory=RefinementFeatures)
     max_calls_by_relation: dict[str, int] = field(
         default_factory=lambda: dict(DEFAULT_CAPS)
     )
@@ -80,13 +80,13 @@ class LeaderboardRepairConfig:
     direct_area_mode: str = "OFF"
     area_multiview_mode: str = "OFF"
     capacity_multiview_mode: str = "OFF"
-    artifacts_file: str = "leaderboard_repair.jsonl"
-    accounting_file: str = "repair_accounting.json"
+    artifacts_file: str = "relation_refinement.jsonl"
+    accounting_file: str = "refinement_accounting.json"
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any] | None) -> "LeaderboardRepairConfig":
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> "RelationRefinementConfig":
         block = dict(raw or {})
-        features = RepairFeatures.from_mapping(block.get("features"))
+        features = RefinementFeatures.from_mapping(block.get("features"))
         caps = dict(DEFAULT_CAPS)
         caps.update({
             str(key): int(value)
@@ -94,7 +94,7 @@ class LeaderboardRepairConfig:
         })
         return cls(
             enabled=bool(block.get("enabled", False)),
-            repair_version=str(block.get("repair_version", "leaderboard-repair-default")),
+            refinement_version=str(block.get("refinement_version", "relation-refinement-default")),
             profile=str(block.get("profile", "off")),
             features=features,
             max_calls_by_relation=caps,
@@ -111,13 +111,13 @@ class LeaderboardRepairConfig:
             direct_area_mode=str(block.get("direct_area_mode", "OFF")),
             area_multiview_mode=str(block.get("area_multiview_mode", "OFF")),
             capacity_multiview_mode=str(block.get("capacity_multiview_mode", "OFF")),
-            artifacts_file=str(block.get("artifacts_file", "leaderboard_repair.jsonl")),
-            accounting_file=str(block.get("accounting_file", "repair_accounting.json")),
+            artifacts_file=str(block.get("artifacts_file", "relation_refinement.jsonl")),
+            accounting_file=str(block.get("accounting_file", "refinement_accounting.json")),
         )
 
     def cap_for(self, relation: str) -> int:
         return int(self.max_calls_by_relation.get(relation, 0))
 
 
-def build_config(raw: Mapping[str, Any] | None) -> LeaderboardRepairConfig:
-    return LeaderboardRepairConfig.from_mapping(raw)
+def build_config(raw: Mapping[str, Any] | None) -> RelationRefinementConfig:
+    return RelationRefinementConfig.from_mapping(raw)

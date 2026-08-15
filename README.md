@@ -81,7 +81,7 @@ Profile F1 final layer:
 
 | Relation | Final strategy |
 |---|---|
-| `countryLandBordersCountry` | core small-set border inference; no final repair |
+| `countryLandBordersCountry` | core small-set border inference; no final refinement |
 | `companyTradesAtStockExchange` | core stock path plus empty-only stock-exchange rescue |
 | `personHasCityOfDeath` | two-stage deceased gate followed by strict city recall |
 | `hasArea` | four-view numeric resolver with 5% clustering |
@@ -143,9 +143,9 @@ Profile F1 hidden TEST scores:
 
 Zero-object cases: precision `0.6038`, recall `0.9412`, F1 `0.7356`.
 
-These hidden TEST numbers are leaderboard-reported. The hidden labels are not
-included in this repository, so hidden TEST metrics cannot be recomputed
-locally.
+These hidden TEST numbers come from the official hidden TEST evaluation
+service. The hidden labels are not included in this repository, so hidden TEST
+metrics cannot be recomputed locally.
 
 ## Installation
 
@@ -169,7 +169,7 @@ Mistral-Small-3.2-24B checkpoint; the reported runs used Colab A100.
 | TRAIN-derived calibration artifacts | yes | `configs/calibration/v3/` |
 | Mistral model weights | no | downloaded or mounted through Hugging Face tooling |
 | Hidden TEST gold labels | no | unavailable by task design |
-| Profile E3 baseline prediction artifact | no | required only for exact artifact-seeded F1 promotion |
+| Prior prediction artifacts | no | not required by the canonical full-system runner |
 
 ## Usage
 
@@ -192,27 +192,14 @@ python scripts/run_cover.py \
   --no-eval
 ```
 
-Leaderboard-tested F1 promotion path:
+Package the full-run TEST predictions:
 
 ```bash
-python scripts/run_stock_empty_rescue.py \
-  --config configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml \
-  --baseline-predictions /path/to/profile_e3_best_predictions.jsonl \
-  --split test \
-  --output-dir outputs/f1_stock_empty_rescue
-
-python scripts/merge_targeted_relation_results.py \
-  --baseline-predictions /path/to/profile_e3_best_predictions.jsonl \
-  --targeted-results outputs/f1_stock_empty_rescue/stock_empty_rescue_results.jsonl \
-  --relation companyTradesAtStockExchange \
-  --expected-targeted-rows 100 \
-  --output outputs/profile_f1_stock_empty_rescue_475.jsonl
-
 python scripts/package_submission.py \
-  --predictions outputs/profile_f1_stock_empty_rescue_475.jsonl \
+  --predictions outputs/profile_f1_full_run/predictions.jsonl \
   --input benchmark/data/test.jsonl \
   --split test \
-  --out outputs/profile_f1_stock_empty_rescue_submission.zip
+  --out outputs/profile_f1_full_run/submission.zip
 ```
 
 Local validation on a labelled split:
@@ -232,7 +219,7 @@ python scripts/evaluate_local.py \
 | `trace.jsonl` | per-query inference trace |
 | `calls.jsonl` | model-call accounting and raw call records |
 | `manifest.json` | config, dataset, model, and run metadata |
-| `repair_accounting.json` | Profile F1 final-layer mutation accounting, when enabled |
+| `refinement_accounting.json` | Profile F1 final-layer mutation accounting, when enabled |
 | `*.zip` | packaged submission archive |
 
 Generated artifacts are ignored by git under `outputs/`, `predictions/`, and
@@ -245,14 +232,11 @@ revision, the benchmark snapshot, and the run manifest produced at inference
 time. Generation is greedy throughout, so repeated runs with the same runtime
 and artifacts avoid sampling variance.
 
-There are two valid reproduction modes:
-
-| Mode | What it does | Caveat |
-|---|---|---|
-| Full runner | recomputes every relation from the F1 config | does not locally score hidden TEST |
-| Artifact-seeded F1 promotion | starts from the Profile E3 hidden TEST artifact and changes eligible empty stock rows only | requires the historical E3 prediction file |
-
-The leaderboard-reported F1 score belongs to the artifact-seeded promotion path.
+The canonical reproduction path is the full runner: it recomputes every relation
+from the committed F1 config and writes a complete `predictions.jsonl` artifact.
+Hidden TEST labels are unavailable, so this repository can validate row coverage,
+format, model budget, and accounting locally, but it cannot recompute hidden TEST
+F1.
 
 ## Repository structure
 
@@ -263,8 +247,6 @@ configs/calibration/v3/    calibration artifacts used by the F1 config
 docs/                      public implementation status
 notebooks/                 Profile F1 Colab notebook
 scripts/run_cover.py       full pipeline runner
-scripts/run_stock_empty_rescue.py
-scripts/merge_targeted_relation_results.py
 scripts/package_submission.py
 scripts/audit_model_budget.py
 src/cover_kbc/             COVER-KBC package
@@ -287,10 +269,11 @@ or loading neural weights.
 
 ## Evidence and limitations
 
-- Hidden TEST scores are leaderboard-reported and cannot be recomputed from this
-  repository because hidden labels are unavailable.
-- Exact reproduction of the submitted F1 artifact requires the Profile E3
-  baseline prediction file, which is not committed.
+- Hidden TEST scores come from the official hidden TEST evaluation service and
+  cannot be recomputed from this repository because hidden labels are
+  unavailable.
+- The canonical TEST artifact is produced by the full system runner from the
+  committed F1 config; no prior TEST prediction artifact is an input.
 - `hasCapacity` and `awardWonBy` remain the weakest relations; the current
   system favors precision and strict parsing over broad speculative recall.
 - The system is closed-book, so all factual evidence comes from the frozen

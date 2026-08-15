@@ -1,14 +1,14 @@
-"""Model-call helpers with separate leaderboard repair accounting."""
+"""Model-call helpers with separate relation refinement accounting."""
 
 from __future__ import annotations
 
 from cover_kbc.models.base import GenerationRequest, LabelScoreRequest, LMRuntime
 from cover_kbc.types import DecodeProfile
 
-from cover_kbc.leaderboard_repair.types import RepairCall, RowBudget
+from cover_kbc.relation_refinement.types import RefinementCall, RowBudget
 
 
-class RepairCaller:
+class RefinementCaller:
     """Spend post-pipeline calls against a row-local cap."""
 
     def __init__(
@@ -54,11 +54,11 @@ class RepairCaller:
                     "view_id": view_id,
                     "subject": self.subject,
                     "relation": self.relation,
-                    "repair_feature": feature,
+                    "refinement_feature": feature,
                 },
             )
         )
-        call = RepairCall(
+        call = RefinementCall(
             layer=layer,
             feature=feature,
             relation=self.relation,
@@ -92,13 +92,13 @@ class RepairCaller:
                     "view_id": view_id,
                     "subject": self.subject,
                     "relation": self.relation,
-                    "repair_feature": feature,
+                    "refinement_feature": feature,
                 },
             )
         )
         probs = result.probabilities()
         label = max(probs, key=lambda item: (probs[item], item)) if probs else "UNKNOWN"
-        call = RepairCall(
+        call = RefinementCall(
             layer=layer,
             feature=feature,
             relation=self.relation,

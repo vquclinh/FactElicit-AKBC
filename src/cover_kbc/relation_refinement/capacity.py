@@ -10,9 +10,9 @@ from typing import Mapping, Sequence
 
 from cover_kbc.types import Prediction
 
-from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
-from cover_kbc.leaderboard_repair.runtime import RepairCaller
-from cover_kbc.leaderboard_repair.types import CandidateSignal, RowRepairRecord
+from cover_kbc.relation_refinement.config import RelationRefinementConfig
+from cover_kbc.relation_refinement.runtime import RefinementCaller
+from cover_kbc.relation_refinement.types import CandidateSignal, RowRefinementRecord
 
 
 CAPACITY_MULTIVIEW_FEATURE = "MistralCapacityMultiView"
@@ -313,12 +313,12 @@ def parse_capacity_judge_output(
     return INVALID, None
 
 
-def repair_capacity(
+def refine_capacity(
     prediction: Prediction,
     _signals: Sequence[CandidateSignal],
-    caller: RepairCaller,
-    config: LeaderboardRepairConfig,
-    record: RowRepairRecord,
+    caller: RefinementCaller,
+    config: RelationRefinementConfig,
+    record: RowRefinementRecord,
 ) -> list[str]:
     """Run Profile E2 Capacity Multi-View, when configured.
 

@@ -1,9 +1,9 @@
 """Can this environment load the checkpoints it is about to build?
 
-The active Profile E3 pipeline is Mistral-only, but historical profiles can
+The active Profile F1 pipeline is Mistral-only, but historical profiles can
 still name the retired Qwen verifier. This preflight is therefore model-aware:
-it enforces the Mistral floor for current E-profile/Profile-D runs and the stricter
-Qwen3.5 floor only when a declared neural block actually names Qwen.
+it enforces the Mistral floor for current profiles and the stricter Qwen3.5
+floor only when a declared neural block actually names Qwen.
 
 Nothing here downloads a checkpoint or imports ``torch``. The version is read
 from installed package metadata rather than by importing ``transformers``.
@@ -25,8 +25,8 @@ QWEN3_5_MIN_TRANSFORMERS = (5, 2, 0)
 QWEN3_5_MODEL_TYPE = "qwen3_5"
 
 #: First floor retained for the current Mistral-Small-3.2/Tekken path. This is
-#: lower than the historical Qwen floor, so E3 no longer inherits a Qwen-only
-#: dependency requirement.
+#: lower than the historical Qwen floor, so current Mistral-only profiles no
+#: longer inherit a Qwen-only dependency requirement.
 MISTRAL3_MIN_TRANSFORMERS = (4, 52, 4)
 MISTRAL3_MODEL_TYPE = "mistral3"
 

@@ -9,9 +9,9 @@ from typing import Sequence
 
 from cover_kbc.types import Prediction
 
-from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
-from cover_kbc.leaderboard_repair.runtime import RepairCaller
-from cover_kbc.leaderboard_repair.types import CandidateSignal, RowRepairRecord
+from cover_kbc.relation_refinement.config import RelationRefinementConfig
+from cover_kbc.relation_refinement.runtime import RefinementCaller
+from cover_kbc.relation_refinement.types import CandidateSignal, RowRefinementRecord
 
 
 DIRECT_AREA_FEATURE = "MistralDirectArea"
@@ -115,12 +115,12 @@ def direct_area_values(parsed: ParsedArea) -> list[str]:
     return [parsed.value] if parsed.valid else []
 
 
-def repair_area(
+def refine_area(
     prediction: Prediction,
     _signals: Sequence[CandidateSignal],
-    caller: RepairCaller,
-    config: LeaderboardRepairConfig,
-    record: RowRepairRecord,
+    caller: RefinementCaller,
+    config: RelationRefinementConfig,
+    record: RowRefinementRecord,
 ) -> list[str]:
     """Run integrated E1 Direct Area, when configured.
 
@@ -129,9 +129,9 @@ def repair_area(
     ``[]``. The old numeric answer is not retained as a fallback.
     """
     if config.features.mistral_area_multiview:
-        from cover_kbc.leaderboard_repair.area_multiview import repair_area_multiview
+        from cover_kbc.relation_refinement.area_multiview import refine_area_multiview
 
-        return repair_area_multiview(prediction, _signals, caller, config, record)
+        return refine_area_multiview(prediction, _signals, caller, config, record)
 
     values = list(prediction.object_entities[:1])
     if not config.features.mistral_direct_area:

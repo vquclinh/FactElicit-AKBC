@@ -1,54 +1,34 @@
-# COVER-KBC V3.8 Profile F1 - Stock Empty Rescue frozen baseline.
+# COVER-KBC V3.8 Profile F1 - frozen full-system TEST profile.
 #
-# Current frozen baseline source of truth:
-#   Profile F1 overall F1 = 0.5878.
-#   Profile E3 overall F1 = 0.5857, previous frozen baseline.
-#   Profile E2 overall F1 = 0.5836, previous frozen baseline.
-#   Integrated Profile E1 overall F1 = 0.5752, historical frozen baseline.
-#   Profile D overall F1 = 0.4952, previous frozen baseline.
-#   Historical City-only E1 remains available as v3.4 provenance.
-#   A+AWARD overall F1 = 0.4910, historical superseded baseline.
-#   C2 overall F1 = 0.4012, retired negative probe.
-#
-# This Profile F1 baseline keeps Profile E3 unchanged for every relation except
-# companyTradesAtStockExchange, then applies MistralStockEmptyRescue only to
-# stock rows whose E3 ObjectEntities are empty.
+# This is the public full-system runner profile for the submitted COVER-KBC
+# configuration. It recomputes every TEST row from the official input using one
+# frozen Mistral checkpoint, the active controller, and relation refinement
+# modules. No prior TEST prediction artifact is consumed by this config.
 
 experiment:
   name: cover_kbc_v3_8_profile_f1_stock_empty_rescue_test
   split: test
   seed: 42
   notes: >-
-    V3.8 Profile F1 frozen baseline. It is Profile E3 plus only
-    MistralStockEmptyRescue for empty companyTradesAtStockExchange rows.
-    Hidden TEST overall F1 is 0.5878 and stock F1 is 0.7385. This records a
-    user-provided controlled hidden-TEST stock-empty rescue probe; the rejected
-    capacity exactness probe remains reverted and not active.
+    V3.8 Profile F1 frozen full-system configuration. The TEST runner executes
+    the complete COVER-KBC inference stack from benchmark rows to final
+    predictions.jsonl, including active control, blind verification, typed
+    numeric finalization, city empty handling, award cleanup, and stock
+    empty-row rescue. Hidden TEST overall F1 is 0.5878 and stock F1 is 0.7385.
   frozen_baseline:
     status: FROZEN_CURRENT_BASELINE
     hidden_test_overall_f1: 0.5878
     hidden_test_companyTradesAtStockExchange_f1: 0.7385
     hidden_test_hasArea_f1: 0.6700
     hidden_test_hasCapacity_f1: 0.1633
-    local_prediction_artifact_path: WINNING_PROFILE_F1_ARTIFACT_PENDING_USER_IMPORT
-    prediction_sha256: WINNING_PROFILE_F1_ARTIFACT_SHA_PENDING_USER_IMPORT
-    artifact_status: WINNING_PROFILE_F1_ARTIFACT_NOT_AVAILABLE_LOCALLY
+    canonical_runner: scripts/run_cover.py
+    canonical_output: outputs/profile_f1_full_run/predictions.jsonl
+    prior_test_prediction_artifact_input: false
     unique_neural_parameters: 24011361280
     qwen_runtime_calls: 0
-    calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  baseline_profile:
-    name: cover_kbc_v3_7_profile_e3_mistral_area_multiview_test
-    status: HISTORICAL_BASELINE_SUPERSEDED_BY_PROFILE_F1
-    hidden_test_overall_f1: 0.5857
-    hidden_test_hasArea_f1: 0.6700
-    hidden_test_companyTradesAtStockExchange_f1: 0.7285
-    hidden_test_hasCapacity_f1: 0.1633
-    prediction_sha256: WINNING_PROFILE_E3_ARTIFACT_SHA_PENDING_USER_IMPORT
-    qwen_runtime_calls: 0
-    unique_neural_parameters: 24011361280
-    calibration_status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  profile_f1_baseline:
-    status: HIDDEN_TEST_SCORED_FROZEN_BASELINE
+    calibration_status: CONTROLLED_TEST_SUBMISSION_REVIEW
+  profile_f1_system:
+    status: HIDDEN_TEST_SCORED_FULL_SYSTEM_PROFILE
     architecture:
       - Profile D core Mistral-only pipeline
       - AwardMetadataNormalizer
@@ -63,9 +43,9 @@ experiment:
     stock_empty_rescue_mode: EMPTY_ONLY_STRONG_CONSENSUS
     stock_empty_rescue_min_support: 3
     chiv_active: false
-    chiv_status: RETIRED_NEGATIVE_HIDDEN_TEST_PROBE
-    area_multiview_hidden_test_status: USER_PROVIDED_POSITIVE_CONTROLLED_PROBE
-    stock_empty_rescue_hidden_test_status: USER_PROVIDED_POSITIVE_CONTROLLED_PROBE
+    chiv_status: RETIRED_NOT_ACTIVE
+    area_multiview_status: ACTIVE_FULL_SYSTEM_COMPONENT
+    stock_empty_rescue_status: ACTIVE_FULL_SYSTEM_COMPONENT
     standalone_area_observations_are_runtime_knowledge: false
     standalone_capacity_observations_are_runtime_knowledge: false
     standalone_stock_observations_are_runtime_knowledge: true
@@ -104,60 +84,6 @@ experiment:
       precision: 0.6038
       recall: 0.9412
       f1: 0.7356
-  score_deltas_vs_profile_e3:
-    all_relations: 0.0021
-    hasCapacity: 0.0000
-    hasArea: 0.0000
-    personHasCityOfDeath: 0.0000
-    awardWonBy: 0.0000
-    companyTradesAtStockExchange: 0.0100
-    countryLandBordersCountry: 0.0000
-  stock_probe_history:
-    profile_e3:
-      overall_f1: 0.5857
-      companyTradesAtStockExchange_precision: 0.9092
-      companyTradesAtStockExchange_recall: 0.7863
-      companyTradesAtStockExchange_f1: 0.7285
-    empty_rescue:
-      status: PROMOTED
-      overall_f1: 0.5878
-      companyTradesAtStockExchange_precision: 0.8992
-      companyTradesAtStockExchange_recall: 0.7963
-      companyTradesAtStockExchange_f1: 0.7385
-      delta_vs_profile_e3_overall_f1: 0.0021
-      delta_vs_profile_e3_stock_f1: 0.0100
-  capacity_probe_history:
-    old_capacity_path:
-      hasCapacity_f1: 0.1224
-    direct_mistral_capacity:
-      overall_f1: 0.5794
-      hasCapacity_f1: 0.1429
-    chiv:
-      status: RETIRED_NEGATIVE_HIDDEN_TEST_PROBE
-      overall_f1: 0.5773
-      hasCapacity_f1: 0.1327
-    multiview:
-      status: PROMOTED
-      overall_f1: 0.5836
-      hasCapacity_precision: 0.2449
-      hasCapacity_recall: 0.1633
-      hasCapacity_f1: 0.1633
-  area_probe_history:
-    old_area:
-      hasArea_f1: 0.3600
-    direct_mistral_area:
-      overall_f1: 0.5752
-      hasArea_f1: 0.6600
-    multiview:
-      status: PROMOTED
-      overall_f1: 0.5857
-      hasArea_precision: 0.6700
-      hasArea_recall: 0.6700
-      hasArea_f1: 0.6700
-      delta_vs_profile_e2_overall_f1: 0.0021
-      delta_vs_profile_e2_hasArea_f1: 0.0100
-  winning_output_shape:
-    artifact_status: WINNING_PROFILE_F1_ARTIFACT_PENDING_USER_IMPORT
   direct_area_accounting:
     eligible_hasArea_rows: 100
     maximum_direct_area_calls: 100
@@ -176,16 +102,16 @@ experiment:
     model_backed_calls_use_mistral_only: true
   stock_empty_rescue_accounting:
     eligible_companyTradesAtStockExchange_rows: 100
-    empty_rows_attempted: E3_EMPTY_STOCK_ROW_COUNT_ARTIFACT_DEPENDENT
+    empty_rows_attempted: RUNTIME_DETERMINED_FROM_CURRENT_EVIDENCE_STATE
     maximum_calls_per_empty_stock_row: 4
     acceptance_min_support: 3
     max_accepted_exchanges_per_empty_row: 1
     model_backed_calls_use_mistral_only: true
 
-leaderboard_probe:
+test_submission_review:
   enabled: true
-  status: CALIBRATION_REVIEW_LEADERBOARD_PROBE
-  purpose: Profile F1 frozen baseline with Stock Empty Rescue on Profile E3
+  status: CONTROLLED_TEST_SUBMISSION_REVIEW
+  purpose: Allow the frozen full-system TEST config to run with the declared calibration review blockers.
   role_swap: MISTRAL_ONLY_VERIFIER
   accepts_readiness_blockers:
     - "selection.v3_1: CALIBRATION_REVIEW_REQUIRED"
@@ -289,9 +215,9 @@ pipeline:
         award_expansion_and_fp_cap: false
         scientific_notation_acquisition: false
 
-leaderboard_repair:
+relation_refinement:
   enabled: true
-  repair_version: v3.8-profile-f1-stock-empty-rescue
+  refinement_version: v3.8-profile-f1-stock-empty-rescue
   profile: F1_STOCK_EMPTY_RESCUE
   city_rescue_mode: DIRECT_ALL_STANDALONE
   direct_area_mode: DIRECT_ALL
@@ -314,7 +240,7 @@ leaderboard_repair:
     mistral_direct_area: true
     mistral_area_multiview: true
     mistral_capacity_multiview: true
-    capacity_repair: false
+    capacity_refinement: false
     award_metadata_cleanup: true
     award_recipient_witness: false
     award_time_sliced_recall: false

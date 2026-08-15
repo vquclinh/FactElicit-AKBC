@@ -1,4 +1,4 @@
-"""Typed records emitted by the downstream leaderboard repair stack."""
+"""Typed records emitted by the relation refinement stack."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, Sequence
 
 @dataclass(frozen=True)
 class CandidateSignal:
-    """One pre-final candidate made available to post-pipeline repair."""
+    """One pre-final candidate made available to post-pipeline refinement."""
 
     value: str
     source: str
@@ -29,7 +29,7 @@ class CandidateSignal:
 
 
 @dataclass
-class RepairCall:
+class RefinementCall:
     """One post-pipeline model call, accounted separately from M20/M21."""
 
     layer: str
@@ -61,8 +61,8 @@ class RepairCall:
 
 
 @dataclass
-class RowRepairRecord:
-    """Audit record for one repaired or inspected row."""
+class RowRefinementRecord:
+    """Audit record for one refined or inspected row."""
 
     subject: str
     relation: str
@@ -71,7 +71,7 @@ class RowRepairRecord:
     after: list[str]
     features: list[str] = field(default_factory=list)
     decisions: list[dict[str, Any]] = field(default_factory=list)
-    calls: list[RepairCall] = field(default_factory=list)
+    calls: list[RefinementCall] = field(default_factory=list)
     budget_cap: int = 0
     skipped: list[str] = field(default_factory=list)
 
@@ -109,20 +109,20 @@ class RowRepairRecord:
 
 
 @dataclass(frozen=True)
-class RepairResult:
-    """Output rows plus repair audit records."""
+class RefinementResult:
+    """Output rows plus refinement audit records."""
 
     predictions: Sequence[Any]
-    records: Sequence[RowRepairRecord]
+    records: Sequence[RowRefinementRecord]
     accounting: dict[str, Any]
 
 
 @dataclass
 class RowBudget:
-    """Per-row cap for post-pipeline repair calls."""
+    """Per-row cap for post-pipeline refinement calls."""
 
     cap: int
-    calls: list[RepairCall] = field(default_factory=list)
+    calls: list[RefinementCall] = field(default_factory=list)
 
     @property
     def remaining(self) -> int:
@@ -131,7 +131,7 @@ class RowBudget:
     def can_spend(self, amount: int = 1) -> bool:
         return self.remaining >= amount
 
-    def record(self, call: RepairCall) -> None:
+    def record(self, call: RefinementCall) -> None:
         if not self.can_spend():
-            raise RuntimeError("repair call budget exceeded")
+            raise RuntimeError("refinement call budget exceeded")
         self.calls.append(call)

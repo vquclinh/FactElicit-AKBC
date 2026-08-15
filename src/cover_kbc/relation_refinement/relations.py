@@ -1,4 +1,4 @@
-"""Relation-specific active leaderboard repair modules."""
+"""Relation-specific active relation refinement modules."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from typing import Iterable, Sequence
 from cover_kbc.normalization.strings import strict_key
 from cover_kbc.types import Prediction
 
-from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig
-from cover_kbc.leaderboard_repair.area import repair_area
-from cover_kbc.leaderboard_repair.capacity import repair_capacity
-from cover_kbc.leaderboard_repair.runtime import RepairCaller
-from cover_kbc.leaderboard_repair.stock_empty_rescue import repair_stock
-from cover_kbc.leaderboard_repair.types import CandidateSignal, RowRepairRecord
-from cover_kbc.leaderboard_repair.util import (
+from cover_kbc.relation_refinement.config import RelationRefinementConfig
+from cover_kbc.relation_refinement.area import refine_area
+from cover_kbc.relation_refinement.capacity import refine_capacity
+from cover_kbc.relation_refinement.runtime import RefinementCaller
+from cover_kbc.relation_refinement.stock_empty_rescue import refine_stock
+from cover_kbc.relation_refinement.types import CandidateSignal, RowRefinementRecord
+from cover_kbc.relation_refinement.util import (
     AREA,
     AWARD,
     CAPACITY,
@@ -41,12 +41,12 @@ Do not explain unless explicitly asked.
 """
 
 
-def repair_city(
+def refine_city(
     prediction: Prediction,
     _signals: Sequence[CandidateSignal],
-    caller: RepairCaller,
-    config: LeaderboardRepairConfig,
-    record: RowRepairRecord,
+    caller: RefinementCaller,
+    config: RelationRefinementConfig,
+    record: RowRefinementRecord,
 ) -> list[str]:
     """Run the active two-stage City layer, when configured."""
     values = list(prediction.object_entities[:1])
@@ -65,13 +65,13 @@ def repair_city(
             f"unsupported City rescue mode {config.city_rescue_mode!r}; "
             f"expected {CITY_EMPTY_ONLY_MODE!r} or {CITY_DIRECT_ALL_MODE!r}"
         )
-    return _repair_city_mistral_empty_rescue(prediction, caller, record)
+    return _refine_city_mistral_empty_rescue(prediction, caller, record)
 
 
-def _repair_city_mistral_empty_rescue(
+def _refine_city_mistral_empty_rescue(
     prediction: Prediction,
-    caller: RepairCaller,
-    record: RowRepairRecord,
+    caller: RefinementCaller,
+    record: RowRefinementRecord,
 ) -> list[str]:
     values = list(prediction.object_entities)
     if values:
@@ -88,8 +88,8 @@ def _repair_city_mistral_empty_rescue(
 
 def _run_city_two_stage(
     prediction: Prediction,
-    caller: RepairCaller,
-    record: RowRepairRecord,
+    caller: RefinementCaller,
+    record: RowRefinementRecord,
 ) -> list[str]:
     text = caller.generate(
         role="verifier",
@@ -153,12 +153,12 @@ def _run_city_two_stage(
     return []
 
 
-def repair_award(
+def refine_award(
     prediction: Prediction,
     _signals: Sequence[CandidateSignal],
-    _caller: RepairCaller,
-    config: LeaderboardRepairConfig,
-    record: RowRepairRecord,
+    _caller: RefinementCaller,
+    config: RelationRefinementConfig,
+    record: RowRefinementRecord,
 ) -> list[str]:
     """Apply the active deterministic award metadata cleanup."""
     values = list(prediction.object_entities)
@@ -256,10 +256,10 @@ def _unique_by_strict_key(values: Iterable[str]) -> list[str]:
     return out
 
 
-REPAIR_BY_RELATION = {
-    AREA: repair_area,
-    CAPACITY: repair_capacity,
-    CITY: repair_city,
-    STOCK: repair_stock,
-    AWARD: repair_award,
+REFINEMENT_BY_RELATION = {
+    AREA: refine_area,
+    CAPACITY: refine_capacity,
+    CITY: refine_city,
+    STOCK: refine_stock,
+    AWARD: refine_award,
 }

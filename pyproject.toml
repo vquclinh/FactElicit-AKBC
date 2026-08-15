@@ -17,10 +17,10 @@ dependencies = [
 # installable (and testable) on machines without a GPU stack.
 hf = [
     "torch",
-    # Active Profile E3/E2/E1/Profile-D runs are Mistral-only. Historical Qwen configs still
-    # fail closed through `cover_kbc.models.preflight` if attempted on an older
-    # transformers build, but the current pipeline no longer requires Qwen's
-    # stricter 5.2.0 architecture floor.
+    # The active Profile F1 runtime is Mistral-only. Historical Qwen configs
+    # still fail closed through `cover_kbc.models.preflight` if attempted on an
+    # older transformers build, but the current pipeline no longer requires
+    # Qwen's stricter 5.2.0 architecture floor.
     "transformers>=4.52.4",
     "accelerate",
     # Mistral-Small-3.2 ships a Tekken tokenizer; AutoTokenizer cannot

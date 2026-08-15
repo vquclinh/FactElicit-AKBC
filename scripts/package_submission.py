@@ -42,8 +42,8 @@ OFFICIAL_FIELDS = ("SubjectEntity", "Relation", "ObjectEntities")
 ARCHIVE_MEMBER = "predictions.jsonl"
 
 #: The official blind split, pinned. The packager is the last thing between a
-#: run and the leaderboard, so it knows which file a TEST submission may be
-#: built against rather than trusting whatever ``--input`` names. Kept in step
+#: run and a TEST submission, so it knows which file an archive may be built
+#: against rather than trusting whatever ``--input`` names. Kept in step
 #: with `configs/experiments/cover_kbc_v2_test.yaml` by test.
 OFFICIAL_TEST = {
     "name": "test.jsonl",

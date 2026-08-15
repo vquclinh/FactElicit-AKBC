@@ -53,7 +53,7 @@ from cover_kbc.controller_calibration.readiness import (
 )
 from cover_kbc.diagnostics import DiagnosticRecorder, InferenceTelemetryWriter
 from cover_kbc.integration_mode import IntegrationMode
-from cover_kbc.leaderboard_repair import build_repair_stack
+from cover_kbc.relation_refinement import build_refinement_stack
 from cover_kbc.coverage_gap.missingness import build_coverage_gap_estimator
 from cover_kbc.evidence.layer4 import build_layer4_integrator
 from cover_kbc.verification.bidirectional_verifier import build_bidirectional_verifier
@@ -129,7 +129,7 @@ def _wants_production(config: dict) -> bool:
     )
 
 
-#: Which leaderboard readiness gate governs which split, and the one state that
+#: Which production readiness gate governs which split, and the one state that
 #: clears it.
 #: A split absent from this table has no production path at all - stated as a
 #: table rather than an if/else so adding one is a deliberate edit and
@@ -140,9 +140,9 @@ PRODUCTION_GATES = {
 }
 
 #: TRAIN diagnostics deliberately do not live in ``PRODUCTION_GATES``. That
-#: table is a leaderboard contract, and existing tests enforce that train does
+#: table is a submission contract, and existing tests enforce that train does
 #: not become a production submission path. V3A's labelled TRAIN run is the same
-#: calibrated inference stack plus post-hoc telemetry, selected only when the
+#: calibrated inference stack plus after-run telemetry, selected only when the
 #: config explicitly enables diagnostics.
 TRAIN_DIAGNOSTIC_GATE = (
     evaluate_train_diagnostic_readiness,
@@ -155,7 +155,7 @@ def build_diagnostic_recorder(
 ) -> "DiagnosticRecorder | None":
     """The V3A failure recorder, if this experiment asks for one.
 
-    ``None`` - the default for every committed leaderboard config - is the
+    ``None`` - the default for every committed submission config - is the
     pre-V3A path exactly. The recorder itself is gold-free and safe on blind
     splits because it only observes predictions after finalization.
     """
@@ -344,7 +344,7 @@ def resolve_production_gate(config: dict, split: str, config_path: Path):
     if gate is None:
         raise SystemExit(
             f"{config_path} declares production mode for split {split!r}; "
-            f"a production leaderboard run is defined only for "
+            f"a production submission run is defined only for "
             f"{sorted(PRODUCTION_GATES)}. A TRAIN diagnostic must additionally "
             f"declare diagnostics.enabled and a telemetry_file, which is what "
             f"selects the {TRAIN_DIAGNOSTIC_GATE[1].value} gate.")
@@ -370,22 +370,22 @@ def evaluate_production_readiness(config: dict, split: str, config_path: Path):
     return readiness, required
 
 
-def _allow_leaderboard_probe(config: dict, split: str, readiness) -> bool:
-    """Explicit escape hatch for blind leaderboard probes under calibration review.
+def _allow_controlled_test_submission(config: dict, split: str, readiness) -> bool:
+    """Explicit escape hatch for controlled TEST submissions under calibration review.
 
     This is intentionally narrower than production readiness.  It does not
     report FULL_TEST_READY and it is not inherited by ordinary aggressive
-    configs.  The user may choose to spend a submission slot on a calibration
-    review probe, but the source must say so.
+    configs. The source must explicitly accept the remaining calibration
+    blockers before TEST inference is allowed to proceed.
     """
     if split != "test":
         return False
-    probe = dict(config.get("leaderboard_probe") or {})
-    if not probe.get("enabled", False):
+    review = dict(config.get("test_submission_review") or {})
+    if not review.get("enabled", False):
         return False
-    if str(probe.get("status", "")) != "CALIBRATION_REVIEW_LEADERBOARD_PROBE":
+    if str(review.get("status", "")) != "CONTROLLED_TEST_SUBMISSION_REVIEW":
         return False
-    accepted = probe.get("accepts_readiness_blockers") or []
+    accepted = review.get("accepts_readiness_blockers") or []
     if "selection.v3_1: CALIBRATION_REVIEW_REQUIRED" not in accepted:
         return False
     blockers = getattr(readiness, "blockers", ())
@@ -539,9 +539,9 @@ def main() -> int:
     if production:
         readiness, required = evaluate_production_readiness(config, split, args.config)
         if readiness.state is not required:
-            if _allow_leaderboard_probe(config, split, readiness):
+            if _allow_controlled_test_submission(config, split, readiness):
                 print(
-                    f"{split} readiness: LEADERBOARD_PROBE_ALLOWED "
+                    f"{split} readiness: CONTROLLED_TEST_SUBMISSION_ALLOWED "
                     f"(not {required.value}; {readiness.state.value})"
                 )
                 for blocker in readiness.blockers:
@@ -744,7 +744,7 @@ def main() -> int:
             integration_mode=(IntegrationMode.PRODUCTION if production
                               else IntegrationMode.SHADOW),
             # V3A, observability only: consulted after each query is decided
-            # and incapable of changing one. Absent from every leaderboard
+            # and incapable of changing one. Absent from every submission
             # config, so those runs take the pre-V3A path unchanged.
             diagnostics=recorder,
         )
@@ -758,25 +758,25 @@ def main() -> int:
             _abort_on_accounting_invariant(
                 out_dir, run_id, split, len(queries), error)
 
-        repair_stack = build_repair_stack(
-            config.get("leaderboard_repair"),
+        refinement_stack = build_refinement_stack(
+            config.get("relation_refinement"),
             enumerator=runtime,
             verifier=verifier_runtime,
         )
-        repair_result = None
-        if repair_stack is not None:
-            repair_graphs = pipeline.v3_pre_m8_results or pipeline.v3_core_results
-            repair_result = repair_stack.apply(
+        refinement_result = None
+        if refinement_stack is not None:
+            refinement_graphs = pipeline.v3_pre_m8_results or pipeline.v3_core_results
+            refinement_result = refinement_stack.apply(
                 result.predictions,
                 queries=queries,
-                hypothesis_graphs=repair_graphs,
+                hypothesis_graphs=refinement_graphs,
             )
-            result.predictions = list(repair_result.predictions)
+            result.predictions = list(refinement_result.predictions)
             print(
-                "leaderboard repair: "
-                f"{repair_result.accounting['changed_rows']} changed row(s), "
-                f"{repair_result.accounting['total_repair_calls']} post-call(s), "
-                f"profile={repair_result.accounting['profile']}"
+                "relation refinement: "
+                f"{refinement_result.accounting['changed_rows']} changed row(s), "
+                f"{refinement_result.accounting['total_refinement_calls']} post-call(s), "
+                f"profile={refinement_result.accounting['profile']}"
             )
 
     manifest.finish()
@@ -827,10 +827,10 @@ def main() -> int:
                 handle.write(json.dumps(record.to_json(), ensure_ascii=False) + "\n")
         print(f"[{tag}] {path}  ({len(records)} queries)")
 
-    if repair_result is not None and repair_stack is not None:
-        records_path, accounting_path = repair_stack.write_artifacts(repair_result, out_dir)
-        print(f"[repair] {records_path}  ({len(repair_result.records)} queries)")
-        print(f"[repair] {accounting_path}")
+    if refinement_result is not None and refinement_stack is not None:
+        records_path, accounting_path = refinement_stack.write_artifacts(refinement_result, out_dir)
+        print(f"[refinement] {records_path}  ({len(refinement_result.records)} queries)")
+        print(f"[refinement] {accounting_path}")
 
     if result.errors:
         (out_dir / "errors.json").write_text(json.dumps(result.errors, indent=2))

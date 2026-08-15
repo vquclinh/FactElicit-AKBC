@@ -1,4 +1,4 @@
-"""Orchestrator for active post-pipeline leaderboard repair."""
+"""Orchestrator for active relation refinement."""
 
 from __future__ import annotations
 
@@ -12,27 +12,25 @@ from cover_kbc.models.base import LMRuntime
 from cover_kbc.types import Prediction, Query
 from cover_kbc.v3_core.hypothesis import QueryHypothesisGraph
 
-from cover_kbc.leaderboard_repair.config import LeaderboardRepairConfig, build_config
-from cover_kbc.leaderboard_repair.relations import REPAIR_BY_RELATION
-from cover_kbc.leaderboard_repair.runtime import RepairCaller
-from cover_kbc.leaderboard_repair.types import RepairResult, RowBudget, RowRepairRecord
-from cover_kbc.leaderboard_repair.util import AREA, CAPACITY, CITY, STOCK, candidate_signals
+from cover_kbc.relation_refinement.config import RelationRefinementConfig, build_config
+from cover_kbc.relation_refinement.relations import REFINEMENT_BY_RELATION
+from cover_kbc.relation_refinement.runtime import RefinementCaller
+from cover_kbc.relation_refinement.types import RefinementResult, RowBudget, RowRefinementRecord
+from cover_kbc.relation_refinement.util import AREA, CAPACITY, CITY, STOCK, candidate_signals
 
 
-class LeaderboardRepairStack:
-    """Feature-flagged post-pipeline repair stack.
+class RelationRefinementStack:
+    """Feature-flagged relation-refinement stack for the active Profile F1 system.
 
-    The active baseline uses deterministic award metadata cleanup, E1's Mistral
-    City empty-row rescue, Direct Area or E3 Area Multi-View for hasArea rows,
-    E2 Capacity Multi-View for hasCapacity rows, and F1's Mistral stock
-    empty-row rescue. Retired C2 mutation behaviours remain in historical
-    audits/config metadata, but are no longer executable runtime branches.
+    The active profile uses deterministic award metadata cleanup, Mistral
+    city empty-row handling, direct or multi-view hasArea resolution,
+    multi-view hasCapacity resolution, and Mistral stock empty-row rescue.
     """
 
     def __init__(
         self,
         *,
-        config: LeaderboardRepairConfig,
+        config: RelationRefinementConfig,
         enumerator: LMRuntime,
         verifier: LMRuntime,
     ) -> None:
@@ -46,27 +44,27 @@ class LeaderboardRepairStack:
         *,
         queries: Sequence[Query],
         hypothesis_graphs: Sequence[QueryHypothesisGraph] = (),
-    ) -> RepairResult:
+    ) -> RefinementResult:
         if not self.config.enabled:
-            return RepairResult(predictions=list(predictions), records=[], accounting={})
+            return RefinementResult(predictions=list(predictions), records=[], accounting={})
         graph_by_key = {
             (graph.subject, graph.relation): graph for graph in hypothesis_graphs
         }
-        repaired: list[Prediction] = []
-        records: dict[tuple[str, str], RowRepairRecord] = {}
+        refined: list[Prediction] = []
+        records: dict[tuple[str, str], RowRefinementRecord] = {}
 
         for prediction in predictions:
             key = (prediction.subject, prediction.relation)
             cap = self.config.cap_for(prediction.relation)
             budget = RowBudget(cap=cap)
-            caller = RepairCaller(
+            caller = RefinementCaller(
                 enumerator=self.enumerator,
                 verifier=self.verifier,
                 relation=prediction.relation,
                 subject=prediction.subject,
                 row_budget=budget,
             )
-            record = RowRepairRecord(
+            record = RowRefinementRecord(
                 subject=prediction.subject,
                 relation=prediction.relation,
                 row_index=prediction.row_index,
@@ -76,30 +74,30 @@ class LeaderboardRepairStack:
             )
             graph = graph_by_key.get(key)
             signals = candidate_signals(prediction, graph)
-            repairer = REPAIR_BY_RELATION.get(prediction.relation)
+            refiner = REFINEMENT_BY_RELATION.get(prediction.relation)
             values = list(prediction.object_entities)
-            if repairer is not None and cap > 0:
-                values = repairer(prediction, signals, caller, self.config, record)
+            if refiner is not None and cap > 0:
+                values = refiner(prediction, signals, caller, self.config, record)
             elif cap <= 0:
-                record.skipped.append("relation repair disabled by zero cap")
-            post_repair = replace(prediction, object_entities=list(values))
+                record.skipped.append("relation refinement disabled by zero cap")
+            post_refinement = replace(prediction, object_entities=list(values))
             record.calls = list(budget.calls)
-            record.after = list(post_repair.object_entities)
-            repaired.append(post_repair)
+            record.after = list(post_refinement.object_entities)
+            refined.append(post_refinement)
             records[key] = record
 
-        ordered_records = [records[(p.subject, p.relation)] for p in repaired]
+        ordered_records = [records[(p.subject, p.relation)] for p in refined]
         accounting = self.accounting(ordered_records, predictions_before=predictions)
-        _assert_query_coverage(repaired, queries)
-        return RepairResult(
-            predictions=repaired,
+        _assert_query_coverage(refined, queries)
+        return RefinementResult(
+            predictions=refined,
             records=ordered_records,
             accounting=accounting,
         )
 
     def accounting(
         self,
-        records: Sequence[RowRepairRecord],
+        records: Sequence[RowRefinementRecord],
         *,
         predictions_before: Sequence[Prediction],
     ) -> dict[str, object]:
@@ -117,9 +115,9 @@ class LeaderboardRepairStack:
             by_relation[relation] = {
                 "rows": len(relation_records),
                 "changed_rows": changed,
-                "total_repair_calls": sum(calls),
-                "mean_repair_calls": (sum(calls) / len(calls)) if calls else 0.0,
-                "max_repair_calls": max(calls) if calls else 0,
+                "total_refinement_calls": sum(calls),
+                "mean_refinement_calls": (sum(calls) / len(calls)) if calls else 0.0,
+                "max_refinement_calls": max(calls) if calls else 0,
                 "features": dict(sorted(feature_counts.items())),
             }
             if (
@@ -162,21 +160,21 @@ class LeaderboardRepairStack:
         total_calls = sum(record.calls_used for record in records)
         changed_rows = sum(1 for record in records if record.changed)
         return {
-            "schema_version": "leaderboard-repair-accounting-v1",
-            "repair_version": self.config.repair_version,
+            "schema_version": "relation-refinement-accounting-v1",
+            "refinement_version": self.config.refinement_version,
             "profile": self.config.profile,
             "enabled": self.config.enabled,
             "rows": len(records),
             "changed_rows": changed_rows,
-            "total_repair_calls": total_calls,
-            "mean_repair_calls": total_calls / max(1, len(records)),
-            "max_repair_calls": max((record.calls_used for record in records), default=0),
+            "total_refinement_calls": total_calls,
+            "mean_refinement_calls": total_calls / max(1, len(records)),
+            "max_refinement_calls": max((record.calls_used for record in records), default=0),
             "max_calls_by_relation": dict(sorted(self.config.max_calls_by_relation.items())),
             "by_relation": by_relation,
-            "pipeline_rows_before_repair": len(predictions_before),
+            "pipeline_rows_before_refinement": len(predictions_before),
         }
 
-    def write_artifacts(self, result: RepairResult, out_dir: Path) -> tuple[Path, Path]:
+    def write_artifacts(self, result: RefinementResult, out_dir: Path) -> tuple[Path, Path]:
         records_path = out_dir / self.config.artifacts_file
         accounting_path = out_dir / self.config.accounting_file
         with records_path.open("w", encoding="utf-8") as handle:
@@ -189,18 +187,18 @@ class LeaderboardRepairStack:
         return records_path, accounting_path
 
 
-def build_repair_stack(
+def build_refinement_stack(
     raw_config: object,
     *,
     enumerator: LMRuntime,
     verifier: LMRuntime,
-) -> LeaderboardRepairStack | None:
+) -> RelationRefinementStack | None:
     if not isinstance(raw_config, dict):
         return None
     config = build_config(raw_config)
     if not config.enabled:
         return None
-    return LeaderboardRepairStack(
+    return RelationRefinementStack(
         config=config,
         enumerator=enumerator,
         verifier=verifier,
@@ -211,11 +209,11 @@ def _assert_query_coverage(predictions: Sequence[Prediction], queries: Sequence[
     expected = [(q.subject, q.relation) for q in queries]
     actual = [(p.subject, p.relation) for p in predictions]
     if expected != actual:
-        raise RuntimeError("leaderboard repair changed row coverage or order")
+        raise RuntimeError("relation refinement changed row coverage or order")
 
 
 def _stock_empty_rescue_accounting(
-    records: Sequence[RowRepairRecord],
+    records: Sequence[RowRefinementRecord],
 ) -> dict[str, object]:
     summary: dict[str, object] = {
         "eligible_empty_rows": 0,
@@ -279,7 +277,7 @@ def _stock_empty_rescue_accounting(
 
 
 def _e1_city_rescue_accounting(
-    records: Sequence[RowRepairRecord],
+    records: Sequence[RowRefinementRecord],
 ) -> dict[str, int]:
     summary = {
         "eligible_empty_rows": 0,
@@ -333,7 +331,7 @@ def _e1_city_rescue_accounting(
 
 
 def _direct_area_accounting(
-    records: Sequence[RowRepairRecord],
+    records: Sequence[RowRefinementRecord],
 ) -> dict[str, int]:
     summary = {
         "eligible_hasArea_rows": 0,
@@ -372,7 +370,7 @@ def _direct_area_accounting(
 
 
 def _area_multiview_accounting(
-    records: Sequence[RowRepairRecord],
+    records: Sequence[RowRefinementRecord],
 ) -> dict[str, object]:
     summary: dict[str, object] = {
         "eligible_hasArea_rows": 0,
@@ -455,7 +453,7 @@ def _area_multiview_accounting(
 
 
 def _capacity_multiview_accounting(
-    records: Sequence[RowRepairRecord],
+    records: Sequence[RowRefinementRecord],
 ) -> dict[str, object]:
     summary: dict[str, object] = {
         "eligible_hasCapacity_rows": 0,

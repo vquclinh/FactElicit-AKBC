@@ -2,7 +2,7 @@
 
 The expensive failure this prevents is a VALIDATION run that *succeeds*: the
 uncalibrated controller silently falls back, 478 rows are answered by a system
-nobody intended, and the leaderboard number describes neither the core path nor
+nobody intended, and the official score describes neither the core path nor
 the upgraded one. A crash costs an hour; that outcome costs a submission and is
 not visible in the artifacts.
 
@@ -46,7 +46,7 @@ class ReadinessState(str, Enum):
     FULL_TEST_READY = "FULL_TEST_READY"
     #: The same production system, pointed at labelled TRAIN to be *measured*
     #: rather than scored (milestone V3A). Its own state because a TRAIN
-    #: diagnostic run has a requirement neither leaderboard run has - it must
+    #: diagnostic run has a requirement neither official split run has - it must
     #: actually record failure telemetry, or it produces nothing - and because
     #: a TRAIN-ready profile must never read as cleared for VAL or TEST.
     TRAIN_DIAGNOSTIC_READY = "TRAIN_DIAGNOSTIC_READY"
@@ -959,7 +959,7 @@ def evaluate_train_diagnostic_readiness(
 ) -> ReadinessReport:
     """May this profile run the calibrated system over labelled TRAIN?
 
-    Milestone V3A asks a question no leaderboard run answers: *where* does each
+    Milestone V3A asks a question no official blind split run answers: *where* does each
     relation lose its gold objects? Answering it means running the production
     decision path - the same models, the same prompts, the same Modules 20 and
     21 - against a split whose answers are known. So this gate requires

@@ -13,7 +13,7 @@ For one query the pipeline runs, in order:
 2. ``decide_graph`` -> ``_run_consensus`` (Module 16), then
    ``_run_v3_control_loop`` (Modules 20/21 and V3 action execution);
 3. ``decide_graph`` -> ``selection.finalize`` (Module 8);
-4. ``_observe_v3_core`` - post-hoc telemetry only.
+4. ``_observe_v3_core`` - observation-only telemetry.
 
 The V3 hypothesis graph that Module 21 reads is built at step 2 by
 ``pipeline._v3_hypothesis_graph``, which passes ``prediction=None``. The only

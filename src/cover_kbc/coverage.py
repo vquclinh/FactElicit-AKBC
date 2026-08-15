@@ -10,7 +10,7 @@ two reasons that still hold: model-generated views are not independent
 captures, so the capture-recapture assumptions are false; and the official
 repository states that some very large or open-ended award rows have
 necessarily *partial* gold, so even a perfect estimate of the real world's set
-size would be the wrong target for the leaderboard.
+size would be the wrong target for the official task metric.
 
 So ``q_res`` in ``[0, 1]`` is a **need-to-continue** signal. It is not a
 probability that n objects remain, not a cardinality, not a confidence that the

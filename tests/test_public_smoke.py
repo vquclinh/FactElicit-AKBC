@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from benchmark.evaluate import evaluate_per_sr_pair, RELATION_TYPE
-from cover_kbc.leaderboard_repair.stock_empty_rescue import (
+from cover_kbc.relation_refinement.stock_empty_rescue import (
     STRONG_CONSENSUS,
     VIEW_IDS,
     decide_stock_empty_rescue,

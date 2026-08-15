@@ -28,7 +28,8 @@ other historical model portfolios are not active in the public F1 runtime.
 
 ## Hidden TEST Scores
 
-The hidden labels are not released, so these are leaderboard-reported scores.
+The hidden labels are not released, so these scores come from the official
+hidden TEST evaluation service.
 
 | Relation | P | R | F1 |
 |---|---:|---:|---:|

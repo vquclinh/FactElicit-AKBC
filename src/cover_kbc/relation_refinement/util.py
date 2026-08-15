@@ -1,4 +1,4 @@
-"""Shared deterministic utilities for active leaderboard repair."""
+"""Shared deterministic utilities for active relation refinement."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from cover_kbc.normalization.strings import clean_surface, strict_key
 from cover_kbc.types import Candidate, Prediction
 from cover_kbc.v3_core.hypothesis import QueryHypothesisGraph
 
-from cover_kbc.leaderboard_repair.types import CandidateSignal
+from cover_kbc.relation_refinement.types import CandidateSignal
 
 
 STOCK = "companyTradesAtStockExchange"
