@@ -1,79 +1,137 @@
-# FactElicit-AKBC
+# COVER-KBC
 
-FactElicit-AKBC is the COVER-KBC system for the AKBC Shared Task 2026: given a
-`SubjectEntity` and one of six relations, predict the complete string-valued
-`ObjectEntities` set, including empty sets and numeric answers.
+<div align="center">
 
-## Current Best System
+### Relation-Typed Closed-Book Knowledge Base Construction for AKBC Shared Task 2026
 
-**CURRENT BEST PROFILE**
+Evidence-centric inference for object-set prediction with one frozen open-weight language model.
 
-- Profile: **Profile F1 - Stock Empty Rescue**
-- Config: [`configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml`](configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml)
-- Hidden TEST Macro-F1: **0.5878**
-- Model: `mistralai/Mistral-Small-3.2-24B-Instruct-2506`
-- Revision: `95a6d26c4bfb886c58daf9d3f7332c857cb27b43`
-- Unique neural parameters: **24,011,361,280 / 32,000,000,000**
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Task](https://img.shields.io/badge/AKBC%20Shared%20Task-2026-red)
+![Parameters](https://img.shields.io/badge/Counted%20Params-24.01B%20%3C%2032B-brightgreen)
+![Runtime](https://img.shields.io/badge/Runtime-Closed--Book-success)
+![Training](https://img.shields.io/badge/Training-None%20(Pretrained%20Only)-informational)
+![Score](https://img.shields.io/badge/Hidden%20TEST%20Macro--F1-0.5878-orange)
 
-Profile F1 is Profile E3 plus `MistralStockEmptyRescue` for empty
-`companyTradesAtStockExchange` rows. Qwen is not active in the current best
-pipeline. The same physical Mistral checkpoint is reused for every logical
-role.
+</div>
 
-## Task
+## What COVER-KBC is
 
-The repository wraps the local challenge snapshot in [`benchmark/`](benchmark/).
-Rows contain `SubjectEntity`, `Relation`, and an object list. Relations can have
-zero, one, or many valid objects. `hasArea` and `hasCapacity` are numeric
-relations evaluated with 5% tolerance by the local evaluator.
+COVER-KBC is a closed-book knowledge-base construction system. Given an official
+row with a `SubjectEntity` and a `Relation`, it predicts the string-valued
+`ObjectEntities` set for that query. The answer may be empty, singleton, or
+multi-valued, and numeric relations are evaluated with the challenge's 5%
+relative tolerance.
 
-## Architecture
+The current public repository is trimmed around the frozen **Profile F1 - Stock
+Empty Rescue** system. It uses one physical checkpoint,
+`mistralai/Mistral-Small-3.2-24B-Instruct-2506`, reused for every logical
+generation and verification role. No external retrieval, no web access, no
+additional model training, and no fine-tuning are used.
+
+The method treats closed-book KBC as active evidence acquisition. A model answer
+is not emitted directly as a final object set. Each call is parsed as evidence,
+attached to a relation-specific inference state, verified when needed, and then
+finalized by a relation-aware selector.
+
+## Competition and runtime constraints
+
+This repository targets the AKBC Shared Task 2026 closed-book object-set
+prediction setting. The active system follows these constraints:
+
+| Constraint | COVER-KBC Profile F1 |
+|---|---|
+| Neural parameter budget | 24,011,361,280 unique parameters, under the 32B cap |
+| Model portfolio | one frozen Mistral-Small-3.2-24B checkpoint |
+| External factual retrieval | none |
+| Training / fine-tuning | none |
+| Inference style | multi-step closed-book prompting, parsing, verification, and control |
+| Main runtime used | Google Colab A100 |
+
+Quantization is treated only as a memory/runtime choice. It does not reduce the
+counted parameter total.
+
+## Final architecture
+
+A single public profile is kept. Historical variants and rejected probes were
+removed from the public surface.
 
 ```text
-Input row
-  -> relation contract/router
-  -> Mistral closed-book elicitation views
-  -> parsers and evidence graph
-  -> verifier/gates/controller/final selector
-  -> Profile F1 final relation layer
-  -> official JSONL row
-```
-
-```mermaid
-flowchart LR
-    A[Subject + Relation] --> B[Relation Contract]
-    B --> C[Core COVER-KBC Pipeline]
-    C --> D[Final Selector]
-    D --> E[Profile F1 Repair Stack]
-    E --> F[ObjectEntities JSONL]
-    E --> G[Trace + Repair Accounting]
+SubjectEntity + Relation
+  |
+  |-- relation contract and typed program
+  |-- closed-book Mistral evidence-acquisition views
+  |-- strict parsing and normalization
+  |-- independence-aware evidence state
+  |-- blind candidate verification
+  |-- residual search-need estimate
+  |-- deterministic budget-aware controller
+  |-- relation-specific final selector
+  |
+  `-- Profile F1 final relation layer
+        |-- award metadata cleanup
+        |-- city-of-death two-stage protocol
+        |-- area multi-view numeric resolver
+        |-- capacity multi-view numeric resolver
+        |-- stock empty-row rescue
+        `-- official JSONL prediction row
 ```
 
 Profile F1 final layer:
 
-- `AwardMetadataNormalizer` for `awardWonBy`
-- two-stage Mistral standalone City protocol for all `personHasCityOfDeath` rows
-- `MistralAreaMultiView` for all `hasArea` rows
-- `MistralCapacityMultiView` for all `hasCapacity` rows
-- `MistralStockEmptyRescue` for empty `companyTradesAtStockExchange` rows
-- no post-pipeline Border repair
+| Relation | Final strategy |
+|---|---|
+| `countryLandBordersCountry` | core small-set border inference; no final repair |
+| `companyTradesAtStockExchange` | core stock path plus empty-only stock-exchange rescue |
+| `personHasCityOfDeath` | two-stage deceased gate followed by strict city recall |
+| `hasArea` | four-view numeric resolver with 5% clustering |
+| `hasCapacity` | four-view numeric resolver with 5% clustering |
+| `awardWonBy` | large-set enumeration plus deterministic metadata cleanup and deduplication |
 
-## Relation-Specific Inference
+## Design invariants
 
-| Relation | Current strategy | Calls / logic | Hidden F1 |
+| Invariant | Mechanism |
+|---|---|
+| One counted model | All logical roles share the same frozen Mistral checkpoint; retired Qwen profiles are not active. |
+| Closed-book inference | The pipeline never calls web search, RAG, external factual corpora, or a knowledge-base lookup at inference time. |
+| Evidence before output | Generated strings become parsed observations first; final objects come only from selectors over evidence state. |
+| No fake consensus | Repeated samples from the same view do not count as independent corroboration. |
+| Blind verification | The verifier sees the subject, relation definition, hard-negative rules, and one candidate, not the generator prompt or support count. |
+| Numeric fail-closed behavior | Numeric answers must parse strictly, cluster within 5% tolerance, or pass a source-blind judge. |
+| Bounded stock rescue | Stock rescue runs only on empty stock rows and emits an exchange only with sufficient independent support. |
+
+## Output format
+
+Predictions use the official JSONL row shape:
+
+```json
+{
+  "SubjectEntity": "France",
+  "Relation": "countryLandBordersCountry",
+  "ObjectEntities": ["Belgium", "Germany", "Italy", "Luxembourg", "Monaco", "Spain", "Switzerland"]
+}
+```
+
+`ObjectEntities` is always a list. Empty answers are represented by
+`"ObjectEntities": []`. Numeric answers are emitted as strings accepted by the
+official evaluator.
+
+## Deployed model
+
+| Model | Role | Revision | Counted parameters |
 |---|---|---|---:|
-| `countryLandBordersCountry` | Core small-set border elicitation and precision-aware selection | direct, compass/structural, maritime contrast, verifier/controller; no E3 repair | 0.9291 |
-| `personHasCityOfDeath` | Two-stage standalone Mistral City protocol | run life/death gate for every City row; exact `DECEASED` triggers strict `CITY:` recall; output replaces prior City row | 0.5700 |
-| `hasCapacity` | Capacity Multi-View | 4 deterministic views, strict `CAPACITY:` parser, 5% clustering, one source-blind judge if ambiguous | 0.1633 |
-| `awardWonBy` | Large-set award enumeration plus metadata cleanup | multi-facet core enumeration, deterministic wrapper removal and dedupe | 0.3105 |
-| `companyTradesAtStockExchange` | Core stock listing path plus empty-only F1 rescue | non-empty stock rows bypass rescue; empty rows get four candidate-blind recall views and require >=3 support | 0.7385 |
-| `hasArea` | Area Multi-View | 4 deterministic views, strict `AREA:` parser, 5% clustering, one source-blind judge if ambiguous | 0.6700 |
+| `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | generation, verification, relation-specific final calls | `95a6d26c4bfb886c58daf9d3f7332c857cb27b43` | 24,011,361,280 |
+| | **TOTAL** | | **24,011,361,280 / 32,000,000,000** |
+
+`scripts/audit_model_budget.py` verifies the declared profile and exits
+non-zero if the active model portfolio exceeds the budget or names an
+unexpected model.
 
 ## Results
 
-User-provided hidden TEST evidence for the current Profile F1 baseline:
+Profile F1 hidden TEST scores:
 
-| Relation | P | R | F1 |
+| Relation | Macro Precision | Macro Recall | Macro F1 |
 |---|---:|---:|---:|
 | `awardWonBy` | 0.3255 | 0.3707 | 0.3105 |
 | `companyTradesAtStockExchange` | 0.8992 | 0.7963 | 0.7385 |
@@ -83,36 +141,44 @@ User-provided hidden TEST evidence for the current Profile F1 baseline:
 | `personHasCityOfDeath` | 0.9600 | 0.5900 | 0.5700 |
 | **All Relations** | **0.7268** | **0.6055** | **0.5878** |
 
-Zero-object reference: P = 0.6038, R = 0.9412, F1 = 0.7356.
+Zero-object cases: precision `0.6038`, recall `0.9412`, F1 `0.7356`.
 
-## Configuration History
+These hidden TEST numbers are leaderboard-reported. The hidden labels are not
+included in this repository, so hidden TEST metrics cannot be recomputed
+locally.
 
-| Profile | Main change | Overall hidden F1 |
-|---|---|---:|
-| Profile D | Mistral-only core / verifier-role consolidation | 0.4952 |
-| Integrated Profile E1 | Profile D + AwardMetadataNormalizer + MistralCityEmptyRescue + MistralDirectArea | 0.5752 |
-| Profile E2 | E1 + MistralCapacityMultiView | 0.5836 |
-| Profile E3 | E2 + MistralAreaMultiView | 0.5857 |
-| Profile F1 | E3 + MistralStockEmptyRescue | 0.5878 |
-
-Only the current F1 config is kept under `configs/experiments/` for the public
-release. Historical probes and rejected variants are documented in
-`docs/audits/` when provenance matters, but they are not active runtime
-components.
-
-## Reproduction
-
-Install:
+## Installation
 
 ```bash
-pip install -e '.[dev]'
-pip install -e '.[hf]'  # only on the neural runtime machine
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pip install -e ".[hf]"    # neural runtime only
 ```
 
-Zero-model checks:
+Python 3.10+ is required. CPU-only machines can run budget, packaging, and smoke
+tests. Full neural inference needs a CUDA runtime capable of loading the
+Mistral-Small-3.2-24B checkpoint; the reported runs used Colab A100.
+
+## Required assets
+
+| Asset | Tracked here | Notes |
+|---|:---:|---|
+| Official benchmark snapshot | yes | `benchmark/` |
+| F1 profile config | yes | `configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml` |
+| TRAIN-derived calibration artifacts | yes | `configs/calibration/v3/` |
+| Mistral model weights | no | downloaded or mounted through Hugging Face tooling |
+| Hidden TEST gold labels | no | unavailable by task design |
+| Profile E3 baseline prediction artifact | no | required only for exact artifact-seeded F1 promotion |
+
+## Usage
+
+Budget and public smoke checks:
 
 ```bash
-python scripts/audit_model_budget.py configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml
+python scripts/audit_model_budget.py \
+  configs/experiments/cover_kbc_v3_8_profile_f1_stock_empty_rescue_test.yaml
+
 python -m pytest -q
 ```
 
@@ -126,12 +192,7 @@ python scripts/run_cover.py \
   --no-eval
 ```
 
-The hidden TEST gold labels are not available locally, so TEST metrics cannot be
-recomputed from this repository.
-
-The leaderboard-tested F1 promotion was artifact-seeded: it starts from the
-hidden-winning Profile E3 475-row prediction artifact and changes only eligible
-empty `companyTradesAtStockExchange` rows. If you have that E3 artifact, use:
+Leaderboard-tested F1 promotion path:
 
 ```bash
 python scripts/run_stock_empty_rescue.py \
@@ -154,42 +215,103 @@ python scripts/package_submission.py \
   --out outputs/profile_f1_stock_empty_rescue_submission.zip
 ```
 
-Local validation:
+Local validation on a labelled split:
 
 ```bash
-python scripts/evaluate_local.py -p outputs/<run>/predictions.jsonl -s val --cli
-python -m pytest tests/ -q
-git diff --check
+python scripts/evaluate_local.py \
+  -p outputs/<run>/predictions.jsonl \
+  -s val \
+  --cli
 ```
 
-## Repository Layout
+## Produced artifacts
+
+| File | Contents |
+|---|---|
+| `predictions.jsonl` | official prediction rows |
+| `trace.jsonl` | per-query inference trace |
+| `calls.jsonl` | model-call accounting and raw call records |
+| `manifest.json` | config, dataset, model, and run metadata |
+| `repair_accounting.json` | Profile F1 final-layer mutation accounting, when enabled |
+| `*.zip` | packaged submission archive |
+
+Generated artifacts are ignored by git under `outputs/`, `predictions/`, and
+`runs/`.
+
+## Reproducibility
+
+The public profile is identified by the committed YAML config, the model
+revision, the benchmark snapshot, and the run manifest produced at inference
+time. Generation is greedy throughout, so repeated runs with the same runtime
+and artifacts avoid sampling variance.
+
+There are two valid reproduction modes:
+
+| Mode | What it does | Caveat |
+|---|---|---|
+| Full runner | recomputes every relation from the F1 config | does not locally score hidden TEST |
+| Artifact-seeded F1 promotion | starts from the Profile E3 hidden TEST artifact and changes eligible empty stock rows only | requires the historical E3 prediction file |
+
+The leaderboard-reported F1 score belongs to the artifact-seeded promotion path.
+
+## Repository structure
 
 ```text
-benchmark/                 local official snapshot, treated as read-only
-configs/experiments/       current F1 profile config
-configs/calibration/       calibration artifacts used by core V3 modules
-docs/                      implementation status and audit trail
-notebooks/                 F1 Colab runtime notebook
+benchmark/                 official local benchmark snapshot
+configs/experiments/       one public profile: Profile F1
+configs/calibration/v3/    calibration artifacts used by the F1 config
+docs/                      public implementation status
+notebooks/                 Profile F1 Colab notebook
 scripts/run_cover.py       full pipeline runner
 scripts/run_stock_empty_rescue.py
 scripts/merge_targeted_relation_results.py
 scripts/package_submission.py
 scripts/audit_model_budget.py
-src/cover_kbc/             production package
-src/cover_kbc/leaderboard_repair/
+src/cover_kbc/             COVER-KBC package
 tests/                     public smoke tests
-outputs/                   generated artifacts, gitignored
 ```
 
-## Model Budget / Rules
+Development audits are intentionally ignored by git. They may be kept locally
+under `docs/audits/`, but they are not part of the public GitHub repository.
 
-The active model portfolio is one open-weight checkpoint with 24,011,361,280
-published parameters. Quantization is a runtime memory choice and does not
-reduce parameter accounting. Profile F1 uses closed-book inference: no web, no
-RAG, no external factual corpora or KB lookup, no training, no fine-tuning, and
-no subject-answer lookup table.
+## Development
 
-## Historical Audits
+```bash
+python -m pytest -q
+git diff --check
+```
 
-[`docs/audits/`](docs/audits/) contains the provenance trail for prior profiles,
-promotions, diagnostics, and rejected probes.
+The public smoke suite is zero-model: it checks the F1 config, model-budget
+accounting, stock rescue invariants, and evaluator behavior without downloading
+or loading neural weights.
+
+## Evidence and limitations
+
+- Hidden TEST scores are leaderboard-reported and cannot be recomputed from this
+  repository because hidden labels are unavailable.
+- Exact reproduction of the submitted F1 artifact requires the Profile E3
+  baseline prediction file, which is not committed.
+- `hasCapacity` and `awardWonBy` remain the weakest relations; the current
+  system favors precision and strict parsing over broad speculative recall.
+- The system is closed-book, so all factual evidence comes from the frozen
+  model's parametric knowledge. It cannot recover facts that the checkpoint does
+  not expose through the configured views.
+- Historical experimental branches, broad diagnostics, and development audit
+  notes were removed from the public surface to keep this repository focused on
+  the final system.
+
+## Security and compliance
+
+- No credentials or API keys are required.
+- Model weights, generated outputs, local caches, and local audits are ignored.
+- Inference uses no web calls, external factual retrieval, RAG, or answer lookup
+  tables.
+- The active model revision is pinned, and parameter accounting is checked
+  before runtime.
+
+## Acknowledgements
+
+COVER-KBC was built for the AKBC Shared Task 2026 closed-book KBC setting and
+uses the local challenge benchmark snapshot under `benchmark/`. The system uses
+the open-weight Mistral-Small-3.2-24B-Instruct checkpoint as its only neural
+model.

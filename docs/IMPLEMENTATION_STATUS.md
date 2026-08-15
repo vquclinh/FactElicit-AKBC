@@ -45,10 +45,10 @@ Zero-object cases: P = `0.6038`, R = `0.9412`, F1 = `0.7356`.
 ## Public Repository Scope
 
 The public tree keeps the F1 runtime, the official benchmark snapshot, the F1
-Colab notebook, minimal reproduction scripts, calibration artifacts required by
-the config, and the audit trail. Historical experiment configs, diagnostic
-scripts, generated outputs, runbooks, paper-review notes, and the large
+Colab notebook, minimal reproduction scripts, and calibration artifacts required
+by the config. Historical experiment configs, diagnostic scripts, generated
+outputs, runbooks, paper-review notes, development audits, and the large
 development test suite have been removed from the public surface.
 
-`docs/audits/` remains as provenance for prior profile promotions and rejected
-probes.
+Development audits may remain under `docs/audits/` in a local checkout, but the
+directory is git-ignored and untracked for the GitHub release.

@@ -49,6 +49,9 @@ Thumbs.db
 # Notebook checkpoints
 .ipynb_checkpoints/
 
+# Local development provenance kept off the public repository
+docs/audits/
+
 # Coverage and build artifacts
 .coverage
 htmlcov/
