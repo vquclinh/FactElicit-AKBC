@@ -407,7 +407,7 @@ def _allow_controlled_test_submission(config: dict, split: str, readiness) -> bo
         return True
 
     role_swap_probe = (
-        probe.get("role_swap") == "MISTRAL_ONLY_VERIFIER"
+        review.get("role_swap") == "MISTRAL_ONLY_VERIFIER"
         and enumerator.get("model_id") == mistral_id
         and enumerator.get("revision") == mistral_revision
         and verifier.get("model_id") == mistral_id
